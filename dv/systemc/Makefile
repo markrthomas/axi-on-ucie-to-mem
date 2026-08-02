@@ -27,6 +27,9 @@ EXE     := obj_dir/V$(TOP)
 run:
 	@if ! command -v $(VERILATOR) >/dev/null 2>&1; then \
 		echo "[SC] verilator not on PATH — skipping"; exit 0; fi; \
+	maj=$$($(VERILATOR) --version 2>/dev/null | grep -oE 'Verilator [0-9]+' | grep -oE '[0-9]+'); \
+	if [ -z "$$maj" ] || [ "$$maj" -lt 5 ]; then \
+		echo "[SC] Verilator < 5 — skipping"; exit 0; fi; \
 	if [ ! -e "$(SYSTEMC_LIBDIR)/libsystemc.so" ] && \
 	   [ ! -e "$(SYSTEMC_LIBDIR)/libsystemc.a" ]; then \
 		echo "[SC] SystemC not found in $(SYSTEMC_LIBDIR) — install libsystemc-dev; skipping"; exit 0; fi; \

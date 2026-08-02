@@ -40,6 +40,9 @@ icarus:
 verilator:
 	@if ! command -v $(VERILATOR) >/dev/null 2>&1; then \
 		echo "[SV] verilator not on PATH — skipping"; exit 0; fi; \
+	maj=$$($(VERILATOR) --version 2>/dev/null | grep -oE 'Verilator [0-9]+' | grep -oE '[0-9]+'); \
+	if [ -z "$$maj" ] || [ "$$maj" -lt 5 ]; then \
+		echo "[SV] Verilator < 5 (no --binary/--timing) — skipping"; exit 0; fi; \
 	mkdir -p sim_build; \
 	$(VERILATOR) --binary --timing --assert -j 0 -Wall -Wno-DECLFILENAME \
 		-Wno-SYNCASYNCNET \
