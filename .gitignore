@@ -1,0 +1,45 @@
+START_NOTES
+NOTES.md
+# editor swap files
+*.swp
+*.swo
+# simulation build/artifacts
+sim_build/
+dv/cocotb/sim_build/
+__pycache__/
+*.pyc
+results.xml
+*.fst
+*.vcd
+obj_dir/
+dv/verilator/obj_dir/
+dv/systemc/obj_dir/
+sim/obj_dir_cov/
+sim/coverage.info
+sim/coverage.dat
+sim/annotated/
+coverage.dat
+# formal
+formal/*/
+# large source specs (kept locally in docs/, not committed)
+docs/*.pdf
+docs/*.pdf:Zone.Identifier
+# SystemVerilog UVM simulator artifacts (uvm/)
+uvm/simv
+uvm/simv.daidir/
+uvm/csrc/
+uvm/*.log
+uvm/ucli.key
+uvm/xcelium.d/
+uvm/xrun.history
+uvm/xrun.log
+uvm/INCA_libs/
+uvm/.simvision/
+uvm/qrun.out/
+uvm/work/
+uvm/modelsim.ini
+uvm/transcript
+uvm/vsim.wlf
+uvm/*.fsdb
+uvm/novas.*
+uvm/verdi*
