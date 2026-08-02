@@ -29,6 +29,7 @@ TOP := axi_ucie_mem_top
 
 TB_DIR     := dv/cocotb
 SV_DIR     := dv/sv
+SC_DIR     := dv/systemc
 TB_RESULTS := $(TB_DIR)/results.xml
 FST        := $(TB_DIR)/sim_build/$(TOP).fst
 
@@ -46,7 +47,7 @@ COV_MIN ?= 90
 
 .PHONY: default help \
 	test test-all test-write-read test-random test-walking \
-	sv vlt coverage waves wave check regress ci \
+	sv vlt systemc coverage waves wave check regress ci \
 	lint _lint_iverilog _lint_verilator clean
 
 default: help
@@ -65,6 +66,7 @@ help:
 	@echo "  Other DV environments:"
 	@echo "    make sv                # portable SV directed TB under Icarus"
 	@echo "    make vlt               # same SV TB under Verilator (+ bound SVA)"
+	@echo "    make systemc           # SystemC TB (Verilator --sc model + sc_main)"
 	@echo "    make coverage          # Verilator --coverage -> sim/coverage.info (floor COV_MIN=$(COV_MIN)%)"
 	@echo ""
 	@echo "  Gates:"
@@ -148,6 +150,11 @@ sv:
 vlt:
 	$(MAKE) -C $(SV_DIR) verilator
 
+# SystemC TB: Verilator --sc model of the DUT + hand-written sc_main driver.
+# Degrades gracefully (skip, exit 0) if Verilator or SystemC is absent.
+systemc:
+	$(MAKE) -C $(SC_DIR) run
+
 # coverage: Verilator --coverage build + run of sim/sim_main.cpp; emits
 # sim/coverage.info (lcov) and enforces the COV_MIN line floor.  Degrades
 # gracefully (exit 0) when Verilator is not installed.
@@ -176,10 +183,10 @@ coverage:
 	fi
 
 # --- gates -------------------------------------------------------------------
-check: lint test-all sv vlt
+check: lint test-all sv vlt systemc
 
 regress: check coverage
-	@echo "[REGRESS] lint + cocotb + SV(Icarus+Verilator) + coverage PASSED"
+	@echo "[REGRESS] lint + cocotb + SV(Icarus+Verilator) + SystemC + coverage PASSED"
 
 ci: regress
 	@echo "[CI] full regression PASSED"
@@ -188,6 +195,7 @@ ci: regress
 clean:
 	$(MAKE) -C $(TB_DIR) clean 2>/dev/null || true
 	$(MAKE) -C $(SV_DIR) clean 2>/dev/null || true
+	$(MAKE) -C $(SC_DIR) clean 2>/dev/null || true
 	rm -rf $(TB_DIR)/sim_build $(TB_DIR)/__pycache__ __pycache__ \
 		results.xml dump.fst dump.vcd obj_dir \
 		$(COV_DIR) sim/coverage.info sim/coverage.dat sim/annotated
