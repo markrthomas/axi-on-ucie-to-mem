@@ -45,7 +45,7 @@ verilator:
 		echo "[SV] Verilator < 5 (no --binary/--timing) — skipping"; exit 0; fi; \
 	mkdir -p sim_build; \
 	$(VERILATOR) --binary --timing --assert -j 0 -Wall -Wno-DECLFILENAME \
-		-Wno-SYNCASYNCNET \
+		-Wno-SYNCASYNCNET -Wno-BLKSEQ \
 		--top-module $(TOP) --Mdir obj_dir $(RTL) $(SVA) $(TB) -o vsvtb; \
 	./obj_dir/vsvtb 2>&1 | tee sim_build/verilator.log; \
 	grep -q "$(PASS_RE)" sim_build/verilator.log || { echo "[SV] Verilator run FAILED"; exit 1; }; \
