@@ -42,6 +42,14 @@ package aou_pkg;
   localparam int PLP_HDR_BITS      = 80;                 // 10B protocol header
   localparam int PLP_BITS          = PLP_HDR_BITS + PLP_PAYLOAD_BITS; // 2000 (250B)
 
+  localparam int FDID_W  = 2;                           // Flit Destination ID
+  localparam int CREDIT_W = 16;                          // MsgCredit field
+  localparam int HDR_RSVD_W = PLP_HDR_BITS - FDID_W - NUM_GRAN - CREDIT_W; // 14
+
+  typedef logic [PLP_BITS-1:0]         flit_t;           // 250B PLP == link word
+  typedef logic [PLP_PAYLOAD_BITS-1:0] payload_t;        // 240B / 48 granules
+  typedef logic [NUM_GRAN-1:0]         msgstart_t;       // MsgStart bitmap
+
   // --- MSGTYPE encoding (spec Table 1) --------------------------------------
   localparam int MSGTYPE_W = 4;
   typedef enum logic [MSGTYPE_W-1:0] {
@@ -245,6 +253,64 @@ package aou_pkg;
   endfunction
   function automatic logic [AOU_RESP_W-1:0] wrsp_resp(input msg_t m);
     wrsp_resp = m[MSG_MAX_BITS-1-34 -: AOU_RESP_W];
+  endfunction
+
+  // =========================================================================
+  // Flit assembly / disassembly (spec §4.2-4.3).
+  //   Header layout (MSB-first): FDId(2) | MsgStart(48) | MsgCredit(16) |
+  //   Rsvd(14), followed by the 1920b payload.  Credit is always 0 in this
+  //   build (no flow control yet).
+  // =========================================================================
+  function automatic flit_t flit_assemble(input logic [FDID_W-1:0] fdid,
+                                           input msgstart_t         msgstart,
+                                           input payload_t          payload);
+    flit_assemble = {fdid, msgstart, {CREDIT_W{1'b0}}, {HDR_RSVD_W{1'b0}},
+                     payload};
+  endfunction
+
+  function automatic msgstart_t flit_msgstart(input flit_t f);
+    flit_msgstart = f[PLP_BITS-1-FDID_W -: NUM_GRAN];
+  endfunction
+
+  function automatic payload_t flit_payload(input flit_t f);
+    flit_payload = f[PLP_PAYLOAD_BITS-1:0];
+  endfunction
+
+  // Place a (left-justified) message of `gran` granules into a payload at
+  // granule `g`.  Returns the payload bits to be OR-ed / assigned.
+  function automatic payload_t payload_put(input payload_t base,
+                                           input int       g,
+                                           input int       gran,
+                                           input msg_t     m);
+    payload_t p;
+    begin
+      p = base;
+      // granule g occupies payload[PLP_PAYLOAD_BITS-1 - g*GRAN_BITS -: 40];
+      // a `gran`-granule message spans gran*GRAN_BITS bits from that top.
+      for (int b = 0; b < gran*GRAN_BITS; b++)
+        p[PLP_PAYLOAD_BITS-1 - g*GRAN_BITS - b] = m[MSG_MAX_BITS-1 - b];
+      payload_put = p;
+    end
+  endfunction
+
+  // Extract the message that starts at granule `g` (length `gran`) from a
+  // payload, returned left-justified in an MSG_MAX_BITS container.
+  function automatic msg_t payload_get(input payload_t p,
+                                       input int       g,
+                                       input int       gran);
+    msg_t m;
+    begin
+      m = '0;
+      for (int b = 0; b < gran*GRAN_BITS; b++)
+        m[MSG_MAX_BITS-1 - b] = p[PLP_PAYLOAD_BITS-1 - g*GRAN_BITS - b];
+      payload_get = m;
+    end
+  endfunction
+
+  // MSGTYPE of the message starting at granule g (top 4 bits of that granule).
+  function automatic logic [MSGTYPE_W-1:0] payload_msgtype(input payload_t p,
+                                                           input int g);
+    payload_msgtype = p[PLP_PAYLOAD_BITS-1 - g*GRAN_BITS -: MSGTYPE_W];
   endfunction
 
 endpackage : aou_pkg

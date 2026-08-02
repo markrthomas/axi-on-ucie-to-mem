@@ -1,0 +1,42 @@
+# cocotb / pyuvm runner for axi_ucie_mem_top (invoked by the repo-root Makefile).
+# Select a single test with TESTCASE=<name>; dump waves with WAVES=1.
+
+TOPLEVEL_LANG = verilog
+SIM          ?= icarus
+
+RTL_DIR = $(PWD)/../../rtl
+# Package first, then leaf modules, then the top.
+VERILOG_SOURCES = \
+    $(RTL_DIR)/aou_pkg.sv \
+    $(RTL_DIR)/ucie_stream_link.sv \
+    $(RTL_DIR)/axi_lite_mem.sv \
+    $(RTL_DIR)/aou_axi_initiator_bridge.sv \
+    $(RTL_DIR)/aou_axi_target_bridge.sv \
+    $(RTL_DIR)/axi_ucie_mem_top.sv
+
+TOPLEVEL = axi_ucie_mem_top
+MODULE   = axi_test
+
+# Pin the apt Icarus + the cocotb-bound interpreter so the VPI is built against
+# the same Python that imports the testbench (avoids the OSS-CAD-Suite mismatch).
+ICARUS_BIN_DIR    ?= /usr/bin
+export ICARUS_BIN_DIR
+SIM_CMD_PREFIX    := env -u VIRTUAL_ENV -u PYTHONHOME
+export PYGPI_PYTHON_BIN := $(shell cocotb-config --python-bin)
+export PYTHON_BIN       := $(shell cocotb-config --python-bin)
+
+export PYTHONPATH := $(PWD):$(PYTHONPATH)
+
+# Icarus needs SystemVerilog turned on explicitly.
+COMPILE_ARGS += -g2012
+
+# make WAVES=1  -> dump.fst
+ifeq ($(WAVES),1)
+    PLUSARGS += -fst
+endif
+
+ifdef TESTCASE
+export TESTCASE
+endif
+
+include $(shell cocotb-config --makefiles)/Makefile.sim
