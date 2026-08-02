@@ -178,7 +178,9 @@ module aou_axi_target_bridge
           end
         end
         S_RDATA: if (tx_ready) state <= S_IDLE;
-        default: state <= S_IDLE;
+        // verilator coverage_off
+        default: state <= S_IDLE;   // unreachable (all states enumerated)
+        // verilator coverage_on
       endcase
     end
   end

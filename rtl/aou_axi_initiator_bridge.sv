@@ -189,7 +189,9 @@ module aou_axi_initiator_bridge
         end
         S_B: if (s_bready) state <= S_IDLE;
         S_R: if (s_rready) state <= S_IDLE;
-        default: state <= S_IDLE;
+        // verilator coverage_off
+        default: state <= S_IDLE;   // unreachable (all states enumerated)
+        // verilator coverage_on
       endcase
     end
   end
