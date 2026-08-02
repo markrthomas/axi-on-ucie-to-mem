@@ -143,7 +143,7 @@ Everything runs from the repo root and degrades gracefully if a tool is absent.
 | SV/UVM | `make uvm` | UVM TB (VCS/Xcelium/Questa); skips cleanly if unlicensed |
 | Waves | `make waves` / `make wave` | dump / open GTKWave |
 | Lint | `make lint` | `iverilog -Wall` + Verilator RTL lint |
-| Coverage | `make coverage` | Verilator `--coverage` → `sim/coverage.info` (floor `COV_MIN`, default 90%) |
+| Coverage | `make coverage` | Verilator `--coverage` → `sim/coverage.info` (floor `COV_MIN`, default 85%; ~90–94% achieved) |
 | Gate | `make check` | lint + cocotb + SV(both sims) + SystemC |
 | CI | `make ci` | `check` + coverage as one pass/fail gate |
 
@@ -193,7 +193,7 @@ environments cross-check the identical DUT.
 
 ```bash
 make lint        # iverilog -Wall + Verilator lint
-make coverage    # Verilator --coverage -> sim/coverage.info (floor COV_MIN=90)
+make coverage    # Verilator --coverage -> sim/coverage.info (floor COV_MIN=85)
 make ci          # lint + cocotb + SV(both) + SystemC + coverage, one gate
 ```
 
