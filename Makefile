@@ -30,6 +30,7 @@ TOP := axi_ucie_mem_top
 TB_DIR     := dv/cocotb
 SV_DIR     := dv/sv
 SC_DIR     := dv/systemc
+UVM_DIR    := uvm
 TB_RESULTS := $(TB_DIR)/results.xml
 FST        := $(TB_DIR)/sim_build/$(TOP).fst
 
@@ -47,7 +48,7 @@ COV_MIN ?= 90
 
 .PHONY: default help \
 	test test-all test-write-read test-random test-walking \
-	sv vlt systemc coverage waves wave check regress ci \
+	sv vlt systemc uvm coverage waves wave check regress ci \
 	lint _lint_iverilog _lint_verilator clean
 
 default: help
@@ -67,6 +68,7 @@ help:
 	@echo "    make sv                # portable SV directed TB under Icarus"
 	@echo "    make vlt               # same SV TB under Verilator (+ bound SVA)"
 	@echo "    make systemc           # SystemC TB (Verilator --sc model + sc_main)"
+	@echo "    make uvm               # SystemVerilog UVM TB (license-gated; skips if no VCS/Xcelium/Questa)"
 	@echo "    make coverage          # Verilator --coverage -> sim/coverage.info (floor COV_MIN=$(COV_MIN)%)"
 	@echo ""
 	@echo "  Gates:"
@@ -155,6 +157,11 @@ vlt:
 systemc:
 	$(MAKE) -C $(SC_DIR) run
 
+# SystemVerilog UVM TB (mirrors the PyUVM TB).  Needs a UVM-capable commercial
+# simulator; degrades gracefully (skip, exit 0) when none is present.
+uvm:
+	$(MAKE) -C $(UVM_DIR) $(if $(TEST),TEST=$(TEST),) $(if $(WAVES),WAVES=$(WAVES),) $(if $(SINGLE),SINGLE=$(SINGLE),)
+
 # coverage: Verilator --coverage build + run of sim/sim_main.cpp; emits
 # sim/coverage.info (lcov) and enforces the COV_MIN line floor.  Degrades
 # gracefully (exit 0) when Verilator is not installed.
@@ -196,6 +203,7 @@ clean:
 	$(MAKE) -C $(TB_DIR) clean 2>/dev/null || true
 	$(MAKE) -C $(SV_DIR) clean 2>/dev/null || true
 	$(MAKE) -C $(SC_DIR) clean 2>/dev/null || true
+	$(MAKE) -C $(UVM_DIR) clean 2>/dev/null || true
 	rm -rf $(TB_DIR)/sim_build $(TB_DIR)/__pycache__ __pycache__ \
 		results.xml dump.fst dump.vcd obj_dir \
 		$(COV_DIR) sim/coverage.info sim/coverage.dat sim/annotated
