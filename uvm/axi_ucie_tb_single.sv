@@ -557,11 +557,12 @@ module axi_lite_sva #(
     input logic [DW-1:0] rdata,   input logic rvalid,  input logic rready
 );
 
-  default disable iff (!rstn);
+  // `disable iff (!rstn)` is inlined per property rather than via a module-level
+  // `default disable iff` (the latter is unsupported by some Verilator 5.x).
 
   // --- VALID held until READY ------------------------------------------------
   property p_hold(valid, ready);
-    @(posedge clk) (valid && !ready) |=> valid;
+    @(posedge clk) disable iff (!rstn) (valid && !ready) |=> valid;
   endproperty
   a_aw_hold: assert property (p_hold(awvalid, awready));
   a_w_hold:  assert property (p_hold(wvalid,  wready));
@@ -570,17 +571,17 @@ module axi_lite_sva #(
   a_r_hold:  assert property (p_hold(rvalid,  rready));
 
   // --- payload stable while stalled -----------------------------------------
-  a_aw_stable: assert property (@(posedge clk)
+  a_aw_stable: assert property (@(posedge clk) disable iff (!rstn)
     (awvalid && !awready) |=> $stable(awaddr));
-  a_w_stable:  assert property (@(posedge clk)
+  a_w_stable:  assert property (@(posedge clk) disable iff (!rstn)
     (wvalid && !wready) |=> ($stable(wdata) && $stable(wstrb)));
-  a_ar_stable: assert property (@(posedge clk)
+  a_ar_stable: assert property (@(posedge clk) disable iff (!rstn)
     (arvalid && !arready) |=> $stable(araddr));
-  a_r_stable:  assert property (@(posedge clk)
+  a_r_stable:  assert property (@(posedge clk) disable iff (!rstn)
     (rvalid && !rready) |=> $stable(rdata));
 
   // --- control signals known out of reset -----------------------------------
-  a_known: assert property (@(posedge clk)
+  a_known: assert property (@(posedge clk) disable iff (!rstn)
     !$isunknown({awvalid, wvalid, bvalid, arvalid, rvalid,
                  awready, wready, bready, arready, rready}));
 

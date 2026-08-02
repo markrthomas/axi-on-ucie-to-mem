@@ -23,7 +23,7 @@ module aou_flit_sva
     input logic                ready
 );
 
-  default disable iff (!rstn);
+  // `disable iff (!rstn)` inlined per property (see axi_lite_sva note).
 
   // header/payload views of the flit under check (only the checked slices are
   // read; the rest is intentionally unused here).
@@ -35,17 +35,17 @@ module aou_flit_sva
   // verilator lint_on UNUSEDSIGNAL
 
   // --- handshake -------------------------------------------------------------
-  a_flit_hold: assert property (@(posedge clk)
+  a_flit_hold: assert property (@(posedge clk) disable iff (!rstn)
     (valid && !ready) |=> valid);
-  a_flit_stable: assert property (@(posedge clk)
+  a_flit_stable: assert property (@(posedge clk) disable iff (!rstn)
     (valid && !ready) |=> $stable(flit));
 
   // --- well-formedness -------------------------------------------------------
-  a_msgstart0: assert property (@(posedge clk)
+  a_msgstart0: assert property (@(posedge clk) disable iff (!rstn)
     valid |-> msgstart[0]);
-  a_fdid_rp0: assert property (@(posedge clk)
+  a_fdid_rp0: assert property (@(posedge clk) disable iff (!rstn)
     valid |-> (fdid == '0));
-  a_mt0_known: assert property (@(posedge clk)
+  a_mt0_known: assert property (@(posedge clk) disable iff (!rstn)
     valid |-> (mt0 == MT_WRITEREQ || mt0 == MT_READREQ ||
                mt0 == MT_READDATA || mt0 == MT_WRITERESP));
 
