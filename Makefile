@@ -33,6 +33,7 @@ SC_DIR     := dv/systemc
 UVM_DIR    := uvm
 TB_RESULTS := $(TB_DIR)/results.xml
 FST        := $(TB_DIR)/sim_build/$(TOP).fst
+WAVE_SAVE  := dv/wave.gtkw           # curated signal layout applied on open
 
 IVERILOG_FLAGS       ?= -g2012 -Wall
 VERILATOR_LINT_FLAGS ?= --lint-only -Wall -Wno-DECLFILENAME
@@ -123,12 +124,16 @@ waves:
 	$(MAKE) -C $(TB_DIR) WAVES=1 $(if $(TEST),TESTCASE=$(TEST),)
 	@echo "[WAVES] wrote $(FST)$(if $(TEST), (single test: $(TEST)),)"
 
+# GTKWave never auto-populates its wave pane, so opening the raw FST looks like a
+# blank/hung window.  Apply $(WAVE_SAVE) so the AXI/flit/memory signals are shown
+# on open.  NO_AT_BRIDGE=1 skips the AT-SPI accessibility bus, whose absent-server
+# timeout is what makes GTK apps appear to hang for seconds under WSLg/headless X.
 wave:
 	@if ! command -v gtkwave >/dev/null 2>&1; then \
 		echo "[WAVE] gtkwave not on PATH — install GTKWave to view waveforms"; exit 0; fi; \
 	$(MAKE) --no-print-directory waves $(if $(TEST),TEST=$(TEST),); \
-	echo "[WAVE] opening $(FST) in GTKWave"; \
-	exec gtkwave $(FST)
+	echo "[WAVE] opening $(FST) in GTKWave (layout: $(WAVE_SAVE))"; \
+	exec env NO_AT_BRIDGE=1 gtkwave $(if $(wildcard $(WAVE_SAVE)),-a $(WAVE_SAVE),) $(FST)
 
 # --- gates -------------------------------------------------------------------
 lint: _lint_iverilog _lint_verilator

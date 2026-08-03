@@ -207,8 +207,18 @@ make wave                     # + open GTKWave (skips cleanly if not installed)
 make waves TEST=random_test   # just one test
 ```
 
-Look at the AXI `AW`/`W` handshake, then a flit valid on the link, then the
-far-side memory write and the `WriteResp` flit returning to complete `B`.
+`make wave` applies the curated layout in `dv/wave.gtkw`, so the window opens
+with the AXI front-door, flit-link, and memory-port signals already added — look
+at the AXI `AW`/`W` handshake, then a flit valid on the link, then the far-side
+memory write and the `WriteResp` flit returning to complete `B`.
+
+> **GTKWave opens blank / looks hung?** GTKWave never auto-populates its wave
+> pane; opening a raw FST with no savefile shows an empty window that reads as a
+> hang. `make wave` avoids this by passing `-a dv/wave.gtkw`. It also runs with
+> `NO_AT_BRIDGE=1`, which skips the AT-SPI accessibility bus whose missing-server
+> timeout is the usual cause of multi-second GTK startup stalls under WSLg or a
+> headless X server. The `.fst` itself is fine either way — verify with
+> `fst2vcd dv/cocotb/sim_build/axi_ucie_mem_top.fst | head`.
 
 ### 6. The SystemVerilog UVM testbench
 
