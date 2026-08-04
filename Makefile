@@ -51,7 +51,7 @@ COV_MIN ?= 85
 
 .PHONY: default help \
 	test test-all test-write-read test-random test-walking \
-	sv vlt systemc uvm coverage waves wave check regress ci \
+	sv vlt systemc uvm coverage formal waves wave check regress ci \
 	lint _lint_iverilog _lint_verilator clean
 
 default: help
@@ -73,6 +73,7 @@ help:
 	@echo "    make systemc           # SystemC TB (Verilator --sc model + sc_main)"
 	@echo "    make uvm               # SystemVerilog UVM TB (license-gated; skips if no VCS/Xcelium/Questa)"
 	@echo "    make coverage          # Verilator --coverage -> sim/coverage.info (floor COV_MIN=$(COV_MIN)%)"
+	@echo "    make formal            # SymbiYosys proof of axi_lite_mem (TASK=bmc|cover|prove; skips if no sby)"
 	@echo ""
 	@echo "  Gates:"
 	@echo "    make lint              # iverilog -Wall + Verilator RTL lint"
@@ -195,6 +196,15 @@ coverage:
 	else \
 		echo "[COVERAGE] coverage.dat in $(COV_DIR) (install verilator for lcov export)"; \
 	fi
+
+# formal: SymbiYosys proof of the AXI4-Lite memory target (protocol legality +
+# write->read data integrity).  bmc + cover + an unbounded `prove` (abc pdr).
+# Optional stretch (not in the `ci` gate); degrades gracefully if sby is absent.
+# TASK=<bmc|cover|prove> runs just one.
+formal:
+	@if ! command -v sby >/dev/null 2>&1; then \
+		echo "[FORMAL] SymbiYosys (sby) not on PATH — install oss-cad-suite to run proofs"; exit 0; fi; \
+	sby -f formal/axi_lite_mem.sby $(TASK)
 
 # --- gates -------------------------------------------------------------------
 check: lint test-all sv vlt systemc

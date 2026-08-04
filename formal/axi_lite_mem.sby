@@ -1,0 +1,44 @@
+# SymbiYosys formal flow for the AXI4-Lite memory target.
+#
+#   sby -f formal/axi_lite_mem.sby            # all tasks
+#   sby -f formal/axi_lite_mem.sby bmc        # safety only
+#
+# Tasks:
+#   bmc    — bounded safety: all asserts hold for `depth` cycles from reset.
+#   cover  — reachability: every cover() is hit (proves traffic can complete).
+#   prove  — unbounded safety by k-induction (best-effort; may need more depth).
+#
+# NB: read with -defer + a small ADDR_W, else axi_lite_mem's 64 KiB array
+# bit-blasts to hundreds of thousands of FFs and elaboration never finishes.
+
+[tasks]
+bmc
+cover
+prove
+
+[options]
+bmc:   mode bmc
+cover: mode cover
+prove: mode prove
+depth 24
+cover: depth 32
+
+# btormc (native BTOR2 BMC) crushes the 32-bit memory-integrity datapath that the
+# SMT solvers grind on; abc pdr gives an unbounded k-induction-style proof.
+[engines]
+bmc:   btor btormc
+cover: btor btormc
+prove: abc pdr
+
+[script]
+read_verilog -sv -formal -defer axi_lite_mem.sv axi_lite_mem_fv.sv
+hierarchy -top axi_lite_mem_fv
+prep -top axi_lite_mem_fv
+# Bit-blast the (deliberately tiny) memories to FFs so the solver never enters
+# array/lambda theory — Boolector's array axioms diverge here otherwise.
+memory_map
+opt -fast
+
+[files]
+rtl/axi_lite_mem.sv
+formal/axi_lite_mem_fv.sv

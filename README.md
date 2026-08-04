@@ -82,6 +82,7 @@ planes, AXI4 bursts).
 - `dv/systemc/` — SystemC testbench (`verilator --sc` model + `sc_main`)
 - `uvm/` — SystemVerilog UVM TB (multi-file + single-file), license-gated
 - `sim/` — Verilator C++ coverage harness
+- `formal/` — SymbiYosys proof of `axi_lite_mem` (`.sby` + property wrapper)
 - `Makefile` — standard DV gate targets; `docs/PLAN.md` — the design plan
 
 ## The five DV environments
@@ -144,6 +145,7 @@ Everything runs from the repo root and degrades gracefully if a tool is absent.
 | Waves | `make waves` / `make wave` | dump / open GTKWave |
 | Lint | `make lint` | `iverilog -Wall` + Verilator RTL lint |
 | Coverage | `make coverage` | Verilator `--coverage` → `sim/coverage.info` (floor `COV_MIN`, default 85%; ~90–94% achieved) |
+| Formal | `make formal` | SymbiYosys proof of `axi_lite_mem` (bmc + cover + unbounded `prove`); skips cleanly if `sby` absent |
 | Gate | `make check` | lint + cocotb + SV(both sims) + SystemC |
 | CI | `make ci` | `check` + coverage as one pass/fail gate |
 
@@ -241,6 +243,35 @@ simulators): paste `uvm/axi_ucie_tb_single.sv` into `testbench.sv`, and the
 simulator, and add `+UVM_TESTNAME=axi_write_read_test` (or `axi_random_test` /
 `axi_walking_test`) to the run options.
 
+### 7. Formal proof of the memory target
+
+```bash
+make formal              # bmc + cover + unbounded prove
+make formal TASK=bmc     # just one task (bmc | cover | prove)
+```
+
+[SymbiYosys](https://github.com/YosysHQ/sby) proves the AXI4-Lite memory
+`axi_lite_mem` (`formal/axi_lite_mem_fv.sv` wraps it with assume/assert/cover):
+
+- **channel legality** — `VALID` held until `READY`, request/response payloads
+  stable while stalled, `BRESP`/`RRESP` always `OKAY`;
+- **no response without a request** — saturating handshake counters keep
+  `n_b ≤ n_aw`, `n_b ≤ n_w`, `n_r ≤ n_ar`;
+- **write → read data integrity** — an independent reference array, written per
+  the AXI byte-strobe spec, must match every value the DUT returns on a read;
+- **cover** — a write completes, a read completes, and a read returns written
+  (non-zero) data, so the properties are provably non-vacuous.
+
+`bmc` and `cover` are bounded (depth 24 / 32); **`prove` (abc pdr) is an
+_unbounded_ proof** — the properties hold for all time, not just the bound.
+
+Notes: the proof targets `axi_lite_mem` in isolation with a deliberately small
+address width (`.sby` reads with `-defer`; otherwise the 64 KiB array bit-blasts
+and never elaborates). The full AoU chain is **not** formally verified — the
+open-source Yosys frontend cannot elaborate the wide pack/unpack functions and
+2000-bit flit datapath in tractable time; that stays with the simulation
+environments above.
+
 ## Scope & follow-ons
 
 This pass implements the Basic Profile message formats and real flit packing over
@@ -251,6 +282,8 @@ a streaming link. Explicitly **out of scope for now** (documented in
 - **Activation state machine** (spec §8) — `Activate`/`Deactivate`/`ERROR`.
 - **Multiple resource planes** (RP0..RP3) and multi-outstanding transactions.
 - **Full AXI4** — INCR bursts (`AxLEN>0`), out-of-order IDs, 512b/1024b data.
+- **Whole-chain formal** — the current proof covers `axi_lite_mem`; proving the
+  bridges/flit path needs a Verific-based front end (or hand-abstracted flits).
 
 ## Specs
 
