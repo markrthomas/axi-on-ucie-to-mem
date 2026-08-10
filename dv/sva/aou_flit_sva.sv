@@ -48,7 +48,8 @@ module aou_flit_sva
     valid |-> (fdid == '0));
   a_mt0_known: assert property (@(posedge clk) disable iff (!rstn)
     valid |-> (mt0 == MT_WRITEREQ || mt0 == MT_READREQ ||
-               mt0 == MT_READDATA || mt0 == MT_WRITERESP));
+               mt0 == MT_READDATA || mt0 == MT_WRITERESP ||
+               mt0 == MT_MISC));       // §8 activation / §6.4.2 CrdtGrant flits
 
   // §6 credits are advertised only for resource plane RP0 in this single-plane
   // build, so the MsgCredit RP subfield [15:14] must be 0.

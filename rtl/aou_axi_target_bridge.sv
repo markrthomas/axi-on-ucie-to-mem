@@ -87,6 +87,39 @@ module aou_axi_target_bridge
     end
   endfunction
 
+  // === §8 activation + §6.4.3 reset credit exchange ========================
+  // This side is the target: it grants WriteReq/ReadReq/WriteData credits to
+  // chiplet A (the message types A transmits), advertised in its CrdtGrant; and
+  // it seeds its own ReadData/WriteResp credits from A's CrdtGrant.
+  localparam logic [2:0] GR_WREQ  = 3'b010;   // >= WRITEREQ_GRAN  (3)
+  localparam logic [2:0] GR_RREQ  = 3'b010;   // >= READREQ_GRAN   (3)
+  localparam logic [2:0] GR_WDATA = 3'b011;   // >= WRITEDATA_GRAN (8)
+
+  logic [PLP_BITS-1:0]   dtx_data, drx_data;
+  logic                  dtx_valid, dtx_ready, drx_valid, drx_ready;
+  logic                  seed_valid;
+  logic [2:0]            seed_rdata;
+  logic [1:0]            seed_wresp;
+  // The target reacts to gated rx (held off until ENABLED by the activation
+  // wrapper) so it needs no `enabled` gate of its own; it grants (and does not
+  // consume) the WriteReq/ReadReq/WriteData seed fields.  All unused here.
+  // verilator lint_off UNUSEDSIGNAL
+  logic                  act_enabled;
+  logic [2:0]            seed_wreq, seed_rreq, seed_wdata;
+  // verilator lint_on UNUSEDSIGNAL
+
+  aou_activation #(
+    .GRANT_WREQ(GR_WREQ), .GRANT_RREQ(GR_RREQ), .GRANT_WDATA(GR_WDATA)
+  ) u_act (
+    .clk(clk), .rstn(rstn), .enabled(act_enabled),
+    .tx_data(tx_data),  .tx_valid(tx_valid),  .tx_ready(tx_ready),
+    .rx_data(rx_data),  .rx_valid(rx_valid),  .rx_ready(rx_ready),
+    .d_tx_data(dtx_data), .d_tx_valid(dtx_valid), .d_tx_ready(dtx_ready),
+    .d_rx_data(drx_data), .d_rx_valid(drx_valid), .d_rx_ready(drx_ready),
+    .seed_valid(seed_valid), .seed_wreq(seed_wreq), .seed_rreq(seed_rreq),
+    .seed_wdata(seed_wdata), .seed_rdata(seed_rdata), .seed_wresp(seed_wresp)
+  );
+
   // MsgCredit this bridge advertises to A: it grants WriteReq/ReadReq/WriteData
   // credits (the message types A transmits) for the request granules it freed.
   function automatic logic [CREDIT_W-1:0] return_credit();
@@ -118,7 +151,7 @@ module aou_axi_target_bridge
   endfunction
 
   // --- combinational outputs ------------------------------------------------
-  assign rx_ready  = (state == S_IDLE);
+  assign drx_ready = (state == S_IDLE);
   assign m_awaddr  = awaddr_q;
   assign m_awprot  = 3'b000;
   assign m_awvalid = (state == S_WMEM) && !aw_done;
@@ -133,13 +166,13 @@ module aou_axi_target_bridge
   // A response is only presented once its credits are held (§6.1).  Single-
   // outstanding traffic replenishes these from the triggering request, so this
   // never stalls here; it is the safety gate for a multi-outstanding follow-on.
-  assign tx_valid  = ((state == S_WRESP) && (cr_wresp >= WRITERESP_GRAN[7:0])) ||
+  assign dtx_valid = ((state == S_WRESP) && (cr_wresp >= WRITERESP_GRAN[7:0])) ||
                      ((state == S_RDATA) && (cr_rdata >= READDATA_GRAN[7:0]));
 
   // Procedural build (see the initiator bridge note on Icarus 11 wide-ufunc).
   always_comb begin
-    if (state == S_WRESP) tx_data = build_wresp_flit();
-    else                  tx_data = build_rdata_flit();
+    if (state == S_WRESP) dtx_data = build_wresp_flit();
+    else                  dtx_data = build_rdata_flit();
   end
 
   // --- FSM ------------------------------------------------------------------
@@ -150,11 +183,19 @@ module aou_axi_target_bridge
       wdata_q  <= '0; rdata_q  <= '0; wstrb_q <= '0;
       id_q     <= '0; bresp_q  <= '0; rresp_q <= '0;
       aw_done  <= 1'b0; w_done <= 1'b0; ar_done <= 1'b0;
-      cr_rdata <= CR_RDATA[7:0]; cr_wresp <= CR_WRESP[7:0];
+      // §8.4 DISABLED: the transmitter starts with NO credits; A's CrdtGrant
+      // seeds them during activation (see the seed block below).
+      cr_rdata <= '0; cr_wresp <= '0;
       ret_wreq <= '0; ret_rreq <= '0; ret_wdata <= '0;
     end else begin
+      // §6.4.3 reset credit exchange: apply A's CrdtGrant seed (pulses only
+      // while not ENABLED, when the data FSM is idle — no race with the case).
+      if (seed_valid) begin
+        cr_rdata <= sat_add(cr_rdata, cred_decode(seed_rdata),         CR_RDATA);
+        cr_wresp <= sat_add(cr_wresp, cred_decode({1'b0, seed_wresp}), CR_WRESP);
+      end
       unique case (state)
-        S_IDLE: if (rx_valid) begin : s_idle_blk
+        S_IDLE: if (drx_valid) begin : s_idle_blk
           payload_t              pl;
           msgstart_t             ms;
           logic [CREDIT_W-1:0]   mc;
@@ -167,9 +208,9 @@ module aou_axi_target_bridge
           logic [AOU_DATA_W-1:0] wd_full;
           logic [AOU_STRB_W-1:0] ws_full;
           // verilator lint_on UNUSEDSIGNAL
-          pl  = flit_payload(rx_data);
-          ms  = flit_msgstart(rx_data);
-          mc  = flit_credit(rx_data);
+          pl  = flit_payload(drx_data);
+          ms  = flit_msgstart(drx_data);
+          mc  = flit_credit(drx_data);
           // replenish response send-credits from A's grant (saturate at ceiling)
           cr_rdata <= sat_add(cr_rdata, cred_decode(mc_rdata(mc)), CR_RDATA);
           cr_wresp <= sat_add(cr_wresp, cred_decode({1'b0, mc_wresp(mc)}), CR_WRESP);
@@ -219,7 +260,7 @@ module aou_axi_target_bridge
         end
         // On a successful response send its credits are consumed (§6.1) and the
         // return credits (just flushed into the header) are cleared.
-        S_WRESP: if (tx_valid && tx_ready) begin
+        S_WRESP: if (dtx_valid && dtx_ready) begin
           cr_wresp  <= cr_wresp - WRITERESP_GRAN[7:0];
           ret_wreq  <= '0; ret_rreq <= '0; ret_wdata <= '0;
           state     <= S_IDLE;
@@ -233,7 +274,7 @@ module aou_axi_target_bridge
             state   <= S_RDATA;
           end
         end
-        S_RDATA: if (tx_valid && tx_ready) begin
+        S_RDATA: if (dtx_valid && dtx_ready) begin
           cr_rdata  <= cr_rdata - READDATA_GRAN[7:0];
           ret_wreq  <= '0; ret_rreq <= '0; ret_wdata <= '0;
           state     <= S_IDLE;

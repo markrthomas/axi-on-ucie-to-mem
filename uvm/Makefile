@@ -25,6 +25,7 @@ TOP := axi_ucie_tb_top
 RTL := \
     ../rtl/aou_pkg.sv \
     ../rtl/ucie_stream_link.sv \
+    ../rtl/aou_activation.sv \
     ../rtl/axi_lite_mem.sv \
     ../rtl/aou_axi_initiator_bridge.sv \
     ../rtl/aou_axi_target_bridge.sv \

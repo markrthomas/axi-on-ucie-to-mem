@@ -612,6 +612,184 @@ module ucie_stream_link #(
 endmodule
 `endif
 
+// ==================== rtl/aou_activation.sv ====================
+// -----------------------------------------------------------------------------
+// aou_activation : §8 interface state management + §6.4.3 reset credit exchange.
+//
+// Sits between a bridge's data FSM and its flit link and brings the interface up
+// before any credited (data) traffic is allowed:
+//
+//   DISABLED --(ActivateReq sent/received)--> ACTIVATE --(ActivateAck sent &
+//   received & peer CrdtGrant received)--> ENABLED
+//
+// While not ENABLED this module OWNS the link: it drives the bring-up Misc
+// messages (ActivateReq -> ActivateAck -> CrdtGrant, one flit each) and consumes
+// the peer's, holding the data path off (d_tx_ready=0, d_rx_valid=0).  Once
+// ENABLED it is a transparent pass-through so the bridge's data FSM drives the
+// link directly.  The peer's CrdtGrant is decoded into a one-cycle `seed` pulse
+// that the bridge uses to initialise its transmit credit counters (which reset
+// to 0 per §8.4 DISABLED: "the transmitter has no credits").
+//
+// Ordering safety: this side only ENABLES after receiving the peer's CrdtGrant,
+// which the in-order link guarantees arrives before any of the peer's data
+// flits (CrdtGrant is the peer's last bring-up message).  So a data flit never
+// reaches a still-activating receiver.
+//
+// Scope: bring-up only.  DEACTIVATE / ERROR (§8 teardown + error recovery) are a
+// documented follow-on; `CrdtGrant` here also covers only resource plane RP0.
+// -----------------------------------------------------------------------------
+`ifndef AOU_ACTIVATION_SV
+`define AOU_ACTIVATION_SV
+
+module aou_activation
+  import aou_pkg::*;
+#(
+    // Table-17 credit codes THIS endpoint grants to the peer (for the message
+    // types it receives).  Initiator grants ReadData/WriteResp; target grants
+    // WriteReq/ReadReq/WriteData.  Unused types are 0.
+    parameter logic [2:0] GRANT_WREQ  = 3'b000,
+    parameter logic [2:0] GRANT_RREQ  = 3'b000,
+    parameter logic [2:0] GRANT_WDATA = 3'b000,
+    parameter logic [2:0] GRANT_RDATA = 3'b000,
+    parameter logic [1:0] GRANT_WRESP = 2'b00
+) (
+    input  logic                clk,
+    input  logic                rstn,
+    output logic                enabled,           // ENABLED (data traffic ok)
+    // physical flit link (owned by this module until ENABLED)
+    output logic [PLP_BITS-1:0] tx_data,
+    output logic                tx_valid,
+    input  logic                tx_ready,
+    input  logic [PLP_BITS-1:0] rx_data,
+    input  logic                rx_valid,
+    output logic                rx_ready,
+    // data path (bridge FSM), muxed onto the link when ENABLED
+    input  logic [PLP_BITS-1:0] d_tx_data,
+    input  logic                d_tx_valid,
+    output logic                d_tx_ready,
+    output logic [PLP_BITS-1:0] d_rx_data,
+    output logic                d_rx_valid,
+    input  logic                d_rx_ready,
+    // credit seeding to the bridge (one-cycle pulse on peer CrdtGrant)
+    output logic                seed_valid,
+    output logic [2:0]          seed_wreq,
+    output logic [2:0]          seed_rreq,
+    output logic [2:0]          seed_wdata,
+    output logic [2:0]          seed_rdata,
+    output logic [1:0]          seed_wresp
+);
+
+  typedef enum logic [1:0] { ACT_DISABLED, ACT_ACTIVATE, ACT_ENABLED } act_e;
+  act_e state;
+
+  logic req_sent, req_rcvd, ack_sent, ack_rcvd, crdt_sent, crdt_rcvd;
+
+  assign enabled = (state == ACT_ENABLED);
+
+  // --- bring-up TX: pick the next Misc message to send (priority order) -----
+  wire send_req  = !req_sent;
+  wire send_ack  = req_rcvd && !ack_sent;
+  wire send_crdt = ack_sent && !crdt_sent;
+
+  logic [PLP_BITS-1:0] act_tx_flit;
+  logic                act_tx_valid;
+
+  always_comb begin
+    msg_t     m;
+    payload_t pl;
+    m            = '0;
+    pl           = '0;
+    act_tx_flit  = '0;
+    act_tx_valid = 1'b0;
+    if (!enabled) begin
+      if (send_req) begin
+        m  = mk_activate_req(5'b0, 5'b0, 16'b0);
+        pl = payload_put('0, 0, ACTIVATEREQ_GRAN, m);
+        act_tx_flit  = flit_assemble('0, msgstart_t'(1), pl);
+        act_tx_valid = 1'b1;
+      end else if (send_ack) begin
+        m  = mk_activation_other(ACTOP_ACTIVATE_ACK);
+        pl = payload_put('0, 0, MISC_GRAN, m);
+        act_tx_flit  = flit_assemble('0, msgstart_t'(1), pl);
+        act_tx_valid = 1'b1;
+      end else if (send_crdt) begin
+        m  = mk_crdtgrant(GRANT_WREQ, GRANT_RREQ, GRANT_WDATA, GRANT_RDATA, GRANT_WRESP);
+        pl = payload_put('0, 0, CRDTGRANT_GRAN, m);
+        act_tx_flit  = flit_assemble('0, msgstart_t'(1), pl);
+        act_tx_valid = 1'b1;
+      end
+    end
+  end
+
+  // --- bring-up RX: classify the incoming Misc message ----------------------
+  // Continuous assigns, NOT an always_comb: the message accessors do constant
+  // part-selects, which under iverilog force the enclosing always_* process to
+  // be "sensitive to all bits" of the wide (320b) `rm` it both writes and reads.
+  // That self-referential wide process wedges iverilog's settle under cocotb's
+  // VPI ReadWrite region (the pure-vvp SV TB tolerates it, cocotb does not).
+  // Continuous assigns evaluate on their RHS nets directly and avoid it.
+  msg_t                rm;
+  logic                rx_is_req, rx_is_ack, rx_is_crdt;
+  assign rm = payload_get(flit_payload(rx_data), 0, CRDTGRANT_GRAN);
+  assign rx_is_req  = (get_msgtype(rm) == MT_MISC) && (misc_op(rm) == MISCOP_ACTIVATION)
+                      && (misc_activationop(rm) == ACTOP_ACTIVATE_REQ);
+  assign rx_is_ack  = (get_msgtype(rm) == MT_MISC) && (misc_op(rm) == MISCOP_ACTIVATION)
+                      && (misc_activationop(rm) == ACTOP_ACTIVATE_ACK);
+  assign rx_is_crdt = (get_msgtype(rm) == MT_MISC) && (misc_op(rm) == MISCOP_CRDTGRANT);
+
+  // credit seed (decoded RP0 grant fields) — pulsed as the CrdtGrant is consumed
+  assign seed_valid = rx_valid && !enabled && rx_is_crdt;
+  assign seed_wreq  = cg_wreq0(rm);
+  assign seed_rreq  = cg_rreq0(rm);
+  assign seed_wdata = cg_wdata0(rm);
+  assign seed_rdata = cg_rdata0(rm);
+  assign seed_wresp = cg_wresp0(rm);
+
+  // --- link / data-path mux -------------------------------------------------
+  assign tx_data    = enabled ? d_tx_data  : act_tx_flit;
+  assign tx_valid   = enabled ? d_tx_valid : act_tx_valid;
+  assign d_tx_ready = enabled ? tx_ready   : 1'b0;
+  assign rx_ready   = enabled ? d_rx_ready : 1'b1;   // bring-up always consumes
+  assign d_rx_data  = rx_data;
+  assign d_rx_valid = enabled ? rx_valid   : 1'b0;
+
+  // --- state / handshake flags ----------------------------------------------
+  always_ff @(posedge clk or negedge rstn) begin
+    if (!rstn) begin
+      state     <= ACT_DISABLED;
+      req_sent  <= 1'b0; req_rcvd <= 1'b0;
+      ack_sent  <= 1'b0; ack_rcvd <= 1'b0;
+      crdt_sent <= 1'b0; crdt_rcvd <= 1'b0;
+    end else begin
+      // sent-flags: which bring-up message went out this cycle
+      if (!enabled && act_tx_valid && tx_ready) begin
+        if      (send_req)  req_sent  <= 1'b1;
+        else if (send_ack)  ack_sent  <= 1'b1;
+        else if (send_crdt) crdt_sent <= 1'b1;
+      end
+      // received-flags
+      if (!enabled && rx_valid) begin
+        if (rx_is_req)  req_rcvd  <= 1'b1;
+        if (rx_is_ack)  ack_rcvd  <= 1'b1;
+        if (rx_is_crdt) crdt_rcvd <= 1'b1;
+      end
+      // state transitions (use registered flags; costs at most 1 cycle)
+      case (state)
+        ACT_DISABLED:
+          if ((act_tx_valid && tx_ready && send_req) || (rx_valid && rx_is_req))
+            state <= ACT_ACTIVATE;
+        ACT_ACTIVATE:
+          if (ack_sent && ack_rcvd && crdt_rcvd) state <= ACT_ENABLED;
+        // verilator coverage_off
+        default: state <= state;    // ENABLED is terminal in this build
+        // verilator coverage_on
+      endcase
+    end
+  end
+
+endmodule
+`endif
+
 // ==================== rtl/axi_lite_mem.sv ====================
 // -----------------------------------------------------------------------------
 // axi_lite_mem : AXI4-Lite word-wide SRAM memory (the far-side target).
@@ -864,6 +1042,38 @@ module aou_axi_initiator_bridge
   wire wsend_ok = (cr_wreq >= WRITEREQ_GRAN[7:0]) && (cr_wdata >= WRITEDATA_GRAN[7:0]);
   wire rsend_ok = (cr_rreq >= READREQ_GRAN[7:0]);
 
+  // === §8 activation + §6.4.3 reset credit exchange ========================
+  // The data FSM drives its flit through the activation wrapper, which owns the
+  // link during bring-up and only opens the data path once ENABLED.  This side
+  // is the initiator: it grants ReadData/WriteResp credits to chiplet B (the
+  // message types B transmits), advertised in this side's CrdtGrant.
+  localparam logic [2:0] GR_RDATA = 3'b011;   // >= READDATA_GRAN  (8)
+  localparam logic [1:0] GR_WRESP = 2'b01;    // >= WRITERESP_GRAN (1)
+
+  logic                  act_enabled;
+  logic [PLP_BITS-1:0]   dtx_data, drx_data;
+  logic                  dtx_valid, dtx_ready, drx_valid, drx_ready;
+  logic                  seed_valid;
+  logic [2:0]            seed_wreq, seed_rreq, seed_wdata;
+  // This bridge grants (and seeds) only its own credit types; the ReadData /
+  // WriteResp seed fields belong to the target side and are unused here.
+  // verilator lint_off UNUSEDSIGNAL
+  logic [2:0]            seed_rdata;
+  logic [1:0]            seed_wresp;
+  // verilator lint_on UNUSEDSIGNAL
+
+  aou_activation #(
+    .GRANT_RDATA(GR_RDATA), .GRANT_WRESP(GR_WRESP)
+  ) u_act (
+    .clk(clk), .rstn(rstn), .enabled(act_enabled),
+    .tx_data(tx_data),  .tx_valid(tx_valid),  .tx_ready(tx_ready),
+    .rx_data(rx_data),  .rx_valid(rx_valid),  .rx_ready(rx_ready),
+    .d_tx_data(dtx_data), .d_tx_valid(dtx_valid), .d_tx_ready(dtx_ready),
+    .d_rx_data(drx_data), .d_rx_valid(drx_valid), .d_rx_ready(drx_ready),
+    .seed_valid(seed_valid), .seed_wreq(seed_wreq), .seed_rreq(seed_rreq),
+    .seed_wdata(seed_wdata), .seed_rdata(seed_rdata), .seed_wresp(seed_wresp)
+  );
+
   // --- build the outgoing flits (combinational from captured regs) ----------
   function automatic flit_t build_write_flit();
     msg_t     m_wreq, m_wdata;
@@ -905,9 +1115,11 @@ module aou_axi_initiator_bridge
   endfunction
 
   // --- combinational outputs ------------------------------------------------
-  assign s_awready = (state == S_IDLE) && !aw_seen;
-  assign s_wready  = (state == S_IDLE) && !w_seen;
-  assign s_arready = (state == S_IDLE) && !aw_seen && !w_seen;
+  // AXI is only accepted once the interface is ENABLED (§8): before that the
+  // link is still bringing up and exchanging credits.
+  assign s_awready = (state == S_IDLE) && !aw_seen && act_enabled;
+  assign s_wready  = (state == S_IDLE) && !w_seen  && act_enabled;
+  assign s_arready = (state == S_IDLE) && !aw_seen && !w_seen && act_enabled;
   assign s_bvalid  = (state == S_B);
   assign s_bresp   = bresp_q;
   assign s_rvalid  = (state == S_R);
@@ -918,16 +1130,16 @@ module aou_axi_initiator_bridge
   // outstanding traffic the response replenishes these before the next request,
   // so this never actually stalls here — it is the safety gate that a multi-
   // outstanding follow-on relies on.
-  assign tx_valid  = ((state == S_WSEND) && wsend_ok) ||
+  assign dtx_valid = ((state == S_WSEND) && wsend_ok) ||
                      ((state == S_RSEND) && rsend_ok);
-  assign rx_ready  = (state == S_WAIT);
+  assign drx_ready = (state == S_WAIT);
 
   // Build the outgoing flit procedurally: Icarus 11 mis-generates a wide
   // function call placed directly in a continuous assign, so drive it from an
   // always_comb into a register-free net instead.
   always_comb begin
-    if (state == S_WSEND) tx_data = build_write_flit();
-    else                  tx_data = build_read_flit();
+    if (state == S_WSEND) dtx_data = build_write_flit();
+    else                  dtx_data = build_read_flit();
   end
 
   // --- FSM ------------------------------------------------------------------
@@ -943,9 +1155,19 @@ module aou_axi_initiator_bridge
       araddr_q <= '0; arprot_q <= '0;
       wdata_q  <= '0; wstrb_q  <= '0;
       bresp_q  <= '0; rresp_q  <= '0; rdata_q <= '0;
-      cr_wreq  <= CR_WREQ[7:0]; cr_rreq <= CR_RREQ[7:0]; cr_wdata <= CR_WDATA[7:0];
+      // §8.4 DISABLED: the transmitter starts with NO credits; the peer's
+      // CrdtGrant seeds them during activation (see the seed block below).
+      cr_wreq  <= '0; cr_rreq <= '0; cr_wdata <= '0;
       ret_rdata <= '0; ret_wresp <= '0;
     end else begin
+      // §6.4.3 reset credit exchange: apply the peer's CrdtGrant seed (only
+      // pulses while not ENABLED, when the data FSM is idle, so cr_* here does
+      // not race the S_WAIT/S_WSEND updates below).
+      if (seed_valid) begin
+        cr_wreq  <= sat_add(cr_wreq,  cred_decode(seed_wreq),  CR_WREQ);
+        cr_rreq  <= sat_add(cr_rreq,  cred_decode(seed_rreq),  CR_RREQ);
+        cr_wdata <= sat_add(cr_wdata, cred_decode(seed_wdata), CR_WDATA);
+      end
       unique case (state)
         S_IDLE: begin : s_idle_blk
           logic aw_now, w_now;
@@ -974,19 +1196,19 @@ module aou_axi_initiator_bridge
         end
         // On a successful send the message's credits are consumed (§6.1) and the
         // advertised return credits (just flushed into the header) are cleared.
-        S_WSEND: if (tx_valid && tx_ready) begin
+        S_WSEND: if (dtx_valid && dtx_ready) begin
           aw_seen  <= 1'b0; w_seen <= 1'b0;
           cr_wreq  <= cr_wreq  - WRITEREQ_GRAN[7:0];
           cr_wdata <= cr_wdata - WRITEDATA_GRAN[7:0];
           ret_rdata <= '0; ret_wresp <= '0;
           state    <= S_WAIT;
         end
-        S_RSEND: if (tx_valid && tx_ready) begin
+        S_RSEND: if (dtx_valid && dtx_ready) begin
           cr_rreq  <= cr_rreq - READREQ_GRAN[7:0];
           ret_rdata <= '0; ret_wresp <= '0;
           state    <= S_WAIT;
         end
-        S_WAIT: if (rx_valid) begin : s_wait_blk
+        S_WAIT: if (drx_valid) begin : s_wait_blk
           payload_t              rpl;
           msg_t                  m;
           logic [CREDIT_W-1:0]   mc;
@@ -995,8 +1217,8 @@ module aou_axi_initiator_bridge
           // verilator lint_off UNUSEDSIGNAL
           logic [AOU_DATA_W-1:0] rd_full;
           // verilator lint_on UNUSEDSIGNAL
-          rpl = flit_payload(rx_data);
-          mc  = flit_credit(rx_data);
+          rpl = flit_payload(drx_data);
+          mc  = flit_credit(drx_data);
           // replenish send-credits from B's grant (saturate at the held ceiling)
           cr_wreq  <= sat_add(cr_wreq,  cred_decode(mc_wreq (mc)), CR_WREQ);
           cr_rreq  <= sat_add(cr_rreq,  cred_decode(mc_rreq (mc)), CR_RREQ);
@@ -1119,6 +1341,39 @@ module aou_axi_target_bridge
     end
   endfunction
 
+  // === §8 activation + §6.4.3 reset credit exchange ========================
+  // This side is the target: it grants WriteReq/ReadReq/WriteData credits to
+  // chiplet A (the message types A transmits), advertised in its CrdtGrant; and
+  // it seeds its own ReadData/WriteResp credits from A's CrdtGrant.
+  localparam logic [2:0] GR_WREQ  = 3'b010;   // >= WRITEREQ_GRAN  (3)
+  localparam logic [2:0] GR_RREQ  = 3'b010;   // >= READREQ_GRAN   (3)
+  localparam logic [2:0] GR_WDATA = 3'b011;   // >= WRITEDATA_GRAN (8)
+
+  logic [PLP_BITS-1:0]   dtx_data, drx_data;
+  logic                  dtx_valid, dtx_ready, drx_valid, drx_ready;
+  logic                  seed_valid;
+  logic [2:0]            seed_rdata;
+  logic [1:0]            seed_wresp;
+  // The target reacts to gated rx (held off until ENABLED by the activation
+  // wrapper) so it needs no `enabled` gate of its own; it grants (and does not
+  // consume) the WriteReq/ReadReq/WriteData seed fields.  All unused here.
+  // verilator lint_off UNUSEDSIGNAL
+  logic                  act_enabled;
+  logic [2:0]            seed_wreq, seed_rreq, seed_wdata;
+  // verilator lint_on UNUSEDSIGNAL
+
+  aou_activation #(
+    .GRANT_WREQ(GR_WREQ), .GRANT_RREQ(GR_RREQ), .GRANT_WDATA(GR_WDATA)
+  ) u_act (
+    .clk(clk), .rstn(rstn), .enabled(act_enabled),
+    .tx_data(tx_data),  .tx_valid(tx_valid),  .tx_ready(tx_ready),
+    .rx_data(rx_data),  .rx_valid(rx_valid),  .rx_ready(rx_ready),
+    .d_tx_data(dtx_data), .d_tx_valid(dtx_valid), .d_tx_ready(dtx_ready),
+    .d_rx_data(drx_data), .d_rx_valid(drx_valid), .d_rx_ready(drx_ready),
+    .seed_valid(seed_valid), .seed_wreq(seed_wreq), .seed_rreq(seed_rreq),
+    .seed_wdata(seed_wdata), .seed_rdata(seed_rdata), .seed_wresp(seed_wresp)
+  );
+
   // MsgCredit this bridge advertises to A: it grants WriteReq/ReadReq/WriteData
   // credits (the message types A transmits) for the request granules it freed.
   function automatic logic [CREDIT_W-1:0] return_credit();
@@ -1150,7 +1405,7 @@ module aou_axi_target_bridge
   endfunction
 
   // --- combinational outputs ------------------------------------------------
-  assign rx_ready  = (state == S_IDLE);
+  assign drx_ready = (state == S_IDLE);
   assign m_awaddr  = awaddr_q;
   assign m_awprot  = 3'b000;
   assign m_awvalid = (state == S_WMEM) && !aw_done;
@@ -1165,13 +1420,13 @@ module aou_axi_target_bridge
   // A response is only presented once its credits are held (§6.1).  Single-
   // outstanding traffic replenishes these from the triggering request, so this
   // never stalls here; it is the safety gate for a multi-outstanding follow-on.
-  assign tx_valid  = ((state == S_WRESP) && (cr_wresp >= WRITERESP_GRAN[7:0])) ||
+  assign dtx_valid = ((state == S_WRESP) && (cr_wresp >= WRITERESP_GRAN[7:0])) ||
                      ((state == S_RDATA) && (cr_rdata >= READDATA_GRAN[7:0]));
 
   // Procedural build (see the initiator bridge note on Icarus 11 wide-ufunc).
   always_comb begin
-    if (state == S_WRESP) tx_data = build_wresp_flit();
-    else                  tx_data = build_rdata_flit();
+    if (state == S_WRESP) dtx_data = build_wresp_flit();
+    else                  dtx_data = build_rdata_flit();
   end
 
   // --- FSM ------------------------------------------------------------------
@@ -1182,11 +1437,19 @@ module aou_axi_target_bridge
       wdata_q  <= '0; rdata_q  <= '0; wstrb_q <= '0;
       id_q     <= '0; bresp_q  <= '0; rresp_q <= '0;
       aw_done  <= 1'b0; w_done <= 1'b0; ar_done <= 1'b0;
-      cr_rdata <= CR_RDATA[7:0]; cr_wresp <= CR_WRESP[7:0];
+      // §8.4 DISABLED: the transmitter starts with NO credits; A's CrdtGrant
+      // seeds them during activation (see the seed block below).
+      cr_rdata <= '0; cr_wresp <= '0;
       ret_wreq <= '0; ret_rreq <= '0; ret_wdata <= '0;
     end else begin
+      // §6.4.3 reset credit exchange: apply A's CrdtGrant seed (pulses only
+      // while not ENABLED, when the data FSM is idle — no race with the case).
+      if (seed_valid) begin
+        cr_rdata <= sat_add(cr_rdata, cred_decode(seed_rdata),         CR_RDATA);
+        cr_wresp <= sat_add(cr_wresp, cred_decode({1'b0, seed_wresp}), CR_WRESP);
+      end
       unique case (state)
-        S_IDLE: if (rx_valid) begin : s_idle_blk
+        S_IDLE: if (drx_valid) begin : s_idle_blk
           payload_t              pl;
           msgstart_t             ms;
           logic [CREDIT_W-1:0]   mc;
@@ -1199,9 +1462,9 @@ module aou_axi_target_bridge
           logic [AOU_DATA_W-1:0] wd_full;
           logic [AOU_STRB_W-1:0] ws_full;
           // verilator lint_on UNUSEDSIGNAL
-          pl  = flit_payload(rx_data);
-          ms  = flit_msgstart(rx_data);
-          mc  = flit_credit(rx_data);
+          pl  = flit_payload(drx_data);
+          ms  = flit_msgstart(drx_data);
+          mc  = flit_credit(drx_data);
           // replenish response send-credits from A's grant (saturate at ceiling)
           cr_rdata <= sat_add(cr_rdata, cred_decode(mc_rdata(mc)), CR_RDATA);
           cr_wresp <= sat_add(cr_wresp, cred_decode({1'b0, mc_wresp(mc)}), CR_WRESP);
@@ -1251,7 +1514,7 @@ module aou_axi_target_bridge
         end
         // On a successful response send its credits are consumed (§6.1) and the
         // return credits (just flushed into the header) are cleared.
-        S_WRESP: if (tx_valid && tx_ready) begin
+        S_WRESP: if (dtx_valid && dtx_ready) begin
           cr_wresp  <= cr_wresp - WRITERESP_GRAN[7:0];
           ret_wreq  <= '0; ret_rreq <= '0; ret_wdata <= '0;
           state     <= S_IDLE;
@@ -1265,7 +1528,7 @@ module aou_axi_target_bridge
             state   <= S_RDATA;
           end
         end
-        S_RDATA: if (tx_valid && tx_ready) begin
+        S_RDATA: if (dtx_valid && dtx_ready) begin
           cr_rdata  <= cr_rdata - READDATA_GRAN[7:0];
           ret_wreq  <= '0; ret_rreq <= '0; ret_wdata <= '0;
           state     <= S_IDLE;
