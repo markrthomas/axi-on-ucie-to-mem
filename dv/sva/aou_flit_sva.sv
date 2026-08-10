@@ -28,8 +28,8 @@ module aou_flit_sva
   // header/payload views of the flit under check (only the checked slices are
   // read; the rest is intentionally unused here).
   // verilator lint_off UNUSEDSIGNAL
-  wire [FDID_W-1:0]     fdid     = flit[PLP_BITS-1 -: FDID_W];
-  wire msgstart_t       msgstart = flit[PLP_BITS-1-FDID_W -: NUM_GRAN];
+  wire [FDID_W-1:0]     fdid     = flit_fdid(flit);       // §4.3 scattered layout
+  wire msgstart_t       msgstart = flit_msgstart(flit);
   wire payload_t        payload  = flit[PLP_PAYLOAD_BITS-1:0];
   wire [MSGTYPE_W-1:0]  mt0      = payload[PLP_PAYLOAD_BITS-1 -: MSGTYPE_W];
   wire [CREDIT_W-1:0]   msgcred  = flit_credit(flit);

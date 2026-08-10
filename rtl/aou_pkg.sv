@@ -20,9 +20,11 @@
 //   * The 240B PLP payload is NUM_GRAN granules of GRAN_BITS bits each, granule
 //     0 = most-significant.  A message of N granules starting at granule g
 //     occupies payload[PLP_PAYLOAD_BITS-1 - g*GRAN_BITS -: N*GRAN_BITS].
-//   Field *widths* and *granule counts* match the spec exactly; the exact §5.8
-//   PCIe byte placement within a granule is modeled at field granularity (it is
-//   not needed for interoperability inside this self-contained design).
+//   Field order, widths and granule counts match the §5.8 message layouts
+//   exactly (byte 0 first, MSB-first fields), and the §4.3 protocol header uses
+//   the exact Figure-5 byte map (FDId/MsgStart/MsgCredit/Rsvd scattered across
+//   the 10 header bytes, LSB-first).  flit_get_byte() exposes the byte-exact
+//   PLP for conformance checking.
 // -----------------------------------------------------------------------------
 `ifndef AOU_PKG_SV
 `define AOU_PKG_SV
@@ -257,24 +259,90 @@ package aou_pkg;
   endfunction
 
   // =========================================================================
-  // Flit assembly / disassembly (spec §4.2-4.3).
-  //   Header layout (MSB-first): FDId(2) | MsgStart(48) | MsgCredit(16) |
-  //   Rsvd(14), followed by the 1920b payload.  Credit is always 0 in this
-  //   build (no flow control yet).
+  // Flit assembly / disassembly (spec §4.2-4.3, byte-exact).
+  //
+  // The 250B PLP is a 10B protocol header (PH B0..B9) followed by the 240B
+  // payload.  Per §4.3 (Figure 5) the header fields are NOT contiguous: FDId,
+  // the 48-bit MsgStart bitmap, the 16-bit MsgCredit word, and 14 Rsvd bits are
+  // scattered across the ten header bytes at fixed byte/bit positions.  Unlike
+  // the §5.8 message fields (packed MSB-first), the header packs each field
+  // LSB-first — MsgStart[0], MsgCredit[0], FDId[0] are the earliest bits.  We
+  // model that exact layout so flit_get_byte() reproduces the spec's byte map.
+  //
+  // Let g be a header bit's transmission order (g=0 is PH B0's first bit); it
+  // sits at flit[PLP_BITS-1-g].  The payload is flit[PLP_PAYLOAD_BITS-1:0].
+  //   FDId[j]      : g = j              (PH B0 labels 0..1)
+  //   MsgCredit[j] : g = 32 + j         (PH B4/B5)
+  //   MsgStart[i]  : g = msgstart_g(i)  (scattered across B0..B3, B6..B9)
+  //   Rsvd (=0)    : g in {2,3, 16..19, 48..51, 64..67}
   // =========================================================================
+
+  // Transmission-order bit index of MsgStart[i] within the header (Figure 5:
+  // MsgStart occupies PH B0[4:7],B1,B2[4:7],B3 then B6[4:7],B7,B8[4:7],B9).
+  function automatic int msgstart_g(input int i);
+    if      (i <= 11) msgstart_g = i + 4;    // B0[4:7], B1, B2[4:7]start
+    else if (i <= 23) msgstart_g = i + 8;    // B2[4:7], B3
+    else if (i <= 35) msgstart_g = i + 28;   // B6[4:7], B7
+    else              msgstart_g = i + 32;   // B8[4:7], B9
+  endfunction
+
+  function automatic flit_t flit_assemble_cr(input logic [FDID_W-1:0]   fdid,
+                                             input msgstart_t           msgstart,
+                                             input logic [CREDIT_W-1:0] msgcredit,
+                                             input payload_t            payload);
+    flit_t f;
+    begin
+      f = '0;
+      f[PLP_PAYLOAD_BITS-1:0] = payload;
+      for (int j = 0; j < FDID_W;   j++) f[PLP_BITS-1 - j]            = fdid[j];
+      for (int j = 0; j < CREDIT_W; j++) f[PLP_BITS-1 - (32 + j)]     = msgcredit[j];
+      for (int i = 0; i < NUM_GRAN; i++) f[PLP_BITS-1 - msgstart_g(i)] = msgstart[i];
+      flit_assemble_cr = f;                  // Rsvd bits left at 0
+    end
+  endfunction
+
+  // MsgCredit=0 convenience wrapper (used where no credit is advertised).
   function automatic flit_t flit_assemble(input logic [FDID_W-1:0] fdid,
-                                           input msgstart_t         msgstart,
-                                           input payload_t          payload);
-    flit_assemble = {fdid, msgstart, {CREDIT_W{1'b0}}, {HDR_RSVD_W{1'b0}},
-                     payload};
+                                          input msgstart_t         msgstart,
+                                          input payload_t          payload);
+    flit_assemble = flit_assemble_cr(fdid, msgstart, {CREDIT_W{1'b0}}, payload);
   endfunction
 
   function automatic msgstart_t flit_msgstart(input flit_t f);
-    flit_msgstart = f[PLP_BITS-1-FDID_W -: NUM_GRAN];
+    msgstart_t m;
+    begin
+      m = '0;
+      for (int i = 0; i < NUM_GRAN; i++) m[i] = f[PLP_BITS-1 - msgstart_g(i)];
+      flit_msgstart = m;
+    end
+  endfunction
+
+  function automatic logic [CREDIT_W-1:0] flit_credit(input flit_t f);
+    logic [CREDIT_W-1:0] c;
+    begin
+      c = '0;
+      for (int j = 0; j < CREDIT_W; j++) c[j] = f[PLP_BITS-1 - (32 + j)];
+      flit_credit = c;
+    end
+  endfunction
+
+  function automatic logic [FDID_W-1:0] flit_fdid(input flit_t f);
+    logic [FDID_W-1:0] d;
+    begin
+      d = '0;
+      for (int j = 0; j < FDID_W; j++) d[j] = f[PLP_BITS-1 - j];
+      flit_fdid = d;
+    end
   endfunction
 
   function automatic payload_t flit_payload(input flit_t f);
     flit_payload = f[PLP_PAYLOAD_BITS-1:0];
+  endfunction
+
+  // Byte-addressable §4.3/§5.8 view: PLP byte 0 = PH B0 (first on the wire),
+  // bytes 10.. are payload granule bytes; byte idx's label-0 bit is its MSB.
+  function automatic logic [7:0] flit_get_byte(input flit_t f, input int idx);
+    flit_get_byte = f[PLP_BITS-1 - idx*8 -: 8];
   endfunction
 
   // Place a (left-justified) message of `gran` granules into a payload at
@@ -312,22 +380,6 @@ package aou_pkg;
   function automatic logic [MSGTYPE_W-1:0] payload_msgtype(input payload_t p,
                                                            input int g);
     payload_msgtype = p[PLP_PAYLOAD_BITS-1 - g*GRAN_BITS -: MSGTYPE_W];
-  endfunction
-
-  // Extract the 16-bit MsgCredit header field from a flit (see flit_assemble:
-  // header is FDId(2) | MsgStart(48) | MsgCredit(16) | Rsvd(14)).
-  function automatic logic [CREDIT_W-1:0] flit_credit(input flit_t f);
-    flit_credit = f[PLP_BITS-1-FDID_W-NUM_GRAN -: CREDIT_W];
-  endfunction
-
-  // Credit-carrying flit assembly.  flit_assemble() above forces MsgCredit=0
-  // (used where no credit is advertised); this variant inserts an arbitrary
-  // MsgCredit word for the §6 flow-control return path.
-  function automatic flit_t flit_assemble_cr(input logic [FDID_W-1:0]   fdid,
-                                             input msgstart_t           msgstart,
-                                             input logic [CREDIT_W-1:0] msgcredit,
-                                             input payload_t            payload);
-    flit_assemble_cr = {fdid, msgstart, msgcredit, {HDR_RSVD_W{1'b0}}, payload};
   endfunction
 
   // =========================================================================
