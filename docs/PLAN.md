@@ -37,9 +37,11 @@ AXI. (CHI-C2C is the coherent alternative but far heavier; out of scope.)
 - **AoU fidelity:** real Basic-Profile message *formats* (§5) + real **flit
   packing** (250 B PLP = 10 B protocol header with FDId + MsgStart[47:0] granule
   bitmap + 240 B / 48 granules of payload), over a ready/valid 256 B streaming
-  link. **RP0 only; no activation FSM (§8)** — an explicit later phase.
+  link. **RP0 only** — an explicit later phase.
   (UPDATE: §6 per-message-type credit flow control on RP0 has since been
-  implemented — see the credit helpers in `aou_pkg` and the two bridges.)
+  implemented — see the credit helpers in `aou_pkg` and the two bridges. The
+  §8 activation FSM bring-up + §6.4.2 `CrdtGrant` / §6.4.3 reset credit exchange
+  are now implemented too — see `aou_activation.sv`; only teardown/ERROR remain.)
 - **AXI flavor:** **AXI4-Lite, 32-bit** (single-beat AW/W/B/AR/R, AWLEN/ARLEN=0),
   both at the front door and at the memory target.
 - **GitHub:** create **private** repo `markrthomas/axi-on-ucie-to-mem` now, push
@@ -156,11 +158,12 @@ AXI-Lite protocol property set. Flagged optional, not part of the core five.
 4. UVM mirror (license-gated) + single-file variant. Push.
 5. README + CI polish; final push. (Formal = optional follow-on.)
 
-Activation FSM (§8), resource planes, multi-message QoS, and AXI4 bursts are
-explicitly **out of scope for this pass** (documented as future phases in the
-README).  (UPDATE: §6 credit flow control and byte-exact §4.3/§5.8 packing,
-originally listed here as out of scope, have since been implemented; the
-`CrdtGrant` message and reset-during-ACTIVATE credit exchange remain future.)
+Resource planes, multi-message QoS, and AXI4 bursts are explicitly **out of
+scope for this pass** (documented as future phases in the README).  (UPDATE: §6
+credit flow control, byte-exact §4.3/§5.8 packing, and the §8 activation FSM
+bring-up with §6.4.2 `CrdtGrant` / §6.4.3 reset credit exchange — all originally
+listed here as out of scope — have since been implemented; only activation
+teardown (`Deactivate`/`ERROR`) remains future.)
 
 ## Verification (how to check end-to-end)
 - `make test` — three cocotb/PyUVM tests PASS (fresh memory per test).

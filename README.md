@@ -67,8 +67,10 @@ data field and the AoU 10-bit ID carries a per-transaction tag echoed on the
 response. Flit fields are packed **byte-exact** to the spec (§5.8 message
 layouts and the §4.3 Figure-5 protocol header), and **§6 per-message-type credit
 flow control** (RP0) runs on both bridges, carried in the header `MsgCredit`
-field. See [`docs/PLAN.md`](docs/PLAN.md) for the full architecture and the
-remaining out-of-scope follow-ons (activation FSM §8, multiple resource planes,
+field. Interface bring-up follows the §8 activation state machine with a §6.4.2
+`CrdtGrant` / §6.4.3 reset credit exchange (no AXI accepted until `ENABLED`).
+See [`docs/PLAN.md`](docs/PLAN.md) for the full architecture and the remaining
+out-of-scope follow-ons (activation teardown §8, multiple resource planes,
 AXI4 bursts).
 
 ## Directory layout
@@ -281,15 +283,17 @@ environments above.
 ## Scope & follow-ons
 
 This pass implements the Basic Profile message formats, **byte-exact flit
-packing** (§5.8 message layouts + the §4.3 Figure-5 protocol header), and **§6
+packing** (§5.8 message layouts + the §4.3 Figure-5 protocol header), **§6
 per-message-type credit flow control** on RP0 (carried in the header `MsgCredit`
-field, with a bound safety assertion). Explicitly **out of scope for now**
-(documented in `docs/PLAN.md`), in rough priority order:
+field, with a bound safety assertion), and interface **bring-up**: the §8
+activation state machine (`ActivateReq`/`ActivateAck`) plus the §6.4.2 `CrdtGrant`
+Misc message and §6.4.3 reset-during-`ACTIVATE` credit exchange — no AXI is
+accepted until the interface is `ENABLED`, and transmit credits reset to zero
+(§8.4) and are seeded from the peer's `CrdtGrant`. Explicitly **out of scope for
+now** (documented in `docs/PLAN.md`), in rough priority order:
 
-- **`CrdtGrant` exchange + reset handshake** (spec §6.4.2 / §6.4.3) — the Misc
-  `CrdtGrant` message and boot-time credit advertisement during `ACTIVATE`;
-  initial credits are currently modeled statically as parameters.
-- **Activation state machine** (spec §8) — `Activate`/`Deactivate`/`ERROR`.
+- **Activation teardown/recovery** (spec §8) — `Deactivate`/`ERROR`; only the
+  bring-up path (`DISABLED`→`ACTIVATE`→`ENABLED`) is modeled.
 - **Multiple resource planes** (RP0..RP3) and multi-outstanding transactions.
 - **Full AXI4** — INCR bursts (`AxLEN>0`), out-of-order IDs, 512b/1024b data.
 - **Whole-chain formal** — the current proof covers `axi_lite_mem`; proving the
