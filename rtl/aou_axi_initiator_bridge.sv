@@ -111,22 +111,28 @@ module aou_axi_initiator_bridge
   localparam logic [2:0] GR_RDATA = 3'b011;   // >= READDATA_GRAN  (8)
   localparam logic [1:0] GR_WRESP = 2'b01;    // >= WRITERESP_GRAN (1)
 
-  logic                  act_enabled;
+  logic                  act_enabled, act_disabled;
   logic [PLP_BITS-1:0]   dtx_data, drx_data;
   logic                  dtx_valid, dtx_ready, drx_valid, drx_ready;
   logic                  seed_valid;
   logic [2:0]            seed_wreq, seed_rreq, seed_wdata;
   // This bridge grants (and seeds) only its own credit types; the ReadData /
-  // WriteResp seed fields belong to the target side and are unused here.
+  // WriteResp seed fields belong to the target side and are unused here.  No SW
+  // deactivate flag is modelled in the full chain, so deact_trig/err_clear are
+  // tied low (the §8 teardown/ERROR paths are exercised by dv/act); `error` is
+  // observable only.
   // verilator lint_off UNUSEDSIGNAL
   logic [2:0]            seed_rdata;
   logic [1:0]            seed_wresp;
+  logic                  act_error;
   // verilator lint_on UNUSEDSIGNAL
 
   aou_activation #(
     .GRANT_RDATA(GR_RDATA), .GRANT_WRESP(GR_WRESP)
   ) u_act (
     .clk(clk), .rstn(rstn), .enabled(act_enabled),
+    .act_disabled(act_disabled), .error(act_error),
+    .deact_trig(1'b0), .err_clear(1'b0),
     .tx_data(tx_data),  .tx_valid(tx_valid),  .tx_ready(tx_ready),
     .rx_data(rx_data),  .rx_valid(rx_valid),  .rx_ready(rx_ready),
     .d_tx_data(dtx_data), .d_tx_valid(dtx_valid), .d_tx_ready(dtx_ready),
@@ -221,10 +227,13 @@ module aou_axi_initiator_bridge
       cr_wreq  <= '0; cr_rreq <= '0; cr_wdata <= '0;
       ret_rdata <= '0; ret_wresp <= '0;
     end else begin
-      // §6.4.3 reset credit exchange: apply the peer's CrdtGrant seed (only
-      // pulses while not ENABLED, when the data FSM is idle, so cr_* here does
-      // not race the S_WAIT/S_WSEND updates below).
-      if (seed_valid) begin
+      // §8.2 DISABLED: discard all previously granted credits (each return to
+      // DISABLED re-zeroes them); §6.4.3 reset credit exchange then re-seeds
+      // from the peer's CrdtGrant.  Both pulse only while not ENABLED, when the
+      // data FSM is idle, so cr_* here does not race the S_WAIT/S_WSEND updates.
+      if (act_disabled) begin
+        cr_wreq <= '0; cr_rreq <= '0; cr_wdata <= '0;
+      end else if (seed_valid) begin
         cr_wreq  <= sat_add(cr_wreq,  cred_decode(seed_wreq),  CR_WREQ);
         cr_rreq  <= sat_add(cr_rreq,  cred_decode(seed_rreq),  CR_RREQ);
         cr_wdata <= sat_add(cr_wdata, cred_decode(seed_wdata), CR_WDATA);

@@ -616,27 +616,43 @@ endmodule
 // -----------------------------------------------------------------------------
 // aou_activation : §8 interface state management + §6.4.3 reset credit exchange.
 //
-// Sits between a bridge's data FSM and its flit link and brings the interface up
-// before any credited (data) traffic is allowed:
+// Sits between a bridge's data FSM and its flit link and manages the five §8
+// activity states (Table 24):
 //
-//   DISABLED --(ActivateReq sent/received)--> ACTIVATE --(ActivateAck sent &
-//   received & peer CrdtGrant received)--> ENABLED
+//   DISABLED --(ActivateReq sent/rcvd)--> ACTIVATE
+//            --(ActivateAck sent&rcvd & peer CrdtGrant rcvd)--> ENABLED
+//            --(DeactivateReq sent/rcvd)--> DEACTIVATE
+//            --(DeactivateAck sent&rcvd)--> DISABLED (re-activates as usual)
+//   any --(inconsistent Activate/Deactivate Req)--> ERROR --(err_clear)--> DISABLED
 //
-// While not ENABLED this module OWNS the link: it drives the bring-up Misc
-// messages (ActivateReq -> ActivateAck -> CrdtGrant, one flit each) and consumes
-// the peer's, holding the data path off (d_tx_ready=0, d_rx_valid=0).  Once
-// ENABLED it is a transparent pass-through so the bridge's data FSM drives the
-// link directly.  The peer's CrdtGrant is decoded into a one-cycle `seed` pulse
-// that the bridge uses to initialise its transmit credit counters (which reset
-// to 0 per §8.4 DISABLED: "the transmitter has no credits").
+// While not ENABLED this module OWNS the link: it drives the bring-up / teardown
+// Misc messages (ActivateReq -> ActivateAck -> CrdtGrant, and DeactivateReq ->
+// DeactivateAck) and consumes the peer's, holding the data path off
+// (d_tx_ready=0, d_rx_valid=0).  Once ENABLED it is a transparent pass-through.
+// The peer's CrdtGrant is decoded into a one-cycle `seed` pulse that initialises
+// the bridge's transmit credit counters (which reset to 0 per §8.4 DISABLED:
+// "the transmitter has no credits"); `act_disabled` re-zeroes them each time the
+// interface returns to DISABLED, so a later re-activation re-seeds from scratch
+// (§8.2: "discards all previously received protocol-level credits").
+//
+// Deactivate is triggered by `deact_trig` (§8.3.2: "System Software writing a
+// flag in the AoU bridge").  Only Option 1 (§8.3.2, MANDATORY) is modelled: the
+// bridge asserts `deact_trig` only once the link is quiesced, so DEACTIVATE has
+// no pending Data/WriteResp to drain and the module can own the link for the
+// teardown handshake.  Option 2 (hardware quiescing) is a documented follow-on.
+//
+// ERROR (§8.3.3): entered when an inconsistent link-state Req is received (e.g.
+// an ActivateReq while ENABLED, or a DeactivateReq while DISABLED).  In ERROR no
+// message is transmitted and received messages are ignored (consumed/dropped);
+// `err_clear` (IMPLEMENTATION_DEFINED, §8.4) returns the state to DISABLED, from
+// which the interface re-initialises as usual.
 //
 // Ordering safety: this side only ENABLES after receiving the peer's CrdtGrant,
 // which the in-order link guarantees arrives before any of the peer's data
 // flits (CrdtGrant is the peer's last bring-up message).  So a data flit never
 // reaches a still-activating receiver.
 //
-// Scope: bring-up only.  DEACTIVATE / ERROR (§8 teardown + error recovery) are a
-// documented follow-on; `CrdtGrant` here also covers only resource plane RP0.
+// Scope: CrdtGrant covers resource plane RP0.
 // -----------------------------------------------------------------------------
 `ifndef AOU_ACTIVATION_SV
 `define AOU_ACTIVATION_SV
@@ -656,6 +672,10 @@ module aou_activation
     input  logic                clk,
     input  logic                rstn,
     output logic                enabled,           // ENABLED (data traffic ok)
+    output logic                act_disabled,      // DISABLED (credit-reset qual)
+    output logic                error,             // ERROR state
+    input  logic                deact_trig,        // §8.3.2 SW deactivate flag
+    input  logic                err_clear,         // §8.4 ERROR->DISABLED trigger
     // physical flit link (owned by this module until ENABLED)
     output logic [PLP_BITS-1:0] tx_data,
     output logic                tx_valid,
@@ -679,17 +699,27 @@ module aou_activation
     output logic [1:0]          seed_wresp
 );
 
-  typedef enum logic [1:0] { ACT_DISABLED, ACT_ACTIVATE, ACT_ENABLED } act_e;
+  typedef enum logic [2:0] {
+    ACT_DISABLED, ACT_ACTIVATE, ACT_ENABLED, ACT_DEACTIVATE, ACT_ERROR
+  } act_e;
   act_e state;
 
-  logic req_sent, req_rcvd, ack_sent, ack_rcvd, crdt_sent, crdt_rcvd;
+  // activate-phase / deactivate-phase handshake flags
+  logic areq_sent, areq_rcvd, aack_sent, aack_rcvd, crdt_sent, crdt_rcvd;
+  logic dreq_sent, dreq_rcvd, dack_sent, dack_rcvd;
 
-  assign enabled = (state == ACT_ENABLED);
+  assign enabled      = (state == ACT_ENABLED);
+  assign act_disabled = (state == ACT_DISABLED);
+  assign error        = (state == ACT_ERROR);
 
-  // --- bring-up TX: pick the next Misc message to send (priority order) -----
-  wire send_req  = !req_sent;
-  wire send_ack  = req_rcvd && !ack_sent;
-  wire send_crdt = ack_sent && !crdt_sent;
+  wire in_bringup = (state == ACT_DISABLED) || (state == ACT_ACTIVATE);
+
+  // --- bring-up / teardown TX: pick the next Misc message (priority order) ---
+  wire send_areq = in_bringup && !areq_sent;
+  wire send_aack = in_bringup && areq_rcvd && !aack_sent;
+  wire send_crdt = in_bringup && aack_sent && !crdt_sent;
+  wire send_dreq = (state == ACT_DEACTIVATE) && !dreq_sent;
+  wire send_dack = (state == ACT_DEACTIVATE) && dreq_rcvd && !dack_sent;
 
   logic [PLP_BITS-1:0] act_tx_flit;
   logic                act_tx_valid;
@@ -701,44 +731,60 @@ module aou_activation
     pl           = '0;
     act_tx_flit  = '0;
     act_tx_valid = 1'b0;
-    if (!enabled) begin
-      if (send_req) begin
-        m  = mk_activate_req(5'b0, 5'b0, 16'b0);
-        pl = payload_put('0, 0, ACTIVATEREQ_GRAN, m);
-        act_tx_flit  = flit_assemble('0, msgstart_t'(1), pl);
-        act_tx_valid = 1'b1;
-      end else if (send_ack) begin
-        m  = mk_activation_other(ACTOP_ACTIVATE_ACK);
-        pl = payload_put('0, 0, MISC_GRAN, m);
-        act_tx_flit  = flit_assemble('0, msgstart_t'(1), pl);
-        act_tx_valid = 1'b1;
-      end else if (send_crdt) begin
-        m  = mk_crdtgrant(GRANT_WREQ, GRANT_RREQ, GRANT_WDATA, GRANT_RDATA, GRANT_WRESP);
-        pl = payload_put('0, 0, CRDTGRANT_GRAN, m);
-        act_tx_flit  = flit_assemble('0, msgstart_t'(1), pl);
-        act_tx_valid = 1'b1;
-      end
+    if (send_areq) begin
+      m  = mk_activate_req(5'b0, 5'b0, 16'b0);
+      pl = payload_put('0, 0, ACTIVATEREQ_GRAN, m);
+      act_tx_flit  = flit_assemble('0, msgstart_t'(1), pl);
+      act_tx_valid = 1'b1;
+    end else if (send_aack) begin
+      m  = mk_activation_other(ACTOP_ACTIVATE_ACK);
+      pl = payload_put('0, 0, MISC_GRAN, m);
+      act_tx_flit  = flit_assemble('0, msgstart_t'(1), pl);
+      act_tx_valid = 1'b1;
+    end else if (send_crdt) begin
+      m  = mk_crdtgrant(GRANT_WREQ, GRANT_RREQ, GRANT_WDATA, GRANT_RDATA, GRANT_WRESP);
+      pl = payload_put('0, 0, CRDTGRANT_GRAN, m);
+      act_tx_flit  = flit_assemble('0, msgstart_t'(1), pl);
+      act_tx_valid = 1'b1;
+    end else if (send_dreq) begin
+      m  = mk_activation_other(ACTOP_DEACTIVATE_REQ);
+      pl = payload_put('0, 0, MISC_GRAN, m);
+      act_tx_flit  = flit_assemble('0, msgstart_t'(1), pl);
+      act_tx_valid = 1'b1;
+    end else if (send_dack) begin
+      m  = mk_activation_other(ACTOP_DEACTIVATE_ACK);
+      pl = payload_put('0, 0, MISC_GRAN, m);
+      act_tx_flit  = flit_assemble('0, msgstart_t'(1), pl);
+      act_tx_valid = 1'b1;
     end
   end
 
-  // --- bring-up RX: classify the incoming Misc message ----------------------
+  // --- RX: classify the incoming Misc message -------------------------------
   // Continuous assigns, NOT an always_comb: the message accessors do constant
   // part-selects, which under iverilog force the enclosing always_* process to
   // be "sensitive to all bits" of the wide (320b) `rm` it both writes and reads.
   // That self-referential wide process wedges iverilog's settle under cocotb's
   // VPI ReadWrite region (the pure-vvp SV TB tolerates it, cocotb does not).
   // Continuous assigns evaluate on their RHS nets directly and avoid it.
-  msg_t                rm;
-  logic                rx_is_req, rx_is_ack, rx_is_crdt;
-  assign rm = payload_get(flit_payload(rx_data), 0, CRDTGRANT_GRAN);
-  assign rx_is_req  = (get_msgtype(rm) == MT_MISC) && (misc_op(rm) == MISCOP_ACTIVATION)
-                      && (misc_activationop(rm) == ACTOP_ACTIVATE_REQ);
-  assign rx_is_ack  = (get_msgtype(rm) == MT_MISC) && (misc_op(rm) == MISCOP_ACTIVATION)
-                      && (misc_activationop(rm) == ACTOP_ACTIVATE_ACK);
-  assign rx_is_crdt = (get_msgtype(rm) == MT_MISC) && (misc_op(rm) == MISCOP_CRDTGRANT);
+  msg_t rm;
+  logic rx_misc_act, rx_is_areq, rx_is_aack, rx_is_dreq, rx_is_dack, rx_is_crdt;
+  assign rm          = payload_get(flit_payload(rx_data), 0, CRDTGRANT_GRAN);
+  assign rx_misc_act = (get_msgtype(rm) == MT_MISC) && (misc_op(rm) == MISCOP_ACTIVATION);
+  assign rx_is_areq  = rx_misc_act && (misc_activationop(rm) == ACTOP_ACTIVATE_REQ);
+  assign rx_is_aack  = rx_misc_act && (misc_activationop(rm) == ACTOP_ACTIVATE_ACK);
+  assign rx_is_dreq  = rx_misc_act && (misc_activationop(rm) == ACTOP_DEACTIVATE_REQ);
+  assign rx_is_dack  = rx_misc_act && (misc_activationop(rm) == ACTOP_DEACTIVATE_ACK);
+  assign rx_is_crdt  = (get_msgtype(rm) == MT_MISC) && (misc_op(rm) == MISCOP_CRDTGRANT);
+
+  // §8.3.3 inconsistent link-state Req -> ERROR.  Only the unambiguous cases are
+  // flagged (ActivateReq while active, DeactivateReq while inactive); a stray
+  // Ack racing a state change is tolerated rather than mis-flagged.
+  wire err_now = rx_valid && (
+      (rx_is_areq && ((state == ACT_ENABLED)  || (state == ACT_DEACTIVATE))) ||
+      (rx_is_dreq && ((state == ACT_DISABLED) || (state == ACT_ACTIVATE))));
 
   // credit seed (decoded RP0 grant fields) — pulsed as the CrdtGrant is consumed
-  assign seed_valid = rx_valid && !enabled && rx_is_crdt;
+  assign seed_valid = rx_valid && !enabled && (state != ACT_ERROR) && rx_is_crdt;
   assign seed_wreq  = cg_wreq0(rm);
   assign seed_rreq  = cg_rreq0(rm);
   assign seed_wdata = cg_wdata0(rm);
@@ -746,43 +792,81 @@ module aou_activation
   assign seed_wresp = cg_wresp0(rm);
 
   // --- link / data-path mux -------------------------------------------------
+  // ERROR transmits nothing (act_tx_valid is already 0 there); every non-ENABLED
+  // state consumes RX (rx_ready=1) so an ignored/dropped message never stalls.
   assign tx_data    = enabled ? d_tx_data  : act_tx_flit;
   assign tx_valid   = enabled ? d_tx_valid : act_tx_valid;
   assign d_tx_ready = enabled ? tx_ready   : 1'b0;
-  assign rx_ready   = enabled ? d_rx_ready : 1'b1;   // bring-up always consumes
+  assign rx_ready   = enabled ? d_rx_ready : 1'b1;
   assign d_rx_data  = rx_data;
   assign d_rx_valid = enabled ? rx_valid   : 1'b0;
+
+  wire tx_fire = act_tx_valid && tx_ready && !enabled;
 
   // --- state / handshake flags ----------------------------------------------
   always_ff @(posedge clk or negedge rstn) begin
     if (!rstn) begin
       state     <= ACT_DISABLED;
-      req_sent  <= 1'b0; req_rcvd <= 1'b0;
-      ack_sent  <= 1'b0; ack_rcvd <= 1'b0;
+      areq_sent <= 1'b0; areq_rcvd <= 1'b0;
+      aack_sent <= 1'b0; aack_rcvd <= 1'b0;
       crdt_sent <= 1'b0; crdt_rcvd <= 1'b0;
+      dreq_sent <= 1'b0; dreq_rcvd <= 1'b0;
+      dack_sent <= 1'b0; dack_rcvd <= 1'b0;
     end else begin
-      // sent-flags: which bring-up message went out this cycle
-      if (!enabled && act_tx_valid && tx_ready) begin
-        if      (send_req)  req_sent  <= 1'b1;
-        else if (send_ack)  ack_sent  <= 1'b1;
+      // sent-flags: which Misc message went out this cycle
+      if (tx_fire) begin
+        if      (send_areq) areq_sent <= 1'b1;
+        else if (send_aack) aack_sent <= 1'b1;
         else if (send_crdt) crdt_sent <= 1'b1;
+        else if (send_dreq) dreq_sent <= 1'b1;
+        else if (send_dack) dack_sent <= 1'b1;
       end
-      // received-flags
-      if (!enabled && rx_valid) begin
-        if (rx_is_req)  req_rcvd  <= 1'b1;
-        if (rx_is_ack)  ack_rcvd  <= 1'b1;
-        if (rx_is_crdt) crdt_rcvd <= 1'b1;
+      // received-flags (ignored entirely in ERROR)
+      if (rx_valid && (state != ACT_ERROR)) begin
+        if (rx_is_areq && in_bringup)                          areq_rcvd <= 1'b1;
+        if (rx_is_aack && (state == ACT_ACTIVATE))             aack_rcvd <= 1'b1;
+        if (rx_is_crdt && (state == ACT_ACTIVATE))             crdt_rcvd <= 1'b1;
+        if (rx_is_dreq && ((state == ACT_ENABLED) ||
+                           (state == ACT_DEACTIVATE)))         dreq_rcvd <= 1'b1;
+        if (rx_is_dack && (state == ACT_DEACTIVATE))           dack_rcvd <= 1'b1;
       end
-      // state transitions (use registered flags; costs at most 1 cycle)
+      // state transitions (registered flags; clearing on entry re-arms a phase)
       case (state)
         ACT_DISABLED:
-          if ((act_tx_valid && tx_ready && send_req) || (rx_valid && rx_is_req))
+          if ((tx_fire && send_areq) || (rx_valid && rx_is_areq))
             state <= ACT_ACTIVATE;
-        ACT_ACTIVATE:
-          if (ack_sent && ack_rcvd && crdt_rcvd) state <= ACT_ENABLED;
-        // verilator coverage_off
-        default: state <= state;    // ENABLED is terminal in this build
-        // verilator coverage_on
+        ACT_ACTIVATE: begin
+          if (err_now) state <= ACT_ERROR;
+          else if (aack_sent && aack_rcvd && crdt_rcvd) begin
+            state     <= ACT_ENABLED;
+            dreq_sent <= 1'b0; dreq_rcvd <= 1'b0;   // arm a future teardown
+            dack_sent <= 1'b0; dack_rcvd <= 1'b0;
+          end
+        end
+        ACT_ENABLED: begin
+          if (err_now) state <= ACT_ERROR;
+          else if (deact_trig || (rx_valid && rx_is_dreq))
+            state <= ACT_DEACTIVATE;
+        end
+        ACT_DEACTIVATE: begin
+          if (err_now) state <= ACT_ERROR;
+          else if (dack_sent && dack_rcvd) begin
+            state     <= ACT_DISABLED;
+            areq_sent <= 1'b0; areq_rcvd <= 1'b0;   // re-arm bring-up
+            aack_sent <= 1'b0; aack_rcvd <= 1'b0;
+            crdt_sent <= 1'b0; crdt_rcvd <= 1'b0;
+          end
+        end
+        ACT_ERROR:
+          if (err_clear) begin
+            state     <= ACT_DISABLED;
+            areq_sent <= 1'b0; areq_rcvd <= 1'b0;
+            aack_sent <= 1'b0; aack_rcvd <= 1'b0;
+            crdt_sent <= 1'b0; crdt_rcvd <= 1'b0;
+            dreq_sent <= 1'b0; dreq_rcvd <= 1'b0;
+            dack_sent <= 1'b0; dack_rcvd <= 1'b0;
+          end
+        default: state <= state;
       endcase
     end
   end
@@ -1050,22 +1134,28 @@ module aou_axi_initiator_bridge
   localparam logic [2:0] GR_RDATA = 3'b011;   // >= READDATA_GRAN  (8)
   localparam logic [1:0] GR_WRESP = 2'b01;    // >= WRITERESP_GRAN (1)
 
-  logic                  act_enabled;
+  logic                  act_enabled, act_disabled;
   logic [PLP_BITS-1:0]   dtx_data, drx_data;
   logic                  dtx_valid, dtx_ready, drx_valid, drx_ready;
   logic                  seed_valid;
   logic [2:0]            seed_wreq, seed_rreq, seed_wdata;
   // This bridge grants (and seeds) only its own credit types; the ReadData /
-  // WriteResp seed fields belong to the target side and are unused here.
+  // WriteResp seed fields belong to the target side and are unused here.  No SW
+  // deactivate flag is modelled in the full chain, so deact_trig/err_clear are
+  // tied low (the §8 teardown/ERROR paths are exercised by dv/act); `error` is
+  // observable only.
   // verilator lint_off UNUSEDSIGNAL
   logic [2:0]            seed_rdata;
   logic [1:0]            seed_wresp;
+  logic                  act_error;
   // verilator lint_on UNUSEDSIGNAL
 
   aou_activation #(
     .GRANT_RDATA(GR_RDATA), .GRANT_WRESP(GR_WRESP)
   ) u_act (
     .clk(clk), .rstn(rstn), .enabled(act_enabled),
+    .act_disabled(act_disabled), .error(act_error),
+    .deact_trig(1'b0), .err_clear(1'b0),
     .tx_data(tx_data),  .tx_valid(tx_valid),  .tx_ready(tx_ready),
     .rx_data(rx_data),  .rx_valid(rx_valid),  .rx_ready(rx_ready),
     .d_tx_data(dtx_data), .d_tx_valid(dtx_valid), .d_tx_ready(dtx_ready),
@@ -1160,10 +1250,13 @@ module aou_axi_initiator_bridge
       cr_wreq  <= '0; cr_rreq <= '0; cr_wdata <= '0;
       ret_rdata <= '0; ret_wresp <= '0;
     end else begin
-      // §6.4.3 reset credit exchange: apply the peer's CrdtGrant seed (only
-      // pulses while not ENABLED, when the data FSM is idle, so cr_* here does
-      // not race the S_WAIT/S_WSEND updates below).
-      if (seed_valid) begin
+      // §8.2 DISABLED: discard all previously granted credits (each return to
+      // DISABLED re-zeroes them); §6.4.3 reset credit exchange then re-seeds
+      // from the peer's CrdtGrant.  Both pulse only while not ENABLED, when the
+      // data FSM is idle, so cr_* here does not race the S_WAIT/S_WSEND updates.
+      if (act_disabled) begin
+        cr_wreq <= '0; cr_rreq <= '0; cr_wdata <= '0;
+      end else if (seed_valid) begin
         cr_wreq  <= sat_add(cr_wreq,  cred_decode(seed_wreq),  CR_WREQ);
         cr_rreq  <= sat_add(cr_rreq,  cred_decode(seed_rreq),  CR_RREQ);
         cr_wdata <= sat_add(cr_wdata, cred_decode(seed_wdata), CR_WDATA);
@@ -1351,14 +1444,16 @@ module aou_axi_target_bridge
 
   logic [PLP_BITS-1:0]   dtx_data, drx_data;
   logic                  dtx_valid, dtx_ready, drx_valid, drx_ready;
-  logic                  seed_valid;
+  logic                  seed_valid, act_disabled;
   logic [2:0]            seed_rdata;
   logic [1:0]            seed_wresp;
   // The target reacts to gated rx (held off until ENABLED by the activation
   // wrapper) so it needs no `enabled` gate of its own; it grants (and does not
-  // consume) the WriteReq/ReadReq/WriteData seed fields.  All unused here.
+  // consume) the WriteReq/ReadReq/WriteData seed fields.  No SW deactivate flag
+  // is modelled in the full chain, so deact_trig/err_clear are tied low (the §8
+  // teardown/ERROR paths are exercised by dv/act); `error` is observable only.
   // verilator lint_off UNUSEDSIGNAL
-  logic                  act_enabled;
+  logic                  act_enabled, act_error;
   logic [2:0]            seed_wreq, seed_rreq, seed_wdata;
   // verilator lint_on UNUSEDSIGNAL
 
@@ -1366,6 +1461,8 @@ module aou_axi_target_bridge
     .GRANT_WREQ(GR_WREQ), .GRANT_RREQ(GR_RREQ), .GRANT_WDATA(GR_WDATA)
   ) u_act (
     .clk(clk), .rstn(rstn), .enabled(act_enabled),
+    .act_disabled(act_disabled), .error(act_error),
+    .deact_trig(1'b0), .err_clear(1'b0),
     .tx_data(tx_data),  .tx_valid(tx_valid),  .tx_ready(tx_ready),
     .rx_data(rx_data),  .rx_valid(rx_valid),  .rx_ready(rx_ready),
     .d_tx_data(dtx_data), .d_tx_valid(dtx_valid), .d_tx_ready(dtx_ready),
@@ -1442,9 +1539,13 @@ module aou_axi_target_bridge
       cr_rdata <= '0; cr_wresp <= '0;
       ret_wreq <= '0; ret_rreq <= '0; ret_wdata <= '0;
     end else begin
-      // §6.4.3 reset credit exchange: apply A's CrdtGrant seed (pulses only
-      // while not ENABLED, when the data FSM is idle — no race with the case).
-      if (seed_valid) begin
+      // §8.2 DISABLED: discard all previously granted credits on each return to
+      // DISABLED; §6.4.3 reset credit exchange then re-seeds from A's CrdtGrant.
+      // Both pulse only while not ENABLED, when the data FSM is idle — no race
+      // with the case below.
+      if (act_disabled) begin
+        cr_rdata <= '0; cr_wresp <= '0;
+      end else if (seed_valid) begin
         cr_rdata <= sat_add(cr_rdata, cred_decode(seed_rdata),         CR_RDATA);
         cr_wresp <= sat_add(cr_wresp, cred_decode({1'b0, seed_wresp}), CR_WRESP);
       end

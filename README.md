@@ -67,11 +67,11 @@ data field and the AoU 10-bit ID carries a per-transaction tag echoed on the
 response. Flit fields are packed **byte-exact** to the spec (§5.8 message
 layouts and the §4.3 Figure-5 protocol header), and **§6 per-message-type credit
 flow control** (RP0) runs on both bridges, carried in the header `MsgCredit`
-field. Interface bring-up follows the §8 activation state machine with a §6.4.2
-`CrdtGrant` / §6.4.3 reset credit exchange (no AXI accepted until `ENABLED`).
+field. The interface follows the full §8 activation state machine — bring-up
+(with a §6.4.2 `CrdtGrant` / §6.4.3 reset credit exchange), teardown,
+re-activation, and `ERROR` recovery (no AXI accepted until `ENABLED`).
 See [`docs/PLAN.md`](docs/PLAN.md) for the full architecture and the remaining
-out-of-scope follow-ons (activation teardown §8, multiple resource planes,
-AXI4 bursts).
+out-of-scope follow-ons (multiple resource planes, AXI4 bursts).
 
 ## Directory layout
 
@@ -85,6 +85,7 @@ AXI4 bursts).
 - `dv/sv/` — portable self-checking SV directed TB (Icarus + Verilator)
 - `dv/sva/` — AXI-Lite + AoU-flit + §6 credit assertion checkers (bound to the DUT)
 - `dv/pack/` — §4.3/§5.8 byte-exact packing conformance TB (Icarus + Verilator)
+- `dv/act/` — §8 activation FSM unit test: deactivate / re-activate / `ERROR` (Icarus + Verilator)
 - `dv/systemc/` — SystemC testbench (`verilator --sc` model + `sc_main`)
 - `uvm/` — SystemVerilog UVM TB (multi-file + single-file), license-gated
 - `sim/` — Verilator C++ coverage harness
@@ -285,15 +286,18 @@ environments above.
 This pass implements the Basic Profile message formats, **byte-exact flit
 packing** (§5.8 message layouts + the §4.3 Figure-5 protocol header), **§6
 per-message-type credit flow control** on RP0 (carried in the header `MsgCredit`
-field, with a bound safety assertion), and interface **bring-up**: the §8
-activation state machine (`ActivateReq`/`ActivateAck`) plus the §6.4.2 `CrdtGrant`
-Misc message and §6.4.3 reset-during-`ACTIVATE` credit exchange — no AXI is
-accepted until the interface is `ENABLED`, and transmit credits reset to zero
-(§8.4) and are seeded from the peer's `CrdtGrant`. Explicitly **out of scope for
-now** (documented in `docs/PLAN.md`), in rough priority order:
+field, with a bound safety assertion), and the full §8 **interface state
+machine** — bring-up (`ActivateReq`/`ActivateAck` + the §6.4.2 `CrdtGrant` Misc
+message and §6.4.3 reset-during-`ACTIVATE` credit exchange), teardown
+(`DeactivateReq`/`DeactivateAck`), re-activation, and `ERROR` entry/recovery. No
+AXI is accepted until the interface is `ENABLED`; transmit credits reset to zero
+(§8.4) on every entry to `DISABLED` and are (re-)seeded from the peer's
+`CrdtGrant`. Explicitly **out of scope for now** (documented in
+`docs/PLAN.md`), in rough priority order:
 
-- **Activation teardown/recovery** (spec §8) — `Deactivate`/`ERROR`; only the
-  bring-up path (`DISABLED`→`ACTIVATE`→`ENABLED`) is modeled.
+- **Deactivate quiescing Option 2** (spec §8.3.2) — only Option 1 (System
+  Software quiesces the link before setting the deactivate flag; MANDATORY) is
+  modeled; hardware-managed quiescing (OPTIONAL) is not.
 - **Multiple resource planes** (RP0..RP3) and multi-outstanding transactions.
 - **Full AXI4** — INCR bursts (`AxLEN>0`), out-of-order IDs, 512b/1024b data.
 - **Whole-chain formal** — the current proof covers `axi_lite_mem`; proving the

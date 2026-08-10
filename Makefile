@@ -31,6 +31,7 @@ TOP := axi_ucie_mem_top
 TB_DIR     := dv/cocotb
 SV_DIR     := dv/sv
 PACK_DIR   := dv/pack
+ACT_DIR    := dv/act
 SC_DIR     := dv/systemc
 UVM_DIR    := uvm
 TB_RESULTS := $(TB_DIR)/results.xml
@@ -53,7 +54,7 @@ COV_MIN ?= 85
 
 .PHONY: default help \
 	test test-all test-write-read test-random test-walking \
-	sv vlt pack systemc uvm coverage formal waves wave check regress ci \
+	sv vlt pack act systemc uvm coverage formal waves wave check regress ci \
 	lint _lint_iverilog _lint_verilator clean
 
 default: help
@@ -73,6 +74,7 @@ help:
 	@echo "    make sv                # portable SV directed TB under Icarus"
 	@echo "    make vlt               # same SV TB under Verilator (+ bound SVA)"
 	@echo "    make pack              # §4.3/§5.8 byte-exact packing conformance (Icarus+Verilator)"
+	@echo "    make act               # §8 activation FSM unit test: deactivate/re-activate/ERROR (Icarus+Verilator)"
 	@echo "    make systemc           # SystemC TB (Verilator --sc model + sc_main)"
 	@echo "    make uvm               # SystemVerilog UVM TB (license-gated; skips if no VCS/Xcelium/Questa)"
 	@echo "    make coverage          # Verilator --coverage -> sim/coverage.info (floor COV_MIN=$(COV_MIN)%)"
@@ -80,7 +82,7 @@ help:
 	@echo ""
 	@echo "  Gates:"
 	@echo "    make lint              # iverilog -Wall + Verilator RTL lint"
-	@echo "    make check             # lint + cocotb + SV(Icarus+Verilator) + pack + SystemC"
+	@echo "    make check             # lint + cocotb + SV(Icarus+Verilator) + pack + act + SystemC"
 	@echo "    make regress           # check + coverage (CI-style pass/fail)"
 	@echo "    make ci                # regress"
 	@echo ""
@@ -168,6 +170,12 @@ pack:
 	$(MAKE) -C $(PACK_DIR) icarus
 	$(MAKE) -C $(PACK_DIR) verilator
 
+# §8 activation FSM unit test (aou_activation): bring-up, SW/peer deactivate,
+# re-activation, and ERROR entry/recovery, Icarus + Verilator.
+act:
+	$(MAKE) -C $(ACT_DIR) icarus
+	$(MAKE) -C $(ACT_DIR) verilator
+
 # SystemC TB: Verilator --sc model of the DUT + hand-written sc_main driver.
 # Degrades gracefully (skip, exit 0) if Verilator or SystemC is absent.
 systemc:
@@ -215,10 +223,10 @@ formal:
 	sby -f formal/axi_lite_mem.sby $(TASK)
 
 # --- gates -------------------------------------------------------------------
-check: lint test-all sv vlt pack systemc
+check: lint test-all sv vlt pack act systemc
 
 regress: check coverage
-	@echo "[REGRESS] lint + cocotb + SV(Icarus+Verilator) + pack + SystemC + coverage PASSED"
+	@echo "[REGRESS] lint + cocotb + SV(Icarus+Verilator) + pack + act + SystemC + coverage PASSED"
 
 ci: regress
 	@echo "[CI] full regression PASSED"
@@ -228,6 +236,7 @@ clean:
 	$(MAKE) -C $(TB_DIR) clean 2>/dev/null || true
 	$(MAKE) -C $(SV_DIR) clean 2>/dev/null || true
 	$(MAKE) -C $(PACK_DIR) clean 2>/dev/null || true
+	$(MAKE) -C $(ACT_DIR) clean 2>/dev/null || true
 	$(MAKE) -C $(SC_DIR) clean 2>/dev/null || true
 	$(MAKE) -C $(UVM_DIR) clean 2>/dev/null || true
 	rm -rf $(TB_DIR)/sim_build $(TB_DIR)/__pycache__ __pycache__ \

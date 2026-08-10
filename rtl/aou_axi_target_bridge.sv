@@ -97,14 +97,16 @@ module aou_axi_target_bridge
 
   logic [PLP_BITS-1:0]   dtx_data, drx_data;
   logic                  dtx_valid, dtx_ready, drx_valid, drx_ready;
-  logic                  seed_valid;
+  logic                  seed_valid, act_disabled;
   logic [2:0]            seed_rdata;
   logic [1:0]            seed_wresp;
   // The target reacts to gated rx (held off until ENABLED by the activation
   // wrapper) so it needs no `enabled` gate of its own; it grants (and does not
-  // consume) the WriteReq/ReadReq/WriteData seed fields.  All unused here.
+  // consume) the WriteReq/ReadReq/WriteData seed fields.  No SW deactivate flag
+  // is modelled in the full chain, so deact_trig/err_clear are tied low (the §8
+  // teardown/ERROR paths are exercised by dv/act); `error` is observable only.
   // verilator lint_off UNUSEDSIGNAL
-  logic                  act_enabled;
+  logic                  act_enabled, act_error;
   logic [2:0]            seed_wreq, seed_rreq, seed_wdata;
   // verilator lint_on UNUSEDSIGNAL
 
@@ -112,6 +114,8 @@ module aou_axi_target_bridge
     .GRANT_WREQ(GR_WREQ), .GRANT_RREQ(GR_RREQ), .GRANT_WDATA(GR_WDATA)
   ) u_act (
     .clk(clk), .rstn(rstn), .enabled(act_enabled),
+    .act_disabled(act_disabled), .error(act_error),
+    .deact_trig(1'b0), .err_clear(1'b0),
     .tx_data(tx_data),  .tx_valid(tx_valid),  .tx_ready(tx_ready),
     .rx_data(rx_data),  .rx_valid(rx_valid),  .rx_ready(rx_ready),
     .d_tx_data(dtx_data), .d_tx_valid(dtx_valid), .d_tx_ready(dtx_ready),
@@ -188,9 +192,13 @@ module aou_axi_target_bridge
       cr_rdata <= '0; cr_wresp <= '0;
       ret_wreq <= '0; ret_rreq <= '0; ret_wdata <= '0;
     end else begin
-      // §6.4.3 reset credit exchange: apply A's CrdtGrant seed (pulses only
-      // while not ENABLED, when the data FSM is idle — no race with the case).
-      if (seed_valid) begin
+      // §8.2 DISABLED: discard all previously granted credits on each return to
+      // DISABLED; §6.4.3 reset credit exchange then re-seeds from A's CrdtGrant.
+      // Both pulse only while not ENABLED, when the data FSM is idle — no race
+      // with the case below.
+      if (act_disabled) begin
+        cr_rdata <= '0; cr_wresp <= '0;
+      end else if (seed_valid) begin
         cr_rdata <= sat_add(cr_rdata, cred_decode(seed_rdata),         CR_RDATA);
         cr_wresp <= sat_add(cr_wresp, cred_decode({1'b0, seed_wresp}), CR_WRESP);
       end
