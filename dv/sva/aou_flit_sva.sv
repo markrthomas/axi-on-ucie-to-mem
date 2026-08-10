@@ -32,6 +32,7 @@ module aou_flit_sva
   wire msgstart_t       msgstart = flit[PLP_BITS-1-FDID_W -: NUM_GRAN];
   wire payload_t        payload  = flit[PLP_PAYLOAD_BITS-1:0];
   wire [MSGTYPE_W-1:0]  mt0      = payload[PLP_PAYLOAD_BITS-1 -: MSGTYPE_W];
+  wire [CREDIT_W-1:0]   msgcred  = flit_credit(flit);
   // verilator lint_on UNUSEDSIGNAL
 
   // --- handshake -------------------------------------------------------------
@@ -48,6 +49,11 @@ module aou_flit_sva
   a_mt0_known: assert property (@(posedge clk) disable iff (!rstn)
     valid |-> (mt0 == MT_WRITEREQ || mt0 == MT_READREQ ||
                mt0 == MT_READDATA || mt0 == MT_WRITERESP));
+
+  // §6 credits are advertised only for resource plane RP0 in this single-plane
+  // build, so the MsgCredit RP subfield [15:14] must be 0.
+  a_credit_rp0: assert property (@(posedge clk) disable iff (!rstn)
+    valid |-> (mc_rp(msgcred) == '0));
 
 endmodule
 `endif

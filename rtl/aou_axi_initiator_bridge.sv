@@ -11,7 +11,8 @@
 // Scope: one transaction in flight at a time (single-outstanding).  A monotonic
 // tag is carried in the AoU {AW,AR}ID field and echoed back in {B,R}ID for
 // faithfulness; response routing is trivial with one outstanding transaction.
-// Multiple-outstanding + credit flow control is a documented follow-on.
+// §6 per-message-type credit flow control (RP0) is implemented — see the credit
+// counters below.  Multiple-outstanding transactions are a documented follow-on.
 // -----------------------------------------------------------------------------
 `ifndef AOU_AXI_INITIATOR_BRIDGE_SV
 `define AOU_AXI_INITIATOR_BRIDGE_SV
@@ -21,7 +22,15 @@ module aou_axi_initiator_bridge
 #(
     parameter int AXI_ADDR_W = 32,
     parameter int AXI_DATA_W = 32,
-    parameter int AXI_STRB_W = AXI_DATA_W/8
+    parameter int AXI_STRB_W = AXI_DATA_W/8,
+    // §6 flow control — granule credits this (initiator) bridge holds to send
+    // each message type it transmits.  Defaults are one message's worth (the
+    // depth chiplet B advertises for single-outstanding traffic); the CrdtGrant
+    // reset handshake (§6.4.3, during ACTIVATE) is deferred with the §8 FSM, so
+    // these model the post-activation initial grant statically.
+    parameter int CR_WREQ  = WRITEREQ_GRAN,    // WriteReq  credits (3 granules)
+    parameter int CR_RREQ  = READREQ_GRAN,     // ReadReq   credits (3 granules)
+    parameter int CR_WDATA = WRITEDATA_GRAN    // WriteData credits (8 granules)
 ) (
     input  logic                    clk,
     input  logic                    rstn,
@@ -69,7 +78,30 @@ module aou_axi_initiator_bridge
   logic [1:0]            bresp_q, rresp_q;
   logic [AXI_DATA_W-1:0] rdata_q;
 
+  // §6 credits HELD to transmit (granted by chiplet B, the receiver of these
+  // message types).  Consumed at the message-start flit handshake, replenished
+  // from the MsgCredit field of the B->A response flit.
+  logic [7:0] cr_wreq, cr_rreq, cr_wdata;
+  // §6 credits OWED back to B for the response messages this bridge consumes
+  // (ReadData / WriteResp): advertised in the next A->B flit header, then cleared.
+  logic [7:0] ret_rdata, ret_wresp;
+
   localparam logic [2:0] AXSIZE_4B = 3'b010;   // 32-bit beat
+
+  // saturating add: cur + add, clamped at lim (§6.4 counter-saturation rule).
+  function automatic logic [7:0] sat_add(input logic [7:0]  cur,
+                                         input int unsigned add,
+                                         input int unsigned lim);
+    int unsigned s;
+    begin
+      s = {24'b0, cur} + add;
+      sat_add = (s > lim) ? lim[7:0] : s[7:0];
+    end
+  endfunction
+
+  // credit availability for the message(s) each send state transmits.
+  wire wsend_ok = (cr_wreq >= WRITEREQ_GRAN[7:0]) && (cr_wdata >= WRITEDATA_GRAN[7:0]);
+  wire rsend_ok = (cr_rreq >= READREQ_GRAN[7:0]);
 
   // --- build the outgoing flits (combinational from captured regs) ----------
   function automatic flit_t build_write_flit();
@@ -84,10 +116,18 @@ module aou_axi_initiator_bridge
                             {{(AOU_STRB_W-AXI_STRB_W){1'b0}}, wstrb_q});
       pl = payload_put('0,            0,             WRITEREQ_GRAN,  m_wreq);
       pl = payload_put(pl, WRITEREQ_GRAN, WRITEDATA_GRAN, m_wdata);
-      build_write_flit = flit_assemble('0,
+      build_write_flit = flit_assemble_cr('0,
                            (msgstart_t'(1) << 0) | (msgstart_t'(1) << WRITEREQ_GRAN),
-                           pl);
+                           return_credit(), pl);
     end
+  endfunction
+
+  // MsgCredit this bridge advertises to B: it grants ReadData/WriteResp credits
+  // (the message types B transmits) for the response granules it has freed.
+  function automatic logic [CREDIT_W-1:0] return_credit();
+    return_credit = mk_msgcredit(2'b00, 3'b000, 3'b000, 3'b000,
+                                 cred_encode_ge(ret_rdata),
+                                 cred_encode_ge2(ret_wresp));
   endfunction
 
   function automatic flit_t build_read_flit();
@@ -98,7 +138,8 @@ module aou_axi_initiator_bridge
                           '0, '0, '0,
                           {{(AOU_ADDR_W-AXI_ADDR_W){1'b0}}, araddr_q});
       pl = payload_put('0, 0, READREQ_GRAN, m_rreq);
-      build_read_flit = flit_assemble('0, (msgstart_t'(1) << 0), pl);
+      build_read_flit = flit_assemble_cr('0, (msgstart_t'(1) << 0),
+                                         return_credit(), pl);
     end
   endfunction
 
@@ -111,7 +152,13 @@ module aou_axi_initiator_bridge
   assign s_rvalid  = (state == S_R);
   assign s_rdata   = rdata_q;
   assign s_rresp   = rresp_q;
-  assign tx_valid  = (state == S_WSEND) || (state == S_RSEND);
+  // A message is only presented on the link once its full granule credits are
+  // held (§6.1 "all credits consumed at message start").  Under single-
+  // outstanding traffic the response replenishes these before the next request,
+  // so this never actually stalls here — it is the safety gate that a multi-
+  // outstanding follow-on relies on.
+  assign tx_valid  = ((state == S_WSEND) && wsend_ok) ||
+                     ((state == S_RSEND) && rsend_ok);
   assign rx_ready  = (state == S_WAIT);
 
   // Build the outgoing flit procedurally: Icarus 11 mis-generates a wide
@@ -135,6 +182,8 @@ module aou_axi_initiator_bridge
       araddr_q <= '0; arprot_q <= '0;
       wdata_q  <= '0; wstrb_q  <= '0;
       bresp_q  <= '0; rresp_q  <= '0; rdata_q <= '0;
+      cr_wreq  <= CR_WREQ[7:0]; cr_rreq <= CR_RREQ[7:0]; cr_wdata <= CR_WDATA[7:0];
+      ret_rdata <= '0; ret_wresp <= '0;
     end else begin
       unique case (state)
         S_IDLE: begin : s_idle_blk
@@ -162,28 +211,48 @@ module aou_axi_initiator_bridge
             state    <= S_RSEND;
           end
         end
-        S_WSEND: if (tx_ready) begin
-          aw_seen <= 1'b0; w_seen <= 1'b0; state <= S_WAIT;
+        // On a successful send the message's credits are consumed (§6.1) and the
+        // advertised return credits (just flushed into the header) are cleared.
+        S_WSEND: if (tx_valid && tx_ready) begin
+          aw_seen  <= 1'b0; w_seen <= 1'b0;
+          cr_wreq  <= cr_wreq  - WRITEREQ_GRAN[7:0];
+          cr_wdata <= cr_wdata - WRITEDATA_GRAN[7:0];
+          ret_rdata <= '0; ret_wresp <= '0;
+          state    <= S_WAIT;
         end
-        S_RSEND: if (tx_ready) state <= S_WAIT;
+        S_RSEND: if (tx_valid && tx_ready) begin
+          cr_rreq  <= cr_rreq - READREQ_GRAN[7:0];
+          ret_rdata <= '0; ret_wresp <= '0;
+          state    <= S_WAIT;
+        end
         S_WAIT: if (rx_valid) begin : s_wait_blk
           payload_t              rpl;
           msg_t                  m;
+          logic [CREDIT_W-1:0]   mc;
           // AoU RDATA is 256b; only the low AXI_DATA_W bits carry this design's
           // 32-bit beat — the rest is intentionally dropped.
           // verilator lint_off UNUSEDSIGNAL
           logic [AOU_DATA_W-1:0] rd_full;
           // verilator lint_on UNUSEDSIGNAL
           rpl = flit_payload(rx_data);
+          mc  = flit_credit(rx_data);
+          // replenish send-credits from B's grant (saturate at the held ceiling)
+          cr_wreq  <= sat_add(cr_wreq,  cred_decode(mc_wreq (mc)), CR_WREQ);
+          cr_rreq  <= sat_add(cr_rreq,  cred_decode(mc_rreq (mc)), CR_RREQ);
+          cr_wdata <= sat_add(cr_wdata, cred_decode(mc_wdata(mc)), CR_WDATA);
           if (is_write) begin
             m        = payload_get(rpl, 0, WRITERESP_GRAN);
             bresp_q <= wrsp_resp(m);
+            // owe B one WriteResp message's granules back
+            ret_wresp <= ret_wresp + WRITERESP_GRAN[7:0];
             state   <= S_B;
           end else begin
             m        = payload_get(rpl, 0, READDATA_GRAN);
             rd_full  = rd_data(m);
             rdata_q <= rd_full[AXI_DATA_W-1:0];
             rresp_q <= rd_resp(m);
+            // owe B one ReadData message's granules back
+            ret_rdata <= ret_rdata + READDATA_GRAN[7:0];
             state   <= S_R;
           end
         end

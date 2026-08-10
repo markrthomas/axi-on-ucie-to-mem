@@ -31,7 +31,8 @@ RTL := \
     ../rtl/axi_ucie_mem_top.sv
 
 # Bound assertion checkers (shared with the Verilator flow).
-SVA := ../dv/sva/axi_lite_sva.sv ../dv/sva/aou_flit_sva.sv ../dv/sva/bind_sva.sv
+SVA := ../dv/sva/axi_lite_sva.sv ../dv/sva/aou_flit_sva.sv \
+       ../dv/sva/aou_credit_sva.sv ../dv/sva/bind_sva.sv
 
 SV_IF  := axi_lite_if.sv
 PKG    := axi_pkg.sv

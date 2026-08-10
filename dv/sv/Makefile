@@ -21,7 +21,8 @@ TOP := tb_axi_ucie_mem
 # Concurrent SVA checkers (bound to the DUT).  Compiled into the Verilator
 # --assert flow; the Icarus flow omits them (weak iverilog SVA support).
 SVA_DIR := ../sva
-SVA := $(SVA_DIR)/axi_lite_sva.sv $(SVA_DIR)/aou_flit_sva.sv $(SVA_DIR)/bind_sva.sv
+SVA := $(SVA_DIR)/axi_lite_sva.sv $(SVA_DIR)/aou_flit_sva.sv \
+       $(SVA_DIR)/aou_credit_sva.sv $(SVA_DIR)/bind_sva.sv
 
 PASS_RE := \[SV-TB\] PASS
 

@@ -24,4 +24,14 @@ bind ucie_stream_link aou_flit_sva u_flit_sva (
   .flit(in_data), .valid(in_valid), .ready(in_ready)
 );
 
+// aou_credit_sva -> each bridge's held §6 credit counters (ceiling 8 covers all
+// message types in this build: WDATA/RDATA=8, WREQ/RREQ=3, WRESP=1).
+bind aou_axi_initiator_bridge aou_credit_sva #(.CEIL(8)) u_cr_sva (
+  .clk(clk), .rstn(rstn), .c0(cr_wreq), .c1(cr_rreq), .c2(cr_wdata)
+);
+
+bind aou_axi_target_bridge aou_credit_sva #(.CEIL(8)) u_cr_sva (
+  .clk(clk), .rstn(rstn), .c0(cr_rdata), .c1(cr_wresp), .c2(8'd0)
+);
+
 `endif

@@ -7,7 +7,8 @@
 // Scope of THIS package (see docs/PLAN.md):
 //   * Basic Profile messages: WriteReq, ReadReq, WriteData(256b),
 //     ReadData(256b), WriteResp.  (WriteDataFull / 512b / 1024b not built.)
-//   * Resource Plane RP0 only; no credit flow control; no activation FSM.
+//   * Resource Plane RP0 only; §6 per-message-type credit flow control (see the
+//     credit helpers below and the bridges); no activation FSM (§8).
 //   * AXI4-Lite front door, 32-bit data / 32-bit address, single beat
 //     (AWLEN=ARLEN=0, DLENGTH=00 -> 256b data message).
 //
@@ -312,6 +313,98 @@ package aou_pkg;
                                                            input int g);
     payload_msgtype = p[PLP_PAYLOAD_BITS-1 - g*GRAN_BITS -: MSGTYPE_W];
   endfunction
+
+  // Extract the 16-bit MsgCredit header field from a flit (see flit_assemble:
+  // header is FDId(2) | MsgStart(48) | MsgCredit(16) | Rsvd(14)).
+  function automatic logic [CREDIT_W-1:0] flit_credit(input flit_t f);
+    flit_credit = f[PLP_BITS-1-FDID_W-NUM_GRAN -: CREDIT_W];
+  endfunction
+
+  // Credit-carrying flit assembly.  flit_assemble() above forces MsgCredit=0
+  // (used where no credit is advertised); this variant inserts an arbitrary
+  // MsgCredit word for the §6 flow-control return path.
+  function automatic flit_t flit_assemble_cr(input logic [FDID_W-1:0]   fdid,
+                                             input msgstart_t           msgstart,
+                                             input logic [CREDIT_W-1:0] msgcredit,
+                                             input payload_t            payload);
+    flit_assemble_cr = {fdid, msgstart, msgcredit, {HDR_RSVD_W{1'b0}}, payload};
+  endfunction
+
+  // =========================================================================
+  // §6 Flow control — per-message-type, per-granule credits (Basic Profile,
+  // resource plane RP0).  A credit guarantees the receiver has room for one
+  // granule of the advertised message type (§6.1); all of a message's credits
+  // are consumed by the transmitter at its start.  Credits are advertised in
+  // the 16-bit MsgCredit header field, sub-divided per Table 16 and value-
+  // encoded in coarse buckets per Table 17.
+  // =========================================================================
+
+  // Per-type credit sub-field widths (Table 16).
+  localparam int WREQCRED_W  = 3;   // MsgCredit[2:0]
+  localparam int RREQCRED_W  = 3;   // MsgCredit[5:3]
+  localparam int WDATACRED_W = 3;   // MsgCredit[8:6]
+  localparam int RDATACRED_W = 3;   // MsgCredit[11:9]
+  localparam int WRESPCRED_W = 2;   // MsgCredit[13:12]  (RP is MsgCredit[15:14])
+
+  localparam int CRED_MAX = 128;    // largest grant (Table 17 'b111)
+
+  // Table 17: a *CRED bucket code -> number of granted credits.
+  function automatic int unsigned cred_decode(input logic [2:0] code);
+    case (code)
+      3'b000: cred_decode = 0;
+      3'b001: cred_decode = 1;
+      3'b010: cred_decode = 4;
+      3'b011: cred_decode = 8;
+      3'b100: cred_decode = 16;
+      3'b101: cred_decode = 32;
+      3'b110: cred_decode = 64;
+      3'b111: cred_decode = 128;
+      default:cred_decode = 0;
+    endcase
+  endfunction
+
+  // Smallest Table-17 bucket granting at least `n` credits (n<=128 saturates).
+  // Used to return "at least the granules just freed"; the peer counter then
+  // saturates at its ceiling, so a coarse over-grant is harmless (§6.4).
+  function automatic logic [2:0] cred_encode_ge(input logic [7:0] n);
+    if      (n == 0) cred_encode_ge = 3'b000;
+    else if (n <= 1) cred_encode_ge = 3'b001;
+    else if (n <= 4) cred_encode_ge = 3'b010;
+    else if (n <= 8) cred_encode_ge = 3'b011;
+    else if (n <= 16) cred_encode_ge = 3'b100;
+    else if (n <= 32) cred_encode_ge = 3'b101;
+    else if (n <= 64) cred_encode_ge = 3'b110;
+    else              cred_encode_ge = 3'b111;
+  endfunction
+
+  // 2-bit variant for the WRESPCRED field (Table 16): only the first four
+  // Table-17 encodings are legal for WriteResp (up to 8 credits).
+  function automatic logic [1:0] cred_encode_ge2(input logic [7:0] n);
+    if      (n == 0) cred_encode_ge2 = 2'b00;
+    else if (n <= 1) cred_encode_ge2 = 2'b01;
+    else if (n <= 4) cred_encode_ge2 = 2'b10;
+    else             cred_encode_ge2 = 2'b11;
+  endfunction
+
+  // Assemble a MsgCredit word (Table 16): RP in [15:14], then the five
+  // per-type bucket codes.  Inputs are already Table-17 bucket codes.
+  function automatic logic [CREDIT_W-1:0] mk_msgcredit(
+      input logic [RP_W-1:0]        rp,
+      input logic [WREQCRED_W-1:0]  wreq,
+      input logic [RREQCRED_W-1:0]  rreq,
+      input logic [WDATACRED_W-1:0] wdata,
+      input logic [RDATACRED_W-1:0] rdata,
+      input logic [WRESPCRED_W-1:0] wresp);
+    mk_msgcredit = {rp, wresp, rdata, wdata, rreq, wreq};
+  endfunction
+
+  // MsgCredit sub-field extractors (Table 16).
+  function automatic logic [2:0]      mc_wreq (input logic [CREDIT_W-1:0] c); mc_wreq  = c[2:0];   endfunction
+  function automatic logic [2:0]      mc_rreq (input logic [CREDIT_W-1:0] c); mc_rreq  = c[5:3];   endfunction
+  function automatic logic [2:0]      mc_wdata(input logic [CREDIT_W-1:0] c); mc_wdata = c[8:6];   endfunction
+  function automatic logic [2:0]      mc_rdata(input logic [CREDIT_W-1:0] c); mc_rdata = c[11:9];  endfunction
+  function automatic logic [1:0]      mc_wresp(input logic [CREDIT_W-1:0] c); mc_wresp = c[13:12]; endfunction
+  function automatic logic [RP_W-1:0] mc_rp   (input logic [CREDIT_W-1:0] c); mc_rp    = c[15:14]; endfunction
 
 endpackage : aou_pkg
 // verilator lint_on UNUSEDSIGNAL
