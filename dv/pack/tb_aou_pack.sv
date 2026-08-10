@@ -111,6 +111,35 @@ module tb_aou_pack
     check(rd_id(mg)   == 10'h2AB,       "rdata id");
     check(rdd[31:0] == 32'hCAFEF00D,    "rdata data");
 
+    // --- Misc messages (§5.6 / §6.4.2 / §8.3.4): build, pack, round-trip ----
+    // ActivateReq (4 granules) — packed into a flit and recovered.
+    mg = mk_activate_req(5'h0, 5'h0, 16'h0);
+    check(get_msgtype(mg)       == MT_MISC,            "actreq msgtype");
+    check(misc_op(mg)           == MISCOP_ACTIVATION,  "actreq miscop");
+    check(misc_activationop(mg) == ACTOP_ACTIVATE_REQ, "actreq activationop");
+    pl = payload_put('0, 0, ACTIVATEREQ_GRAN, mg);
+    f  = flit_assemble('0, msgstart_t'(1), pl);
+    byte10 = flit_get_byte(f, 10);
+    check(byte10[7:4] == MT_MISC,       "actreq granule0 MSGTYPE nibble");
+    mg = payload_get(flit_payload(f), 0, ACTIVATEREQ_GRAN);
+    check(misc_activationop(mg) == ACTOP_ACTIVATE_REQ, "actreq activationop (unpacked)");
+
+    // ActivateAck (1 granule).
+    mg = mk_activation_other(ACTOP_ACTIVATE_ACK);
+    check(misc_op(mg)           == MISCOP_ACTIVATION,  "actack miscop");
+    check(misc_activationop(mg) == ACTOP_ACTIVATE_ACK, "actack activationop");
+
+    // CrdtGrant (2 granules): RP0 credit codes round-trip + Table-17 decode.
+    mg = mk_crdtgrant(3'b010, 3'b010, 3'b011, 3'b011, 2'b01);
+    check(get_msgtype(mg) == MT_MISC,         "crdt msgtype");
+    check(misc_op(mg)     == MISCOP_CRDTGRANT, "crdt miscop");
+    check(cg_wreq0(mg)  == 3'b010, "crdt wreq0");
+    check(cg_rreq0(mg)  == 3'b010, "crdt rreq0");
+    check(cg_wdata0(mg) == 3'b011, "crdt wdata0");
+    check(cg_rdata0(mg) == 3'b011, "crdt rdata0");
+    check(cg_wresp0(mg) == 2'b01,  "crdt wresp0");
+    check(cred_decode(cg_wdata0(mg)) == 8, "crdt wdata0 Table-17 decode");
+
     // --- report -------------------------------------------------------------
     if (errors == 0)
       $display("[PACK-TB] PASS: %0d checks, 0 errors", checks);

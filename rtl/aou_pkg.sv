@@ -458,6 +458,91 @@ package aou_pkg;
   function automatic logic [1:0]      mc_wresp(input logic [CREDIT_W-1:0] c); mc_wresp = c[13:12]; endfunction
   function automatic logic [RP_W-1:0] mc_rp   (input logic [CREDIT_W-1:0] c); mc_rp    = c[15:14]; endfunction
 
+  // =========================================================================
+  // Miscellaneous messages (§5.6) — MSGTYPE = MT_MISC ('b0000), then a 3-bit
+  // MISCOP (Table 15).  Used for §6.4.2 credit grants (CrdtGrant) and §8
+  // interface state management (Activation).  Built MSB-first, left-justified
+  // in an MSG_MAX_BITS container like the §5.8 data messages.
+  // =========================================================================
+  localparam int MISCOP_W       = 3;
+  localparam int ACTIVATIONOP_W = 4;
+
+  // MISCOP encoding (Table 15).
+  localparam logic [MISCOP_W-1:0] MISCOP_ACTIVATION = 3'b010;
+  localparam logic [MISCOP_W-1:0] MISCOP_CRDTGRANT  = 3'b100;
+
+  // ActivationOp encoding (Table 27).
+  localparam logic [ACTIVATIONOP_W-1:0] ACTOP_ACTIVATE_REQ   = 4'b0000;
+  localparam logic [ACTIVATIONOP_W-1:0] ACTOP_ACTIVATE_ACK   = 4'b0001;
+  localparam logic [ACTIVATIONOP_W-1:0] ACTOP_DEACTIVATE_REQ = 4'b0010;
+  localparam logic [ACTIVATIONOP_W-1:0] ACTOP_DEACTIVATE_ACK = 4'b0011;
+
+  // Misc message granule counts (Tables 14, 25, 26, 18).
+  localparam int MISC_GRAN        = 1;   // generic Misc / ActivationOthers (40b)
+  localparam int ACTIVATEREQ_GRAN = 4;   // ActivateReq (160b, carries profiles)
+  localparam int CRDTGRANT_GRAN   = 2;   // CrdtGrant   (80b)
+
+  // --- builders -------------------------------------------------------------
+  // ActivationOthers (Table 26): ActivateAck / DeactivateReq / DeactivateAck.
+  //   MSGTYPE(4), MISCOP(3)=Activation, ACTIVATIONOP(4), RsvdZero(29) => 40b.
+  function automatic msg_t mk_activation_other(input logic [ACTIVATIONOP_W-1:0] op);
+    logic [39:0] v;
+    begin
+      v = {MT_MISC, MISCOP_ACTIVATION, op, 29'b0};
+      mk_activation_other = {v, {(MSG_MAX_BITS-40){1'b0}}};
+    end
+  endfunction
+
+  // ActivateReq (Table 25): as ActivationOthers but ACTIVATIONOP=ActivateReq
+  //   plus RsvdZero(3) and RP0..RP3 Profile{ID(5),Rev(5),Opt(16)} => 160b.  The
+  //   Basic Profile leaves the profile fields at 0 (Chapter 11 defines them).
+  function automatic msg_t mk_activate_req(
+      input logic [4:0]  rp0_id,  input logic [4:0]  rp0_rev, input logic [15:0] rp0_opt);
+    logic [159:0] v;
+    begin
+      v = {MT_MISC, MISCOP_ACTIVATION, ACTOP_ACTIVATE_REQ, 3'b0,
+           rp0_id, rp0_rev, rp0_opt, 14'b0,   // RP0
+           5'b0,   5'b0,    16'b0,   14'b0,   // RP1 (not present)
+           5'b0,   5'b0,    16'b0,   14'b0,   // RP2 (not present)
+           5'b0,   5'b0,    16'b0};           // RP3 (not present)
+      mk_activate_req = {v, {(MSG_MAX_BITS-160){1'b0}}};
+    end
+  endfunction
+
+  // CrdtGrant (Table 18): bulk credit advertisement.  Only RP0 is populated in
+  // this single-plane build; RP1..RP3 fields are 0.  Inputs are Table-17 codes.
+  function automatic msg_t mk_crdtgrant(
+      input logic [2:0] wreq0,  input logic [2:0] rreq0,
+      input logic [2:0] wdata0, input logic [2:0] rdata0,
+      input logic [1:0] wresp0);
+    logic [79:0] v;
+    begin
+      v = {MT_MISC, MISCOP_CRDTGRANT,
+           wreq0,  3'b0, 3'b0, 3'b0,          // WREQCRED0..3
+           rreq0,  3'b0, 3'b0, 3'b0,          // RREQCRED0..3
+           wdata0, 3'b0, 3'b0, 3'b0,          // WDATACRED0..3
+           rdata0, 3'b0, 3'b0, 3'b0,          // RDATACRED0..3
+           wresp0, 2'b0, 2'b0, 2'b0,          // WRESPCRED0..3
+           17'b0};
+      mk_crdtgrant = {v, {(MSG_MAX_BITS-80){1'b0}}};
+    end
+  endfunction
+
+  // --- getters (MSGTYPE is get_msgtype(); these read the Misc sub-fields) ---
+  function automatic logic [MISCOP_W-1:0] misc_op(input msg_t m);
+    misc_op = m[MSG_MAX_BITS-1-MSGTYPE_W -: MISCOP_W];            // after MSGTYPE(4)
+  endfunction
+  function automatic logic [ACTIVATIONOP_W-1:0] misc_activationop(input msg_t m);
+    misc_activationop = m[MSG_MAX_BITS-1-7 -: ACTIVATIONOP_W];    // after 4+3
+  endfunction
+
+  // CrdtGrant RP0 credit-code getters (offsets after MSGTYPE(4)+MISCOP(3)=7).
+  function automatic logic [2:0] cg_wreq0 (input msg_t m); cg_wreq0  = m[MSG_MAX_BITS-1-7  -: 3]; endfunction
+  function automatic logic [2:0] cg_rreq0 (input msg_t m); cg_rreq0  = m[MSG_MAX_BITS-1-19 -: 3]; endfunction
+  function automatic logic [2:0] cg_wdata0(input msg_t m); cg_wdata0 = m[MSG_MAX_BITS-1-31 -: 3]; endfunction
+  function automatic logic [2:0] cg_rdata0(input msg_t m); cg_rdata0 = m[MSG_MAX_BITS-1-43 -: 3]; endfunction
+  function automatic logic [1:0] cg_wresp0(input msg_t m); cg_wresp0 = m[MSG_MAX_BITS-1-55 -: 2]; endfunction
+
 endpackage : aou_pkg
 // verilator lint_on UNUSEDSIGNAL
 // verilator lint_on UNUSEDPARAM
