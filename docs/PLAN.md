@@ -37,8 +37,9 @@ AXI. (CHI-C2C is the coherent alternative but far heavier; out of scope.)
 - **AoU fidelity:** real Basic-Profile message *formats* (§5) + real **flit
   packing** (250 B PLP = 10 B protocol header with FDId + MsgStart[47:0] granule
   bitmap + 240 B / 48 granules of payload), over a ready/valid 256 B streaming
-  link. **RP0 only; no credit flow control (§6); no activation FSM (§8)** — those
-  are an explicit later phase.
+  link. **RP0 only; no activation FSM (§8)** — an explicit later phase.
+  (UPDATE: §6 per-message-type credit flow control on RP0 has since been
+  implemented — see the credit helpers in `aou_pkg` and the two bridges.)
 - **AXI flavor:** **AXI4-Lite, 32-bit** (single-beat AW/W/B/AR/R, AWLEN/ARLEN=0),
   both at the front door and at the memory target.
 - **GitHub:** create **private** repo `markrthomas/axi-on-ucie-to-mem` now, push
@@ -73,8 +74,9 @@ packing multiple messages per flit is exercised but never overflows.
   counts, `GRANULE_BITS=40`, `NUM_GRANULES=48`, `FDID_W=2`; packed-struct typedefs
   for the 5 messages and **pack/unpack functions** (field order per §5.3–5.5
   tables; a single documented bit order shared by packer+unpacker — field widths
-  and granule totals match the spec exactly; exact §5.8 PCIe byte placement noted
-  as a stretch, not required for interoperability within this design).
+  and granule totals match the spec exactly).  (UPDATE: byte-exact packing has
+  since been implemented — §5.8 message layouts and the §4.3 Figure-5 protocol
+  header — with a `dv/pack` conformance test.)
 - **`aou_flit_pack.sv`** — accepts a stream of typed messages, lays them into the
   240 B payload granule-by-granule, sets `MsgStart[47:0]` + `FDId`, emits the
   250 B PLP inside a 256 B flit on a `flit_valid/flit_ready` bus. One flit per
@@ -154,9 +156,11 @@ AXI-Lite protocol property set. Flagged optional, not part of the core five.
 4. UVM mirror (license-gated) + single-file variant. Push.
 5. README + CI polish; final push. (Formal = optional follow-on.)
 
-Credit flow control (§6), activation FSM (§8), resource planes, multi-message
-QoS, and AXI4 bursts are explicitly **out of scope for this pass** (documented as
-future phases in the README).
+Activation FSM (§8), resource planes, multi-message QoS, and AXI4 bursts are
+explicitly **out of scope for this pass** (documented as future phases in the
+README).  (UPDATE: §6 credit flow control and byte-exact §4.3/§5.8 packing,
+originally listed here as out of scope, have since been implemented; the
+`CrdtGrant` message and reset-during-ACTIVATE credit exchange remain future.)
 
 ## Verification (how to check end-to-end)
 - `make test` — three cocotb/PyUVM tests PASS (fresh memory per test).

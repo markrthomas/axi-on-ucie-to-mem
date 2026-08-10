@@ -64,9 +64,12 @@ exercising real multi-message packing; the unpacker is bitmap-driven. This build
 covers the Basic Profile, Resource Plane RP0, 32-bit single-beat AXI-Lite
 (`AWLEN=ARLEN=0`, `DLENGTH=256b`); AXI data occupies the low 32 bits of the AoU
 data field and the AoU 10-bit ID carries a per-transaction tag echoed on the
-response. See [`docs/PLAN.md`](docs/PLAN.md) for the full architecture and the
-out-of-scope follow-ons (credit flow control §6, activation FSM §8, resource
-planes, AXI4 bursts).
+response. Flit fields are packed **byte-exact** to the spec (§5.8 message
+layouts and the §4.3 Figure-5 protocol header), and **§6 per-message-type credit
+flow control** (RP0) runs on both bridges, carried in the header `MsgCredit`
+field. See [`docs/PLAN.md`](docs/PLAN.md) for the full architecture and the
+remaining out-of-scope follow-ons (activation FSM §8, multiple resource planes,
+AXI4 bursts).
 
 ## Directory layout
 
@@ -78,7 +81,8 @@ planes, AXI4 bursts).
   - `axi_ucie_mem_top.sv` — the DUT top (wires the chain + return link)
 - `dv/cocotb/` — cocotb + PyUVM testbench (the golden runnable env)
 - `dv/sv/` — portable self-checking SV directed TB (Icarus + Verilator)
-- `dv/sva/` — AXI-Lite + AoU-flit assertion checkers (bound to the DUT)
+- `dv/sva/` — AXI-Lite + AoU-flit + §6 credit assertion checkers (bound to the DUT)
+- `dv/pack/` — §4.3/§5.8 byte-exact packing conformance TB (Icarus + Verilator)
 - `dv/systemc/` — SystemC testbench (`verilator --sc` model + `sc_main`)
 - `uvm/` — SystemVerilog UVM TB (multi-file + single-file), license-gated
 - `sim/` — Verilator C++ coverage harness
@@ -122,7 +126,7 @@ flowchart TB
     end
     IF["AXI-Lite interface / cocotb BFM"]
     DUT["axi_ucie_mem_top (DUT)"]
-    SVA["axi_lite_sva / aou_flit_sva<br/>(bound; SV/Verilator/UVM flows)"]
+    SVA["axi_lite_sva / aou_flit_sva / aou_credit_sva<br/>(bound; SV/Verilator/UVM flows)"]
 
     SEQ -->|items| SEQR --> DRV -->|drive AW/W/AR| IF
     IF <-->|AXI-Lite| DUT
@@ -140,13 +144,14 @@ Everything runs from the repo root and degrades gracefully if a tool is absent.
 | Directed | `make test-write-read` / `test-random` / `test-walking` | one cocotb test |
 | SV (Icarus) | `make sv` | portable SV directed TB under Icarus |
 | SV (Verilator) | `make vlt` | same TB under Verilator + bound SVA assertions |
+| Packing | `make pack` | §4.3/§5.8 byte-exact packing conformance (Icarus + Verilator) |
 | SystemC | `make systemc` | SystemC TB (Verilator `--sc` + `sc_main`) |
 | SV/UVM | `make uvm` | UVM TB (VCS/Xcelium/Questa); skips cleanly if unlicensed |
 | Waves | `make waves` / `make wave` | dump / open GTKWave |
 | Lint | `make lint` | `iverilog -Wall` + Verilator RTL lint |
 | Coverage | `make coverage` | Verilator `--coverage` → `sim/coverage.info` (floor `COV_MIN`, default 85%; ~90–94% achieved) |
 | Formal | `make formal` | SymbiYosys proof of `axi_lite_mem` (bmc + cover + unbounded `prove`); skips cleanly if `sby` absent |
-| Gate | `make check` | lint + cocotb + SV(both sims) + SystemC |
+| Gate | `make check` | lint + cocotb + SV(both sims) + pack + SystemC |
 | CI | `make ci` | `check` + coverage as one pass/fail gate |
 
 Run `make help` for the full list.
@@ -185,6 +190,7 @@ scoreboard asserts `errors == 0` in its check phase.
 ```bash
 make sv          # SV directed TB under Icarus       -> "[SV] Icarus PASSED"
 make vlt         # SV directed TB under Verilator + SVA -> "[SV] Verilator PASSED"
+make pack        # byte-exact packing conformance      -> "[PACK] Icarus/Verilator PASSED"
 make systemc     # SystemC TB                          -> "[SC] SystemC PASSED"
 ```
 
@@ -274,11 +280,15 @@ environments above.
 
 ## Scope & follow-ons
 
-This pass implements the Basic Profile message formats and real flit packing over
-a streaming link. Explicitly **out of scope for now** (documented in
-`docs/PLAN.md`), in rough priority order:
+This pass implements the Basic Profile message formats, **byte-exact flit
+packing** (§5.8 message layouts + the §4.3 Figure-5 protocol header), and **§6
+per-message-type credit flow control** on RP0 (carried in the header `MsgCredit`
+field, with a bound safety assertion). Explicitly **out of scope for now**
+(documented in `docs/PLAN.md`), in rough priority order:
 
-- **Credit flow control** (spec §6) — per-message-type credit pools + `CrdtGrant`.
+- **`CrdtGrant` exchange + reset handshake** (spec §6.4.2 / §6.4.3) — the Misc
+  `CrdtGrant` message and boot-time credit advertisement during `ACTIVATE`;
+  initial credits are currently modeled statically as parameters.
 - **Activation state machine** (spec §8) — `Activate`/`Deactivate`/`ERROR`.
 - **Multiple resource planes** (RP0..RP3) and multi-outstanding transactions.
 - **Full AXI4** — INCR bursts (`AxLEN>0`), out-of-order IDs, 512b/1024b data.
