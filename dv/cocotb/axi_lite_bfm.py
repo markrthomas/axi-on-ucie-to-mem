@@ -30,7 +30,9 @@ class AxiLiteBfm(metaclass=utility_classes.Singleton):
         d = self.dut
         d.ARESETn.value = 0
         for sig in ("AWVALID", "WVALID", "BREADY", "ARVALID", "RREADY",
-                    "AWADDR", "AWPROT", "WDATA", "WSTRB", "ARADDR", "ARPROT"):
+                    "AWID", "AWADDR", "AWLEN", "AWSIZE", "AWBURST", "AWPROT",
+                    "WDATA", "WSTRB", "WLAST",
+                    "ARID", "ARADDR", "ARLEN", "ARSIZE", "ARBURST", "ARPROT"):
             getattr(d, sig).value = 0
         await ClockCycles(d.ACLK, 3)
         await FallingEdge(d.ACLK)
@@ -41,11 +43,16 @@ class AxiLiteBfm(metaclass=utility_classes.Singleton):
     async def _write(self, addr, data, strb=0xF):
         d = self.dut
         await FallingEdge(d.ACLK)
+        d.AWID.value = 0
         d.AWADDR.value = addr
+        d.AWLEN.value = 0            # single beat
+        d.AWSIZE.value = 2          # 4 bytes (32-bit)
+        d.AWBURST.value = 1         # INCR
         d.AWPROT.value = 0
         d.AWVALID.value = 1
         d.WDATA.value = data
         d.WSTRB.value = strb
+        d.WLAST.value = 1
         d.WVALID.value = 1
         d.BREADY.value = 1
 
@@ -72,7 +79,11 @@ class AxiLiteBfm(metaclass=utility_classes.Singleton):
     async def _read(self, addr):
         d = self.dut
         await FallingEdge(d.ACLK)
+        d.ARID.value = 0
         d.ARADDR.value = addr
+        d.ARLEN.value = 0
+        d.ARSIZE.value = 2
+        d.ARBURST.value = 1
         d.ARPROT.value = 0
         d.ARVALID.value = 1
         d.RREADY.value = 1

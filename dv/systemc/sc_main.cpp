@@ -21,13 +21,15 @@ static const uint32_t WORDS      = 1u << (MEM_ADDR_W - 2);
 SC_MODULE(Stim) {
   sc_in<bool>      clk;
   sc_out<bool>     ARESETn;
-  sc_out<uint32_t> AWADDR;  sc_out<uint32_t> AWPROT;  sc_out<bool> AWVALID;
-  sc_in<bool>      AWREADY;
-  sc_out<uint32_t> WDATA;   sc_out<uint32_t> WSTRB;   sc_out<bool> WVALID;
-  sc_in<bool>      WREADY;
+  sc_out<uint32_t> AWID; sc_out<uint32_t> AWADDR; sc_out<uint32_t> AWLEN;
+  sc_out<uint32_t> AWSIZE; sc_out<uint32_t> AWBURST; sc_out<uint32_t> AWPROT;
+  sc_out<bool>     AWVALID; sc_in<bool> AWREADY;
+  sc_out<uint32_t> WDATA;   sc_out<uint32_t> WSTRB;   sc_out<bool> WLAST;
+  sc_out<bool>     WVALID;   sc_in<bool>      WREADY;
   sc_in<uint32_t>  BRESP;   sc_in<bool>      BVALID;   sc_out<bool> BREADY;
-  sc_out<uint32_t> ARADDR;  sc_out<uint32_t> ARPROT;  sc_out<bool> ARVALID;
-  sc_in<bool>      ARREADY;
+  sc_out<uint32_t> ARID; sc_out<uint32_t> ARADDR; sc_out<uint32_t> ARLEN;
+  sc_out<uint32_t> ARSIZE; sc_out<uint32_t> ARBURST; sc_out<uint32_t> ARPROT;
+  sc_out<bool>     ARVALID; sc_in<bool> ARREADY;
   sc_in<uint32_t>  RDATA;   sc_in<uint32_t>  RRESP;    sc_in<bool>  RVALID;
   sc_out<bool>     RREADY;
 
@@ -38,11 +40,18 @@ SC_MODULE(Stim) {
   SC_CTOR(Stim) { SC_THREAD(run); sensitive << clk.pos(); }
 
   void axi_write(uint32_t addr, uint32_t data) {
-    AWADDR.write(addr); AWPROT.write(0); AWVALID.write(true);
-    WDATA.write(data);  WSTRB.write(0xF); WVALID.write(true);
+    AWID.write(0); AWADDR.write(addr); AWLEN.write(0); AWSIZE.write(2);
+    AWBURST.write(1); AWPROT.write(0); AWVALID.write(true);
+    WDATA.write(data);  WSTRB.write(0xF); WLAST.write(true); WVALID.write(true);
     BREADY.write(true);
-    do { wait(); } while (!(AWREADY.read() && WREADY.read()));
-    AWVALID.write(false); WVALID.write(false);
+    // AW and W are accepted independently (the bridge takes AW in IDLE, then the
+    // W beat once it reaches its data state), so track each ready separately.
+    bool aw = false, w = false;
+    while (!(aw && w)) {
+      wait();
+      if (!aw && AWREADY.read()) { aw = true; AWVALID.write(false); }
+      if (!w  && WREADY.read())  { w  = true; WVALID.write(false); WLAST.write(false); }
+    }
     do { wait(); } while (!BVALID.read());
     if (BRESP.read() != 0) { errors++; std::cout << "[SC-TB] bad BRESP\n"; }
     wait();
@@ -50,7 +59,8 @@ SC_MODULE(Stim) {
   }
 
   uint32_t axi_read(uint32_t addr) {
-    ARADDR.write(addr); ARPROT.write(0); ARVALID.write(true);
+    ARID.write(0); ARADDR.write(addr); ARLEN.write(0); ARSIZE.write(2);
+    ARBURST.write(1); ARPROT.write(0); ARVALID.write(true);
     RREADY.write(true);
     do { wait(); } while (!ARREADY.read());
     ARVALID.write(false);
@@ -76,8 +86,10 @@ SC_MODULE(Stim) {
     ARESETn.write(false);
     AWVALID.write(false); WVALID.write(false); ARVALID.write(false);
     BREADY.write(false);  RREADY.write(false);
-    AWADDR.write(0); AWPROT.write(0); WDATA.write(0); WSTRB.write(0);
-    ARADDR.write(0); ARPROT.write(0);
+    AWID.write(0); AWADDR.write(0); AWLEN.write(0); AWSIZE.write(2);
+    AWBURST.write(1); AWPROT.write(0); WDATA.write(0); WSTRB.write(0); WLAST.write(false);
+    ARID.write(0); ARADDR.write(0); ARLEN.write(0); ARSIZE.write(2);
+    ARBURST.write(1); ARPROT.write(0);
     for (int i = 0; i < 3; i++) wait();
     ARESETn.write(true);
     wait();
@@ -117,25 +129,32 @@ SC_MODULE(Stim) {
 
 int sc_main(int, char**) {
   sc_clock clk("clk", 10, SC_NS);
-  sc_signal<bool>     ARESETn, AWVALID, AWREADY, WVALID, WREADY,
-                      BVALID, BREADY, ARVALID, ARREADY, RVALID, RREADY;
-  sc_signal<uint32_t> AWADDR, AWPROT, WDATA, WSTRB, BRESP,
-                      ARADDR, ARPROT, RDATA, RRESP;
+  sc_signal<bool>     ARESETn, AWVALID, AWREADY, WLAST, WVALID, WREADY,
+                      BVALID, BREADY, ARVALID, ARREADY, RLAST, RVALID, RREADY;
+  sc_signal<uint32_t> AWID, AWADDR, AWLEN, AWSIZE, AWBURST, AWPROT,
+                      WDATA, WSTRB, BID, BRESP,
+                      ARID, ARADDR, ARLEN, ARSIZE, ARBURST, ARPROT,
+                      RID, RDATA, RRESP;
 
   Vaxi_ucie_mem_top dut("dut");
   dut.ACLK(clk);       dut.ARESETn(ARESETn);
-  dut.AWADDR(AWADDR);  dut.AWPROT(AWPROT); dut.AWVALID(AWVALID); dut.AWREADY(AWREADY);
-  dut.WDATA(WDATA);    dut.WSTRB(WSTRB);   dut.WVALID(WVALID);   dut.WREADY(WREADY);
-  dut.BRESP(BRESP);    dut.BVALID(BVALID); dut.BREADY(BREADY);
-  dut.ARADDR(ARADDR);  dut.ARPROT(ARPROT); dut.ARVALID(ARVALID); dut.ARREADY(ARREADY);
-  dut.RDATA(RDATA);    dut.RRESP(RRESP);   dut.RVALID(RVALID);   dut.RREADY(RREADY);
+  dut.AWID(AWID); dut.AWADDR(AWADDR); dut.AWLEN(AWLEN); dut.AWSIZE(AWSIZE);
+  dut.AWBURST(AWBURST); dut.AWPROT(AWPROT); dut.AWVALID(AWVALID); dut.AWREADY(AWREADY);
+  dut.WDATA(WDATA);    dut.WSTRB(WSTRB);   dut.WLAST(WLAST); dut.WVALID(WVALID); dut.WREADY(WREADY);
+  dut.BID(BID);        dut.BRESP(BRESP);   dut.BVALID(BVALID); dut.BREADY(BREADY);
+  dut.ARID(ARID); dut.ARADDR(ARADDR); dut.ARLEN(ARLEN); dut.ARSIZE(ARSIZE);
+  dut.ARBURST(ARBURST); dut.ARPROT(ARPROT); dut.ARVALID(ARVALID); dut.ARREADY(ARREADY);
+  dut.RID(RID); dut.RDATA(RDATA); dut.RRESP(RRESP); dut.RLAST(RLAST);
+  dut.RVALID(RVALID);  dut.RREADY(RREADY);
 
   Stim stim("stim");
   stim.clk(clk);       stim.ARESETn(ARESETn);
-  stim.AWADDR(AWADDR); stim.AWPROT(AWPROT); stim.AWVALID(AWVALID); stim.AWREADY(AWREADY);
-  stim.WDATA(WDATA);   stim.WSTRB(WSTRB);   stim.WVALID(WVALID);   stim.WREADY(WREADY);
+  stim.AWID(AWID); stim.AWADDR(AWADDR); stim.AWLEN(AWLEN); stim.AWSIZE(AWSIZE);
+  stim.AWBURST(AWBURST); stim.AWPROT(AWPROT); stim.AWVALID(AWVALID); stim.AWREADY(AWREADY);
+  stim.WDATA(WDATA);   stim.WSTRB(WSTRB);   stim.WLAST(WLAST); stim.WVALID(WVALID); stim.WREADY(WREADY);
   stim.BRESP(BRESP);   stim.BVALID(BVALID); stim.BREADY(BREADY);
-  stim.ARADDR(ARADDR); stim.ARPROT(ARPROT); stim.ARVALID(ARVALID); stim.ARREADY(ARREADY);
+  stim.ARID(ARID); stim.ARADDR(ARADDR); stim.ARLEN(ARLEN); stim.ARSIZE(ARSIZE);
+  stim.ARBURST(ARBURST); stim.ARPROT(ARPROT); stim.ARVALID(ARVALID); stim.ARREADY(ARREADY);
   stim.RDATA(RDATA);   stim.RRESP(RRESP);   stim.RVALID(RVALID);   stim.RREADY(RREADY);
 
   sc_start();
