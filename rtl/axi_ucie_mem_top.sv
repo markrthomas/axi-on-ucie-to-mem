@@ -21,28 +21,41 @@ module axi_ucie_mem_top
     parameter int AXI_ADDR_W = 32,
     parameter int AXI_DATA_W = 32,
     parameter int AXI_STRB_W = AXI_DATA_W/8,
+    parameter int AXI_ID_W   = 4,
     parameter int MEM_ADDR_W = 16          // memory byte-address width (64 KiB)
 ) (
     input  logic                  ACLK,
     input  logic                  ARESETn,
-    // AXI4-Lite subordinate (TB master side)
+    // AXI4 subordinate (TB master side) — INCR/WRAP/FIXED bursts, AxLEN beats
+    input  logic [AXI_ID_W-1:0]   AWID,
     input  logic [AXI_ADDR_W-1:0] AWADDR,
+    input  logic [7:0]            AWLEN,
+    input  logic [2:0]            AWSIZE,
+    input  logic [1:0]            AWBURST,
     input  logic [2:0]            AWPROT,
     input  logic                  AWVALID,
     output logic                  AWREADY,
     input  logic [AXI_DATA_W-1:0] WDATA,
     input  logic [AXI_STRB_W-1:0] WSTRB,
+    input  logic                  WLAST,
     input  logic                  WVALID,
     output logic                  WREADY,
+    output logic [AXI_ID_W-1:0]   BID,
     output logic [1:0]            BRESP,
     output logic                  BVALID,
     input  logic                  BREADY,
+    input  logic [AXI_ID_W-1:0]   ARID,
     input  logic [AXI_ADDR_W-1:0] ARADDR,
+    input  logic [7:0]            ARLEN,
+    input  logic [2:0]            ARSIZE,
+    input  logic [1:0]            ARBURST,
     input  logic [2:0]            ARPROT,
     input  logic                  ARVALID,
     output logic                  ARREADY,
+    output logic [AXI_ID_W-1:0]   RID,
     output logic [AXI_DATA_W-1:0] RDATA,
     output logic [1:0]            RRESP,
+    output logic                  RLAST,
     output logic                  RVALID,
     input  logic                  RREADY
 );
@@ -69,14 +82,18 @@ module axi_ucie_mem_top
 
   // === Chiplet A: initiator bridge =========================================
   aou_axi_initiator_bridge #(
-    .AXI_ADDR_W(AXI_ADDR_W), .AXI_DATA_W(AXI_DATA_W), .AXI_STRB_W(AXI_STRB_W)
+    .AXI_ADDR_W(AXI_ADDR_W), .AXI_DATA_W(AXI_DATA_W), .AXI_STRB_W(AXI_STRB_W),
+    .AXI_ID_W(AXI_ID_W)
   ) u_init (
     .clk(ACLK), .rstn(ARESETn),
-    .s_awaddr(AWADDR), .s_awprot(AWPROT), .s_awvalid(AWVALID), .s_awready(AWREADY),
-    .s_wdata(WDATA),   .s_wstrb(WSTRB),   .s_wvalid(WVALID),   .s_wready(WREADY),
-    .s_bresp(BRESP),   .s_bvalid(BVALID), .s_bready(BREADY),
-    .s_araddr(ARADDR), .s_arprot(ARPROT), .s_arvalid(ARVALID), .s_arready(ARREADY),
-    .s_rdata(RDATA),   .s_rresp(RRESP),   .s_rvalid(RVALID),   .s_rready(RREADY),
+    .s_awid(AWID), .s_awaddr(AWADDR), .s_awlen(AWLEN), .s_awsize(AWSIZE),
+    .s_awburst(AWBURST), .s_awprot(AWPROT), .s_awvalid(AWVALID), .s_awready(AWREADY),
+    .s_wdata(WDATA), .s_wstrb(WSTRB), .s_wlast(WLAST), .s_wvalid(WVALID), .s_wready(WREADY),
+    .s_bid(BID), .s_bresp(BRESP), .s_bvalid(BVALID), .s_bready(BREADY),
+    .s_arid(ARID), .s_araddr(ARADDR), .s_arlen(ARLEN), .s_arsize(ARSIZE),
+    .s_arburst(ARBURST), .s_arprot(ARPROT), .s_arvalid(ARVALID), .s_arready(ARREADY),
+    .s_rid(RID), .s_rdata(RDATA), .s_rresp(RRESP), .s_rlast(RLAST),
+    .s_rvalid(RVALID), .s_rready(RREADY),
     .tx_data(init_tx_data), .tx_valid(init_tx_valid), .tx_ready(init_tx_ready),
     .rx_data(init_rx_data), .rx_valid(init_rx_valid), .rx_ready(init_rx_ready)
   );
@@ -103,7 +120,8 @@ module axi_ucie_mem_top
 
   // === Chiplet B: target bridge ============================================
   aou_axi_target_bridge #(
-    .AXI_ADDR_W(AXI_ADDR_W), .AXI_DATA_W(AXI_DATA_W), .AXI_STRB_W(AXI_STRB_W)
+    .AXI_ADDR_W(AXI_ADDR_W), .AXI_DATA_W(AXI_DATA_W), .AXI_STRB_W(AXI_STRB_W),
+    .AXI_ID_W(AXI_ID_W)
   ) u_tgt (
     .clk(ACLK), .rstn(ARESETn),
     .rx_data(tgt_rx_data), .rx_valid(tgt_rx_valid), .rx_ready(tgt_rx_ready),

@@ -48,6 +48,7 @@ module aou_flit_sva
     valid |-> (fdid == '0));
   a_mt0_known: assert property (@(posedge clk) disable iff (!rstn)
     valid |-> (mt0 == MT_WRITEREQ || mt0 == MT_READREQ ||
+               mt0 == MT_WRITEDATA ||  // bursts: WriteData travels in its own flit
                mt0 == MT_READDATA || mt0 == MT_WRITERESP ||
                mt0 == MT_MISC));       // §8 activation / §6.4.2 CrdtGrant flits
 
