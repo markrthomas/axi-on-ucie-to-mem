@@ -29,7 +29,7 @@ verilator:
 		echo "[ACT] Verilator < 5 — skipping"; exit 0; fi; \
 	mkdir -p sim_build; \
 	$(VERILATOR) --binary --timing -j 0 -Wall -Wno-DECLFILENAME \
-		-Wno-UNUSEDSIGNAL -Wno-TIMESCALEMOD \
+		-Wno-UNUSEDSIGNAL -Wno-TIMESCALEMOD -Wno-BLKSEQ -Wno-SYNCASYNCNET \
 		--top-module $(TOP) --Mdir obj_dir $(RTL) $(TB) -o vact; \
 	./obj_dir/vact 2>&1 | tee sim_build/verilator.log; \
 	grep -q "$(PASS_RE)" sim_build/verilator.log || { echo "[ACT] Verilator run FAILED"; exit 1; }; \
