@@ -168,6 +168,84 @@ re-activation, and `ERROR` recovery — all originally listed here as out of
 scope, have since been implemented; only Deactivate quiescing Option 2 (§8.3.2,
 OPTIONAL) remains future.)
 
+## Remaining follow-ons (actionable backlog)
+
+Each item below is self-contained and ordered by rough priority / value. For
+each: **Spec** = driving spec sections, **Touch** = files to change, **Approach**
+= a starting sketch, **Verify** = how to prove it. The current baseline is
+RP0-only, single-outstanding, AXI4-Lite 32-bit, with the full §8 activation FSM
+(bring-up + teardown + ERROR) already in place.
+
+### F1 — Multiple resource planes (RP0..RP3) + multi-outstanding
+- **Spec:** §3 (resource planes / FDId routing), §4.3 (FDId header field), §6
+  (per-plane credits), Table 16 (`MsgCredit` RP subfield `[15:14]`), §8.3.4
+  Table 25 (per-RP Profile fields in `ActivateReq`).
+- **Touch:** `rtl/aou_pkg.sv` — the `FDID_W=2` header field and `flit_fdid`
+  decode already exist (always 0 today); the `mk_crdtgrant` / `mk_activate_req`
+  message formats already reserve zero-filled RP1..RP3 slots, so add per-plane
+  inputs to populate them and thread a plane id through `flit_assemble`. Both
+  bridges (per-plane credit banks `cr_*[RP]`, per-plane outstanding tracking +
+  arbitration). `dv/sva/aou_flit_sva.sv` + `aou_credit_sva.sv` currently assert
+  RP0-only (`a_fdid_rp0`, `a_credit_rp0` = `mc_rp==0`) — relax to per-plane
+  bounds; `dv/sva/bind_sva.sv`.
+- **Approach:** parameterize `NUM_RP` (start with 2). Replicate the credit
+  counters and the single-outstanding transaction slot per plane; add a small
+  round-robin/priority arbiter selecting which plane's message packs into the
+  next flit. Keep one plane == today's behavior so the RP0 path is unchanged.
+- **Verify:** extend `dv/pack` with multi-RP round-trips; add a cocotb/SV test
+  issuing interleaved traffic on two planes and checking no cross-plane
+  credit/response leakage; SVA bounds hold per plane.
+- **Effort:** large (data-path + arbitration + DV). Biggest single item.
+
+### F2 — Full AXI4 (INCR bursts, out-of-order IDs, wide data)
+- **Spec:** AoU §5 message formats for `WriteData512/1024` and multi-beat
+  Read/Write data; AXI4 (`AxLEN>0` INCR, `AxSIZE`, ID-based reordering).
+- **Touch:** `rtl/axi_lite_mem.sv` → a full AXI4 slave (or a new
+  `rtl/axi_mem.sv`), both bridges (burst→multi-granule packing, per-ID response
+  reorder buffers), `rtl/aou_pkg.sv` (wider `WriteData`/`ReadData` builders +
+  `MSG_MAX_BITS`), the cocotb BFM `dv/cocotb/axi_lite_bfm.py` (AXI4 burst driver)
+  and scoreboard, the SV/SystemC TBs, and `dv/pack` (wide-data byte-exactness).
+- **Approach:** stage it — (a) single-beat 512b/1024b data first (just wider
+  granule packing), then (b) INCR bursts with `AxLEN`, then (c) multiple
+  outstanding IDs with reorder. Each sub-stage is independently committable.
+- **Verify:** burst read/write scoreboard in cocotb; `dv/pack` byte-exact checks
+  for the wide `WriteData`/`ReadData` layouts; SVA for beat counts vs `AxLEN`.
+- **Effort:** large; naturally splits into (a)/(b)/(c).
+
+### F3 — Deactivate quiescing Option 2 (hardware-managed quiescing)
+- **Spec:** §8.3.2 (Option 2 is OPTIONAL; Option 1 already implemented).
+- **Touch:** `rtl/aou_activation.sv` (+ a hook into each bridge's data FSM idle
+  status), `dv/act/tb_aou_act.sv`.
+- **Approach:** today `deact_trig` must be asserted only when the data path is
+  quiesced (Option 1). For Option 2, let `deact_trig` be asserted at any time:
+  latch the intent, stop accepting new AXI requests, drain in-flight
+  Data/WriteResp (the spec explicitly permits those to complete after
+  `DeactivateReq`), then send `DeactivateReq` once the bridge reports idle. Needs
+  a `data_idle`/`quiesced` signal from the bridge into the activation module and
+  a "pending requests must finish first" gate.
+- **Verify:** add a `dv/act` case that raises `deact_trig` mid-transaction and
+  checks `DeactivateReq` is withheld until the (stubbed) `data_idle` asserts;
+  full-chain test that deactivates with an outstanding transaction and confirms
+  the response still drains.
+- **Effort:** small–medium; mostly local to `aou_activation` + one bridge signal.
+
+### F4 — Whole-chain formal
+- **Spec:** n/a (methodology). Current `formal/axi_lite_mem.sby` proves the
+  memory target only.
+- **Touch:** `formal/` (new `.sby` + properties), reuse `dv/sva/*` bound checkers
+  as the property source.
+- **Approach:** the bridge/flit path needs a SystemVerilog front end that Yosys's
+  built-in reader can't fully handle (packed structs, functions in `always_comb`).
+  Options: (a) a Verific-based front end (Tabby CAD / commercial), or (b)
+  hand-abstract the flit packing into bit-blasted helpers Yosys can read. Start
+  with bounded (`bmc`) proofs of the credit-counter and activation-FSM invariants
+  (no counter overflow; never `ENABLED` before `CrdtGrant`; never a data flit
+  while a peer is not `ENABLED`).
+- **Verify:** `make formal TASK=bmc` extended to the bridges; `prove` for the
+  FSM/credit invariants if the front end supports it.
+- **Effort:** medium, but **blocked on tooling** (no Verific in the local
+  oss-cad-suite) unless the hand-abstraction route is taken.
+
 ## Verification (how to check end-to-end)
 - `make test` — three cocotb/PyUVM tests PASS (fresh memory per test).
 - `make sv` / `make vlt` — SV directed TB self-checks under Icarus / Verilator.
