@@ -20,8 +20,9 @@
 module tb_aou_act
   import aou_pkg::*;
 ;
-  logic clk = 1'b0;
+  logic clk;
   logic rstn;
+  initial clk = 1'b0;
   always #5 clk = ~clk;
 
   // DUT link + data-path signals
