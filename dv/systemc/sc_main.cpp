@@ -134,6 +134,38 @@ SC_MODULE(Stim) {
     RREADY.write(false);
   }
 
+  // Multiple-outstanding reads: fire n AR handshakes with RREADY held low so
+  // they pile into the initiator request queue (up to full), then drain every
+  // beat in issue order (in-order completion) and self-check data/RRESP/RID/
+  // RLAST.  n must be <= the initiator REQ_QD + 1 to avoid stalling.
+  void axi_rburst_pipe(int n, const uint32_t* ids, const uint32_t* addrs,
+                       const uint32_t* lens, const uint32_t* bursts) {
+    RREADY.write(false);
+    for (int i = 0; i < n; i++) {          // phase 1: queue the AR handshakes
+      ARID.write(ids[i]); ARADDR.write(addrs[i]); ARLEN.write(lens[i]);
+      ARSIZE.write(SZ4); ARBURST.write(bursts[i]); ARPROT.write(0);
+      ARVALID.write(true);
+      do { wait(); } while (!ARREADY.read());
+      ARVALID.write(false);
+      wait();                              // gap cycle between handshakes
+    }
+    RREADY.write(true);                    // phase 2: drain in issue order
+    for (int i = 0; i < n; i++) {
+      uint32_t a = addrs[i];
+      for (uint32_t k = 0; k <= lens[i]; k++) {
+        do { wait(); } while (!RVALID.read());
+        uint32_t exp = ref.count(a) ? ref[a] : 0;
+        check(a, RDATA.read(), exp);
+        if (RRESP.read() != 0)            { errors++; std::cout << "[SC-TB] MO bad RRESP\n"; }
+        if (RID.read() != ids[i])         { errors++; std::cout << "[SC-TB] MO RID mismatch\n"; }
+        if (RLAST.read() != (k == lens[i])) { errors++; std::cout << "[SC-TB] MO RLAST mismatch\n"; }
+        a = next_addr(a, addrs[i], bursts[i], SZ4, lens[i]);
+        wait();
+      }
+    }
+    RREADY.write(false);
+  }
+
   void check(uint32_t addr, uint32_t got, uint32_t exp) {
     reads++;
     if (got != exp) {
@@ -194,6 +226,20 @@ SC_MODULE(Stim) {
     }
     axi_wburst(9, 0x40, 3, BURST_FIXED, 0xF0000000u, 0x01);
     axi_rburst(9, 0x40, 3, BURST_FIXED);
+
+    // 5) multiple-outstanding reads: preload, then issue five reads (distinct
+    //    IDs, mixed lengths) that fill the initiator queue; drain in order.
+    {
+      const uint32_t moid[]  = {1, 2, 3, 4, 5};
+      const uint32_t moad[]  = {0x800, 0x840, 0x880, 0x8C0, 0x900};
+      const uint32_t molen[] = {0, 3, 1, 7, 0};
+      const uint32_t mob[]   = {BURST_INCR, BURST_INCR, BURST_INCR,
+                                BURST_INCR, BURST_INCR};
+      for (int i = 0; i < 5; i++)
+        axi_wburst(moid[i], moad[i], molen[i], mob[i],
+                   0xC0000000u + (i << 8), 0x13);
+      axi_rburst_pipe(5, moid, moad, molen, mob);
+    }
 
     if (errors == 0)
       std::cout << "[SC-TB] PASS: " << reads << " reads checked, 0 errors\n";
