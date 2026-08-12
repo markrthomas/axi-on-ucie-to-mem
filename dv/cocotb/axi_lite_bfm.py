@@ -14,6 +14,8 @@ from cocotb.triggers import ClockCycles, FallingEdge, RisingEdge
 
 from pyuvm import utility_classes
 
+from axi_seq_item import BURST_INCR, SIZE_4B, next_addr
+
 
 class AxiLiteBfm(metaclass=utility_classes.Singleton):
     def __init__(self):
@@ -39,51 +41,56 @@ class AxiLiteBfm(metaclass=utility_classes.Singleton):
         d.ARESETn.value = 1
         await RisingEdge(d.ACLK)
 
-    # -- primitive AXI4-Lite transfers ---------------------------------------
-    async def _write(self, addr, data, strb=0xF):
+    # -- primitive AXI4 transfers (single- or multi-beat) ---------------------
+    async def _wburst(self, addr, beats, strb, length, burst, size):
+        """Write burst: present AW, stream len+1 W beats, collect the B response."""
         d = self.dut
         await FallingEdge(d.ACLK)
         d.AWID.value = 0
         d.AWADDR.value = addr
-        d.AWLEN.value = 0            # single beat
-        d.AWSIZE.value = 2          # 4 bytes (32-bit)
-        d.AWBURST.value = 1         # INCR
+        d.AWLEN.value = length
+        d.AWSIZE.value = size
+        d.AWBURST.value = burst
         d.AWPROT.value = 0
         d.AWVALID.value = 1
-        d.WDATA.value = data
-        d.WSTRB.value = strb
-        d.WLAST.value = 1
-        d.WVALID.value = 1
         d.BREADY.value = 1
 
-        aw_done = w_done = False
-        while not (aw_done and w_done):
+        while True:
             await RisingEdge(d.ACLK)
-            if not aw_done and d.AWREADY.value == 1:
-                aw_done = True
-            if not w_done and d.WREADY.value == 1:
-                w_done = True
+            if d.AWREADY.value == 1:
+                break
+        await FallingEdge(d.ACLK)
+        d.AWVALID.value = 0
+
+        for k, beat in enumerate(beats):
+            d.WDATA.value = beat
+            d.WSTRB.value = strb
+            d.WLAST.value = 1 if k == length else 0
+            d.WVALID.value = 1
+            while True:
+                await RisingEdge(d.ACLK)
+                if d.WREADY.value == 1:
+                    break
             await FallingEdge(d.ACLK)
-            if aw_done:
-                d.AWVALID.value = 0
-            if w_done:
-                d.WVALID.value = 0
+            d.WVALID.value = 0
+            d.WLAST.value = 0
 
         while d.BVALID.value != 1:
             await RisingEdge(d.ACLK)
         resp = int(d.BRESP.value)
         await FallingEdge(d.ACLK)
         d.BREADY.value = 0
-        return 0, resp
+        return resp
 
-    async def _read(self, addr):
+    async def _rburst(self, addr, length, burst, size):
+        """Read burst: present AR, consume len+1 R beats, return the data list."""
         d = self.dut
         await FallingEdge(d.ACLK)
         d.ARID.value = 0
         d.ARADDR.value = addr
-        d.ARLEN.value = 0
-        d.ARSIZE.value = 2
-        d.ARBURST.value = 1
+        d.ARLEN.value = length
+        d.ARSIZE.value = size
+        d.ARBURST.value = burst
         d.ARPROT.value = 0
         d.ARVALID.value = 1
         d.RREADY.value = 1
@@ -95,50 +102,81 @@ class AxiLiteBfm(metaclass=utility_classes.Singleton):
         await FallingEdge(d.ACLK)
         d.ARVALID.value = 0
 
-        while d.RVALID.value != 1:
-            await RisingEdge(d.ACLK)
-        rdata = int(d.RDATA.value)
-        resp = int(d.RRESP.value)
+        beats = []
+        resp = 0
+        for _ in range(length + 1):
+            while d.RVALID.value != 1:
+                await RisingEdge(d.ACLK)
+            beats.append(int(d.RDATA.value))
+            resp = int(d.RRESP.value)
+            await RisingEdge(d.ACLK)     # beat accepted (RREADY high); advance
         await FallingEdge(d.ACLK)
         d.RREADY.value = 0
-        return rdata, resp
+        return beats, resp
 
     # -- coroutines started by the pyuvm components ---------------------------
     async def driver_bfm(self):
-        """Serialise sequencer commands onto the bus, one transfer at a time."""
+        """Serialise sequencer commands onto the bus, one transfer (burst) at a
+        time (the DUT is single-outstanding)."""
         while True:
-            addr, write, wdata, strb = await self.driver_queue.get()
-            if write:
-                rdata, resp = await self._write(addr, wdata, strb)
+            cmd = await self.driver_queue.get()
+            if cmd["write"]:
+                resp = await self._wburst(cmd["addr"], cmd["beats"], cmd["strb"],
+                                          cmd["length"], cmd["burst"], cmd["size"])
+                await self.result_queue.put(([], resp))
             else:
-                rdata, resp = await self._read(addr)
-            await self.result_queue.put((rdata, resp))
+                beats, resp = await self._rburst(cmd["addr"], cmd["length"],
+                                                 cmd["burst"], cmd["size"])
+                await self.result_queue.put((beats, resp))
 
     async def monitor_bfm(self):
         """Record every completed transfer by watching the five AXI channels.
 
         Single-outstanding DUT, so one pending AW/W/AR is enough to correlate a
-        response with its address."""
+        response with its address.  Burst addresses are sequenced with the same
+        AXI rule the DUT applies, so each beat is reported at its own address:
+        write beats are buffered and flushed on B; read beats are reported live."""
         d = self.dut
-        aw_addr = w_data = ar_addr = 0
+        aw_addr = aw_base = aw_len = aw_size = aw_burst = 0
+        w_cur = 0
+        w_pending = []
+        ar_cur = ar_base = ar_len = ar_size = ar_burst = 0
         while True:
             await RisingEdge(d.ACLK)
             if d.ARESETn.value != 1:
                 continue
             if d.AWVALID.value == 1 and d.AWREADY.value == 1:
-                aw_addr = int(d.AWADDR.value)
+                aw_addr = aw_base = w_cur = int(d.AWADDR.value)
+                aw_len = int(d.AWLEN.value)
+                aw_size = int(d.AWSIZE.value)
+                aw_burst = int(d.AWBURST.value)
+                w_pending = []
             if d.WVALID.value == 1 and d.WREADY.value == 1:
-                w_data = int(d.WDATA.value)
+                w_pending.append((w_cur, int(d.WDATA.value)))
+                w_cur = next_addr(w_cur, aw_base, aw_burst, aw_size, aw_len)
             if d.BVALID.value == 1 and d.BREADY.value == 1:
-                await self.monitor_queue.put(("W", aw_addr, w_data, int(d.BRESP.value)))
+                resp = int(d.BRESP.value)
+                for a, wd in w_pending:
+                    await self.monitor_queue.put(("W", a, wd, resp))
+                w_pending = []
             if d.ARVALID.value == 1 and d.ARREADY.value == 1:
-                ar_addr = int(d.ARADDR.value)
+                ar_cur = ar_base = int(d.ARADDR.value)
+                ar_len = int(d.ARLEN.value)
+                ar_size = int(d.ARSIZE.value)
+                ar_burst = int(d.ARBURST.value)
             if d.RVALID.value == 1 and d.RREADY.value == 1:
-                await self.monitor_queue.put(("R", ar_addr, int(d.RDATA.value), int(d.RRESP.value)))
+                await self.monitor_queue.put(
+                    ("R", ar_cur, int(d.RDATA.value), int(d.RRESP.value)))
+                ar_cur = next_addr(ar_cur, ar_base, ar_burst, ar_size, ar_len)
 
     # -- driver-facing helpers ------------------------------------------------
-    async def send_command(self, addr, write, wdata, strb=0xF):
-        await self.driver_queue.put((addr, write, wdata, strb))
+    async def send_command(self, addr, write, wdata, strb=0xF,
+                           length=0, burst=BURST_INCR, size=SIZE_4B, beats=None):
+        if beats is None:
+            beats = [wdata]
+        await self.driver_queue.put({"addr": addr, "write": write, "strb": strb,
+                                     "length": length, "burst": burst,
+                                     "size": size, "beats": beats})
 
     async def get_result(self):
         return await self.result_queue.get()

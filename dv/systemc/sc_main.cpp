@@ -26,12 +26,13 @@ SC_MODULE(Stim) {
   sc_out<bool>     AWVALID; sc_in<bool> AWREADY;
   sc_out<uint32_t> WDATA;   sc_out<uint32_t> WSTRB;   sc_out<bool> WLAST;
   sc_out<bool>     WVALID;   sc_in<bool>      WREADY;
-  sc_in<uint32_t>  BRESP;   sc_in<bool>      BVALID;   sc_out<bool> BREADY;
+  sc_in<uint32_t>  BID;     sc_in<uint32_t>  BRESP;   sc_in<bool> BVALID;
+  sc_out<bool>     BREADY;
   sc_out<uint32_t> ARID; sc_out<uint32_t> ARADDR; sc_out<uint32_t> ARLEN;
   sc_out<uint32_t> ARSIZE; sc_out<uint32_t> ARBURST; sc_out<uint32_t> ARPROT;
   sc_out<bool>     ARVALID; sc_in<bool> ARREADY;
-  sc_in<uint32_t>  RDATA;   sc_in<uint32_t>  RRESP;    sc_in<bool>  RVALID;
-  sc_out<bool>     RREADY;
+  sc_in<uint32_t>  RID;     sc_in<uint32_t>  RDATA;   sc_in<uint32_t> RRESP;
+  sc_in<bool>      RLAST;   sc_in<bool>      RVALID;   sc_out<bool> RREADY;
 
   int                        errors = 0;
   int                        reads  = 0;
@@ -70,6 +71,67 @@ SC_MODULE(Stim) {
     wait();
     RREADY.write(false);
     return d;
+  }
+
+  // AxBURST encodings + 4-byte beat size (matches the SV / cocotb TBs).
+  enum : uint32_t { BURST_FIXED = 0, BURST_INCR = 1, BURST_WRAP = 2, SZ4 = 2 };
+
+  // Independent copy of the AXI next-beat address rule (not the DUT's).
+  static uint32_t next_addr(uint32_t a, uint32_t base, uint32_t burst,
+                            uint32_t sz, uint32_t len) {
+    uint32_t nb = 1u << sz;
+    if (burst == BURST_FIXED) return a;
+    if (burst == BURST_WRAP) {
+      uint32_t tot = (len + 1) << sz;
+      uint32_t low = base & ~(tot - 1);
+      return ((a + nb) == (low + tot)) ? low : (a + nb);
+    }
+    return a + nb;   // INCR
+  }
+
+  // AXI4 write burst: present AW, stream len+1 W beats (WLAST on the last),
+  // update the reference memory, then check the B response (BRESP, BID).
+  void axi_wburst(uint32_t id, uint32_t addr, uint32_t len, uint32_t burst,
+                  uint32_t d0, uint32_t dstep) {
+    AWID.write(id); AWADDR.write(addr); AWLEN.write(len); AWSIZE.write(SZ4);
+    AWBURST.write(burst); AWPROT.write(0); AWVALID.write(true); BREADY.write(true);
+    do { wait(); } while (!AWREADY.read());
+    AWVALID.write(false);
+    uint32_t a = addr;
+    for (uint32_t k = 0; k <= len; k++) {
+      uint32_t dv = d0 + k * dstep;
+      WDATA.write(dv); WSTRB.write(0xF); WLAST.write(k == len); WVALID.write(true);
+      do { wait(); } while (!WREADY.read());
+      ref[a] = dv;
+      a = next_addr(a, addr, burst, SZ4, len);
+      WVALID.write(false); WLAST.write(false);
+    }
+    do { wait(); } while (!BVALID.read());
+    if (BRESP.read() != 0) { errors++; std::cout << "[SC-TB] bad BRESP\n"; }
+    if (BID.read() != id)  { errors++; std::cout << "[SC-TB] BID mismatch\n"; }
+    wait();
+    BREADY.write(false);
+  }
+
+  // AXI4 read burst: present AR, consume len+1 R beats, self-check each beat's
+  // data plus RRESP / RID / RLAST.
+  void axi_rburst(uint32_t id, uint32_t addr, uint32_t len, uint32_t burst) {
+    ARID.write(id); ARADDR.write(addr); ARLEN.write(len); ARSIZE.write(SZ4);
+    ARBURST.write(burst); ARPROT.write(0); ARVALID.write(true); RREADY.write(true);
+    do { wait(); } while (!ARREADY.read());
+    ARVALID.write(false);
+    uint32_t a = addr;
+    for (uint32_t k = 0; k <= len; k++) {
+      do { wait(); } while (!RVALID.read());
+      uint32_t exp = ref.count(a) ? ref[a] : 0;
+      check(a, RDATA.read(), exp);
+      if (RRESP.read() != 0)        { errors++; std::cout << "[SC-TB] bad RRESP\n"; }
+      if (RID.read() != id)         { errors++; std::cout << "[SC-TB] RID mismatch\n"; }
+      if (RLAST.read() != (k == len)) { errors++; std::cout << "[SC-TB] RLAST mismatch\n"; }
+      a = next_addr(a, addr, burst, SZ4, len);
+      wait();
+    }
+    RREADY.write(false);
   }
 
   void check(uint32_t addr, uint32_t got, uint32_t exp) {
@@ -118,6 +180,21 @@ SC_MODULE(Stim) {
     uint32_t ua = 0x1230;
     check(ua, axi_read(ua), ref.count(ua) ? ref[ua] : 0);
 
+    // 4) bursts: INCR / WRAP / FIXED, assorted lengths, each beat checked
+    const uint32_t blens[] = {1, 3, 7, 15};
+    for (int i = 0; i < 4; i++) {
+      uint32_t a = 0x2000 + (i << 6);
+      axi_wburst(i + 1, a, blens[i], BURST_INCR, 0xA0000000u + i * 16, 0x11);
+      axi_rburst(i + 1, a, blens[i], BURST_INCR);
+    }
+    for (int i = 0; i < 4; i++) {
+      uint32_t a = (0x100 + (i * 4)) & ~0x3u;
+      axi_wburst(i + 2, a, blens[i], BURST_WRAP, 0xB0000000u + i * 16, 0x07);
+      axi_rburst(i + 2, a, blens[i], BURST_WRAP);
+    }
+    axi_wburst(9, 0x40, 3, BURST_FIXED, 0xF0000000u, 0x01);
+    axi_rburst(9, 0x40, 3, BURST_FIXED);
+
     if (errors == 0)
       std::cout << "[SC-TB] PASS: " << reads << " reads checked, 0 errors\n";
     else
@@ -152,10 +229,11 @@ int sc_main(int, char**) {
   stim.AWID(AWID); stim.AWADDR(AWADDR); stim.AWLEN(AWLEN); stim.AWSIZE(AWSIZE);
   stim.AWBURST(AWBURST); stim.AWPROT(AWPROT); stim.AWVALID(AWVALID); stim.AWREADY(AWREADY);
   stim.WDATA(WDATA);   stim.WSTRB(WSTRB);   stim.WLAST(WLAST); stim.WVALID(WVALID); stim.WREADY(WREADY);
-  stim.BRESP(BRESP);   stim.BVALID(BVALID); stim.BREADY(BREADY);
+  stim.BID(BID);       stim.BRESP(BRESP);   stim.BVALID(BVALID); stim.BREADY(BREADY);
   stim.ARID(ARID); stim.ARADDR(ARADDR); stim.ARLEN(ARLEN); stim.ARSIZE(ARSIZE);
   stim.ARBURST(ARBURST); stim.ARPROT(ARPROT); stim.ARVALID(ARVALID); stim.ARREADY(ARREADY);
-  stim.RDATA(RDATA);   stim.RRESP(RRESP);   stim.RVALID(RVALID);   stim.RREADY(RREADY);
+  stim.RID(RID); stim.RDATA(RDATA); stim.RRESP(RRESP); stim.RLAST(RLAST);
+  stim.RVALID(RVALID); stim.RREADY(RREADY);
 
   sc_start();
   return stim.errors ? 1 : 0;

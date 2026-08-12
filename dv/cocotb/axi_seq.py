@@ -4,7 +4,14 @@ import random
 
 from pyuvm import uvm_sequence
 
-from axi_seq_item import AxiSeqItem, DATA_MASK, rand_word_addr
+from axi_seq_item import (
+    AxiSeqItem,
+    BURST_FIXED,
+    BURST_INCR,
+    BURST_WRAP,
+    DATA_MASK,
+    rand_word_addr,
+)
 
 
 class AxiWriteReadSeq(uvm_sequence):
@@ -54,6 +61,40 @@ class AxiRandomSeq(uvm_sequence):
             await self.finish_item(item)
             if write:
                 written.append(item.addr)
+
+
+class AxiBurstSeq(uvm_sequence):
+    """INCR / WRAP / FIXED bursts of assorted lengths, each written then read
+    back.  The burst-aware monitor sequences per-beat addresses, so the shared
+    scoreboard checks every beat.  WRAP starts are kept inside a low window and
+    away from the wrap boundary; FIXED reuses one address (last write wins)."""
+
+    async def body(self):
+        blens = [1, 3, 7, 15]
+        # INCR
+        for i, length in enumerate(blens):
+            addr = 0x2000 + (i << 6)
+            beats = [(0xA0000000 + i * 16 + k * 0x11) & DATA_MASK
+                     for k in range(length + 1)]
+            await self._burst(addr, length, BURST_INCR, beats)
+        # WRAP
+        for i, length in enumerate(blens):
+            addr = (0x100 + i * 4) & ~0x3
+            beats = [(0xB0000000 + i * 16 + k * 0x07) & DATA_MASK
+                     for k in range(length + 1)]
+            await self._burst(addr, length, BURST_WRAP, beats)
+        # FIXED (4 beats, same address)
+        await self._burst(0x40, 3, BURST_FIXED,
+                          [(0xF0000000 + k) & DATA_MASK for k in range(4)])
+
+    async def _burst(self, addr, length, burst, beats):
+        wr = AxiSeqItem("wr", addr=addr, write=True,
+                        length=length, burst=burst, beats=beats)
+        await self.start_item(wr)
+        await self.finish_item(wr)
+        rd = AxiSeqItem("rd", addr=addr, write=False, length=length, burst=burst)
+        await self.start_item(rd)
+        await self.finish_item(rd)
 
 
 class AxiWalkingSeq(uvm_sequence):
