@@ -6,7 +6,13 @@ from pyuvm import ConfigDB, uvm_root, uvm_test
 
 from axi_lite_bfm import AxiLiteBfm
 from axi_components import AxiEnv
-from axi_seq import AxiBurstSeq, AxiRandomSeq, AxiWalkingSeq, AxiWriteReadSeq
+from axi_seq import (
+    AxiBurstSeq,
+    AxiMultiReadSeq,
+    AxiRandomSeq,
+    AxiWalkingSeq,
+    AxiWriteReadSeq,
+)
 
 
 class BaseTest(uvm_test):
@@ -45,6 +51,10 @@ class BurstTest(BaseTest):
     seq_cls = AxiBurstSeq
 
 
+class MultiOutstandingTest(BaseTest):
+    seq_cls = AxiMultiReadSeq
+
+
 # -- cocotb entry points ------------------------------------------------------
 # TESTCASE (from the Makefile) selects which one runs; default runs all.
 
@@ -66,3 +76,8 @@ async def walking_test(_dut):
 @cocotb.test()
 async def burst_test(_dut):
     await uvm_root().run_test("BurstTest")
+
+
+@cocotb.test()
+async def multi_outstanding_test(_dut):
+    await uvm_root().run_test("MultiOutstandingTest")

@@ -54,6 +54,7 @@ COV_MIN ?= 85
 
 .PHONY: default help \
 	test test-all test-write-read test-random test-walking test-burst \
+	test-outstanding \
 	sv vlt pack act systemc uvm coverage formal waves wave check regress ci \
 	lint _lint_iverilog _lint_verilator clean
 
@@ -63,11 +64,12 @@ help:
 	@echo "axi-on-ucie-to-mem — common targets"
 	@echo ""
 	@echo "  Tests (PyUVM / cocotb):"
-	@echo "    make test              # all four cocotb tests"
+	@echo "    make test              # all five cocotb tests"
 	@echo "    make test-write-read   # write-then-read-back sequence"
 	@echo "    make test-random       # constrained-random read/write mix"
 	@echo "    make test-walking      # directed address/data edge cases"
 	@echo "    make test-burst        # INCR/WRAP/FIXED burst read-back"
+	@echo "    make test-outstanding  # multiple-outstanding reads (fills initiator queue)"
 	@echo "    make waves             # dump $(FST) (TEST=<name> for one test)"
 	@echo "    make wave              # open the dump in GTKWave"
 	@echo ""
@@ -109,7 +111,8 @@ test-all:
 	$(call run_one_test,random_test)
 	$(call run_one_test,walking_test)
 	$(call run_one_test,burst_test)
-	@echo "[TEST] all four PyUVM tests passed"
+	$(call run_one_test,multi_outstanding_test)
+	@echo "[TEST] all five PyUVM tests passed"
 
 test-write-read:
 	$(call run_one_test,write_read_test)
@@ -123,10 +126,13 @@ test-walking:
 test-burst:
 	$(call run_one_test,burst_test)
 
+test-outstanding:
+	$(call run_one_test,multi_outstanding_test)
+
 # Waveform dump.  All three tests share one sim by default; TEST=<name> dumps
 # just one.  cocotb's Icarus dump module is only compiled into a FRESH
 # sim_build, so wipe it first.
-WAVE_TESTS := write_read_test random_test walking_test burst_test
+WAVE_TESTS := write_read_test random_test walking_test burst_test multi_outstanding_test
 
 waves:
 	@if [ -n "$(TEST)" ] && ! echo " $(WAVE_TESTS) " | grep -q " $(TEST) "; then \

@@ -10,6 +10,7 @@ from axi_seq_item import (
     BURST_INCR,
     BURST_WRAP,
     DATA_MASK,
+    SIZE_4B,
     rand_word_addr,
 )
 
@@ -95,6 +96,36 @@ class AxiBurstSeq(uvm_sequence):
         rd = AxiSeqItem("rd", addr=addr, write=False, length=length, burst=burst)
         await self.start_item(rd)
         await self.finish_item(rd)
+
+
+class AxiMultiReadSeq(uvm_sequence):
+    """Multiple-outstanding reads.  Preload known data with ordinary write items,
+    then issue several reads (distinct IDs, mixed burst lengths) back-to-back via
+    the BFM's read_multi so they fill the initiator request queue; the monitor
+    reports every drained beat and the shared scoreboard checks each address."""
+
+    async def body(self):
+        from axi_lite_bfm import AxiLiteBfm
+        reqs = [
+            {"addr": 0x800, "length": 0, "id": 1},
+            {"addr": 0x840, "length": 3, "id": 2},
+            {"addr": 0x880, "length": 1, "id": 3},
+            {"addr": 0x8C0, "length": 7, "id": 4},
+            {"addr": 0x900, "length": 0, "id": 5},
+        ]
+        for r in reqs:
+            r["burst"] = BURST_INCR
+            r["size"] = SIZE_4B
+        # preload each burst's addresses with known data (ordinary write items)
+        for i, r in enumerate(reqs):
+            beats = [(0xC0000000 + (i << 8) + k * 0x13) & DATA_MASK
+                     for k in range(r["length"] + 1)]
+            wr = AxiSeqItem("wr", addr=r["addr"], write=True, length=r["length"],
+                            burst=BURST_INCR, beats=beats)
+            await self.start_item(wr)
+            await self.finish_item(wr)
+        # issue all reads outstanding at once (fills the queue), then drain
+        await AxiLiteBfm().read_multi(reqs)
 
 
 class AxiWalkingSeq(uvm_sequence):

@@ -114,6 +114,40 @@ class AxiLiteBfm(metaclass=utility_classes.Singleton):
         d.RREADY.value = 0
         return beats, resp
 
+    async def read_multi(self, reqs):
+        """Multiple-outstanding reads: fire every AR handshake with RREADY held
+        low so the requests pile into the initiator queue (up to full), then
+        drain all beats in issue order.  The monitor reports each beat to the
+        scoreboard; correctness is checked there.  len(reqs) must be <= the
+        initiator REQ_QD + 1 to avoid stalling.  Each req: dict(addr, length,
+        burst, size, id)."""
+        d = self.dut
+        d.RREADY.value = 0
+        for r in reqs:                             # phase 1: queue AR handshakes
+            await FallingEdge(d.ACLK)
+            d.ARID.value = r.get("id", 0)
+            d.ARADDR.value = r["addr"]
+            d.ARLEN.value = r["length"]
+            d.ARSIZE.value = r["size"]
+            d.ARBURST.value = r["burst"]
+            d.ARPROT.value = 0
+            d.ARVALID.value = 1
+            while True:
+                await RisingEdge(d.ACLK)
+                if d.ARREADY.value == 1:
+                    break
+            await FallingEdge(d.ACLK)
+            d.ARVALID.value = 0
+        d.RREADY.value = 1                         # phase 2: drain in issue order
+        remaining = sum(r["length"] + 1 for r in reqs)
+        while remaining > 0:
+            await RisingEdge(d.ACLK)
+            if d.RVALID.value == 1 and d.RREADY.value == 1:
+                remaining -= 1
+        await FallingEdge(d.ACLK)
+        d.RREADY.value = 0
+        await ClockCycles(d.ACLK, 5)   # let the monitor drain the last beats
+
     # -- coroutines started by the pyuvm components ---------------------------
     async def driver_bfm(self):
         """Serialise sequencer commands onto the bus, one transfer (burst) at a
@@ -132,21 +166,24 @@ class AxiLiteBfm(metaclass=utility_classes.Singleton):
     async def monitor_bfm(self):
         """Record every completed transfer by watching the five AXI channels.
 
-        Single-outstanding DUT, so one pending AW/W/AR is enough to correlate a
-        response with its address.  Burst addresses are sequenced with the same
-        AXI rule the DUT applies, so each beat is reported at its own address:
-        write beats are buffered and flushed on B; read beats are reported live."""
+        Writes stay single-outstanding (one pending AW/W set), so a single write
+        context is enough.  Reads may be multiple-outstanding: AR contexts are
+        held in an in-order FIFO and each R beat is attributed to the oldest open
+        read (in-order completion), so overlapping bursts are reported at their
+        own addresses.  Burst addresses are sequenced with the same AXI rule the
+        DUT applies; write beats are buffered and flushed on B, reads reported
+        live."""
         d = self.dut
-        aw_addr = aw_base = aw_len = aw_size = aw_burst = 0
+        aw_base = aw_len = aw_size = aw_burst = 0
         w_cur = 0
         w_pending = []
-        ar_cur = ar_base = ar_len = ar_size = ar_burst = 0
+        ar_q = []                 # FIFO of open reads: [cur, base, len, sz, bt, rem]
         while True:
             await RisingEdge(d.ACLK)
             if d.ARESETn.value != 1:
                 continue
             if d.AWVALID.value == 1 and d.AWREADY.value == 1:
-                aw_addr = aw_base = w_cur = int(d.AWADDR.value)
+                aw_base = w_cur = int(d.AWADDR.value)
                 aw_len = int(d.AWLEN.value)
                 aw_size = int(d.AWSIZE.value)
                 aw_burst = int(d.AWBURST.value)
@@ -160,14 +197,18 @@ class AxiLiteBfm(metaclass=utility_classes.Singleton):
                     await self.monitor_queue.put(("W", a, wd, resp))
                 w_pending = []
             if d.ARVALID.value == 1 and d.ARREADY.value == 1:
-                ar_cur = ar_base = int(d.ARADDR.value)
-                ar_len = int(d.ARLEN.value)
-                ar_size = int(d.ARSIZE.value)
-                ar_burst = int(d.ARBURST.value)
-            if d.RVALID.value == 1 and d.RREADY.value == 1:
+                base = int(d.ARADDR.value)
+                ln = int(d.ARLEN.value)
+                ar_q.append([base, base, ln, int(d.ARSIZE.value),
+                             int(d.ARBURST.value), ln + 1])
+            if d.RVALID.value == 1 and d.RREADY.value == 1 and ar_q:
+                ctx = ar_q[0]
                 await self.monitor_queue.put(
-                    ("R", ar_cur, int(d.RDATA.value), int(d.RRESP.value)))
-                ar_cur = next_addr(ar_cur, ar_base, ar_burst, ar_size, ar_len)
+                    ("R", ctx[0], int(d.RDATA.value), int(d.RRESP.value)))
+                ctx[0] = next_addr(ctx[0], ctx[1], ctx[4], ctx[3], ctx[2])
+                ctx[5] -= 1
+                if ctx[5] == 0:
+                    ar_q.pop(0)
 
     # -- driver-facing helpers ------------------------------------------------
     async def send_command(self, addr, write, wdata, strb=0xF,
