@@ -8,8 +8,10 @@
 // read beat (data, RRESP, RID, RLAST).  A watchdog guards against hangs.
 //
 // Master simplification: BREADY / RREADY are tied high (this master always
-// accepts responses); one transaction (burst) is issued at a time to match the
-// single-outstanding DUT.  Burst addresses are sequenced by nxt_addr(), an
+// accepts responses).  Most sections issue one transaction (burst) at a time,
+// but the multiple-outstanding section fires several AR handshakes (RREADY held
+// low) before draining, exercising the initiator request queue up to full and
+// checking in-order completion.  Burst addresses are sequenced by nxt_addr(), an
 // independent copy of the AXI rule (not the DUT's axi_burst_next).
 // -----------------------------------------------------------------------------
 `ifndef TB_AXI_UCIE_MEM_SV
@@ -25,6 +27,7 @@ module tb_axi_ucie_mem;
   localparam int WORDS      = 1 << (MEM_ADDR_W-2);
   localparam logic [2:0] SZ4 = 3'd2;              // 4-byte beat (32-bit)
   localparam logic [1:0] BF = 2'b00, BI = 2'b01, BW = 2'b10;  // FIXED/INCR/WRAP
+  localparam int NO = 5;                          // outstanding reads (fills queue)
 
   logic             ACLK;
   logic             ARESETn;
@@ -197,6 +200,50 @@ module tb_axi_ucie_mem;
       a = 32'h40 & ~32'h3;
       axi_wburst(4'd9, a, 8'd3, BF, 32'hF0000000, 32'h01);   // 4 beats, same addr
       axi_rburst(4'd9, a, 8'd3, BF);
+    end
+
+    // 4b) MULTIPLE-OUTSTANDING reads: pre-load known data, then fire NO AR
+    //     handshakes with RREADY held low so they pile into the initiator
+    //     request queue (up to full); drain in issue order and check every beat.
+    begin : multi_outstanding
+      logic [AW-1:0] oa  [0:NO-1];
+      logic [7:0]    ol  [0:NO-1];
+      logic [IW-1:0] oid [0:NO-1];
+      logic [AW-1:0] ca;
+      int m, k;
+      ol[0]=8'd0; ol[1]=8'd3; ol[2]=8'd1; ol[3]=8'd7; ol[4]=8'd0;
+      for (m = 0; m < NO; m++) begin
+        oa[m]  = 32'h800 + (m << 6);
+        oid[m] = 4'(m + 1);
+        axi_wburst(oid[m], oa[m], ol[m], BI, 32'hC0000000 + (m << 8), 32'h13);
+      end
+      // Phase 1: hold RREADY low and fire every AR handshake -> they queue up.
+      RREADY = 1'b0;
+      for (m = 0; m < NO; m++) begin
+        @(negedge ACLK);
+        ARID = oid[m]; ARADDR = oa[m]; ARLEN = ol[m]; ARSIZE = SZ4;
+        ARBURST = BI; ARPROT = 3'b000; ARVALID = 1'b1;
+        @(posedge ACLK); while (!ARREADY) @(posedge ACLK);
+        @(negedge ACLK); ARVALID = 1'b0;
+      end
+      // Phase 2: drain in issue order (in-order completion) and self-check.
+      RREADY = 1'b1;
+      for (m = 0; m < NO; m++) begin
+        ca = oa[m];
+        for (k = 0; k <= int'(ol[m]); k++) begin
+          @(posedge ACLK); while (!RVALID) @(posedge ACLK);
+          reads++;
+          if (RDATA !== ref_mem[ca[MEM_ADDR_W-1:2]]) begin
+            errors++;
+            $display("[SV-TB] MO MISMATCH req %0d beat %0d @0x%05h: got 0x%08h exp 0x%08h",
+                     m, k, ca, RDATA, ref_mem[ca[MEM_ADDR_W-1:2]]);
+          end
+          if (RID   !== oid[m])              begin errors++; $display("[SV-TB] MO RID mismatch req %0d", m); end
+          if (RLAST !== (k == int'(ol[m])))  begin errors++; $display("[SV-TB] MO RLAST mismatch req %0d beat %0d", m, k); end
+          ca = nxt_addr(ca, oa[m], BI, SZ4, ol[m]);
+          @(negedge ACLK);
+        end
+      end
     end
 
     // 5) walking single-beat edge cases

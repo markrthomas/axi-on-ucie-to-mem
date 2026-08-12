@@ -10,12 +10,16 @@
 // rides in the request FLEX[1:0] (AoU has no AWBURST field); address sequencing
 // is done target-side, so this bridge just streams/collects beats.
 //
-// Scope: one transaction (burst) in flight at a time (single-outstanding).
+// Multiple-outstanding (stage 2): a REQ_QD-deep request queue decouples the AXI
+// AW/AR accept from the FSM, so the master can have several transactions queued
+// while a prior burst is still in flight (s_awready/s_arready track queue-space,
+// not FSM state).  The FSM still processes one queued request at a time and the
+// single serialized link + single in-order memory return completions in issue
+// order, so this is multiple-outstanding with in-order completion.
 // Bursts are bounded by the data-message credit ceiling (§6): the target's
 // CrdtGrant seeds enough WriteData/ReadData credits for up to CR_* granules, so
 // AxLEN+1 <= CR_WDATA/WRITEDATA_GRAN beats (16 by default); longer bursts need
-// mid-burst credit replenishment (follow-on).  Multiple-outstanding + OOO-by-ID
-// is a documented follow-on (stage 2).
+// mid-burst credit replenishment (follow-on).
 // -----------------------------------------------------------------------------
 `ifndef AOU_AXI_INITIATOR_BRIDGE_SV
 `define AOU_AXI_INITIATOR_BRIDGE_SV
@@ -27,6 +31,9 @@ module aou_axi_initiator_bridge
     parameter int AXI_DATA_W = 32,
     parameter int AXI_STRB_W = AXI_DATA_W/8,
     parameter int AXI_ID_W   = 4,
+    // Multiple-outstanding request-queue depth (AXI AW/AR accepted ahead of the
+    // FSM).  Depth 1 reduces to the original single-outstanding behaviour.
+    parameter int REQ_QD     = 4,
     // §6 flow control — granule credits this (initiator) bridge holds to send
     // each message type it transmits.  WriteData is sized for a full burst
     // (128 granules = 16 beats) since a write burst gets no mid-burst credit
@@ -83,6 +90,24 @@ module aou_axi_initiator_bridge
     S_IDLE, S_WREQ, S_WDATA, S_WWAIT, S_B, S_RREQ, S_RDATA
   } state_e;
   state_e state;
+
+  // --- multiple-outstanding request queue -----------------------------------
+  // Descriptors for AW/AR requests accepted from the AXI master but not yet
+  // processed by the FSM.  A single write port (AW has priority over AR) keeps
+  // one push per cycle; the FSM pops one descriptor per burst.
+  localparam int QPW = (REQ_QD > 1) ? $clog2(REQ_QD) : 1;   // pointer width
+  localparam logic [QPW-1:0] QLAST = QPW'(REQ_QD-1);        // wrap value
+  logic                  q_wr    [0:REQ_QD-1];   // 1 = write, 0 = read
+  logic [AXI_ID_W-1:0]   q_id    [0:REQ_QD-1];
+  logic [AXI_ADDR_W-1:0] q_addr  [0:REQ_QD-1];
+  logic [7:0]            q_len   [0:REQ_QD-1];
+  logic [2:0]            q_size  [0:REQ_QD-1];
+  logic [1:0]            q_burst [0:REQ_QD-1];
+  logic [2:0]            q_prot  [0:REQ_QD-1];
+  logic [QPW-1:0]        q_head, q_tail;
+  logic [QPW:0]          q_count;                // 0 .. REQ_QD
+  wire                   q_full  = (q_count == REQ_QD[QPW:0]);
+  wire                   q_empty = (q_count == '0);
 
   // captured request context (one burst in flight)
   logic [AXI_ID_W-1:0]   id_q;
@@ -206,9 +231,14 @@ module aou_axi_initiator_bridge
   assign rd_rid_full = rd_id(rdmsg);
 
   // --- combinational outputs ------------------------------------------------
-  // AXI accepted only once ENABLED (§8).  AW and AR are accepted in S_IDLE.
-  assign s_awready = (state == S_IDLE) && act_enabled;
-  assign s_arready = (state == S_IDLE) && act_enabled && !s_awvalid;  // AW priority
+  // AXI accepted once ENABLED (§8) whenever the request queue has space; the FSM
+  // pops and processes descriptors independently (multiple-outstanding accept).
+  // AW has priority over AR so at most one descriptor is enqueued per cycle.
+  assign s_awready = act_enabled && !q_full;
+  assign s_arready = act_enabled && !q_full && !s_awvalid;  // AW priority
+  wire acc_aw = s_awvalid && s_awready;
+  wire acc_ar = s_arvalid && s_arready;
+  wire do_pop = (state == S_IDLE) && !q_empty;
   // In S_WDATA we take a W beat only when no beat is buffered awaiting send.
   assign s_wready  = (state == S_WDATA) && !wbeat_valid;
   assign s_bid     = bid_q;
@@ -243,6 +273,7 @@ module aou_axi_initiator_bridge
   always_ff @(posedge clk or negedge rstn) begin
     if (!rstn) begin
       state    <= S_IDLE;
+      q_head   <= '0; q_tail <= '0; q_count <= '0;
       id_q     <= '0; addr_q <= '0; len_q <= '0; size_q <= '0;
       burst_q  <= '0; prot_q <= '0;
       wdata_q  <= '0; wstrb_q <= '0; wbeat_valid <= 1'b0; wlast_q <= 1'b0;
@@ -258,16 +289,34 @@ module aou_axi_initiator_bridge
         cr_rreq  <= sat_add(cr_rreq,  cred_decode(seed_rreq),  CR_RREQ);
         cr_wdata <= sat_add(cr_wdata, cred_decode(seed_wdata), CR_WDATA);
       end
+      // ---- request-queue push (AW priority; one push per cycle) ----
+      if (acc_aw) begin
+        q_wr[q_tail]   <= 1'b1;      q_id[q_tail]    <= s_awid;
+        q_addr[q_tail] <= s_awaddr;  q_len[q_tail]   <= s_awlen;
+        q_size[q_tail] <= s_awsize;  q_burst[q_tail] <= s_awburst;
+        q_prot[q_tail] <= s_awprot;
+        q_tail <= (q_tail == QLAST) ? '0 : q_tail + 1'b1;
+      end else if (acc_ar) begin
+        q_wr[q_tail]   <= 1'b0;      q_id[q_tail]    <= s_arid;
+        q_addr[q_tail] <= s_araddr;  q_len[q_tail]   <= s_arlen;
+        q_size[q_tail] <= s_arsize;  q_burst[q_tail] <= s_arburst;
+        q_prot[q_tail] <= s_arprot;
+        q_tail <= (q_tail == QLAST) ? '0 : q_tail + 1'b1;
+      end
+      if ((acc_aw || acc_ar) && !do_pop)      q_count <= q_count + 1'b1;
+      else if (!(acc_aw || acc_ar) && do_pop) q_count <= q_count - 1'b1;
+
       unique case (state)
-        S_IDLE: begin
-          if (s_awvalid && s_awready) begin
-            id_q <= s_awid; addr_q <= s_awaddr; len_q <= s_awlen;
-            size_q <= s_awsize; burst_q <= s_awburst; prot_q <= s_awprot;
+        // Pop the next queued request (issue order) and start its burst.
+        S_IDLE: if (!q_empty) begin
+          id_q    <= q_id[q_head];    addr_q  <= q_addr[q_head];
+          len_q   <= q_len[q_head];   size_q  <= q_size[q_head];
+          burst_q <= q_burst[q_head]; prot_q  <= q_prot[q_head];
+          q_head  <= (q_head == QLAST) ? '0 : q_head + 1'b1;
+          if (q_wr[q_head]) begin
             wbeat_valid <= 1'b0;
             state <= S_WREQ;
-          end else if (s_arvalid && s_arready) begin
-            id_q <= s_arid; addr_q <= s_araddr; len_q <= s_arlen;
-            size_q <= s_arsize; burst_q <= s_arburst; prot_q <= s_arprot;
+          end else begin
             state <= S_RREQ;
           end
         end

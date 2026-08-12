@@ -10,6 +10,7 @@
 //   * INCR / WRAP / FIXED bursts of assorted lengths (the multi-beat FSM legs
 //     and axi_burst_next's three address rules)
 //   * reads of written and un-written locations
+//   * multiple-outstanding reads that fill the initiator request queue
 //   * idle cycles
 //
 // Run from the Verilator --Mdir (cwd holds coverage.dat); the root Makefile then
@@ -94,6 +95,34 @@ static void axi_read(uint32_t addr) {
     axi_rburst(0, addr, 0, BURST_INCR);
 }
 
+// Multiple-outstanding reads: fire n AR handshakes with RREADY held low so they
+// pile into the initiator request queue (occupancy > 1, up to full), then drain
+// every beat in issue order.  Exercises the queue's push-while-busy and full
+// legs.  n must be <= REQ_QD+1 (one in-flight + queue depth) to avoid stalling.
+static void axi_read_pipe(int n, const uint32_t* ids, const uint32_t* addrs,
+                          const uint32_t* lens, const uint32_t* bursts) {
+    dut->RREADY = 0;
+    for (int i = 0; i < n; ++i) {          // phase 1: queue up the AR handshakes
+        dut->ARID = ids[i]; dut->ARADDR = addrs[i]; dut->ARLEN = lens[i];
+        dut->ARSIZE = SZ4; dut->ARBURST = bursts[i]; dut->ARPROT = 0;
+        dut->ARVALID = 1;
+        int guard = 0;
+        do { tick(); } while (!dut->ARREADY && ++guard < 400);
+        dut->ARVALID = 0;
+        tick();                            // gap cycle between handshakes
+    }
+    dut->RREADY = 1;
+    for (int i = 0; i < n; ++i) {          // phase 2: drain in issue order
+        for (uint32_t k = 0; k <= lens[i]; ++k) {
+            int guard = 0;
+            do { tick(); } while (!dut->RVALID && ++guard < 400);
+            (void)dut->RDATA;
+            tick();
+        }
+    }
+    dut->RREADY = 0;
+}
+
 int main(int argc, char** argv) {
     Verilated::commandArgs(argc, argv);
     dut = new Vaxi_ucie_mem_top;
@@ -140,6 +169,19 @@ int main(int argc, char** argv) {
     // FIXED (all beats hit the same address; last write wins)
     axi_wburst(9, 0x40, 3, BURST_FIXED, 0xF0000000u, 0x01);
     axi_rburst(9, 0x40, 3, BURST_FIXED);
+
+    // --- multiple-outstanding: fill the initiator request queue, drain in order
+    {
+        const uint32_t moid[]  = {1, 2, 3, 4, 5};
+        const uint32_t moad[]  = {0x0800, 0x0840, 0x0880, 0x08C0, 0x0900};
+        const uint32_t molen[] = {0, 3, 1, 7, 0};
+        const uint32_t mob[]   = {BURST_INCR, BURST_INCR, BURST_INCR,
+                                  BURST_INCR, BURST_INCR};
+        for (int i = 0; i < 5; ++i)        // preload so reads return real data
+            axi_wburst(moid[i], moad[i], molen[i], mob[i],
+                       0xC0000000u + (i << 8), 0x13);
+        axi_read_pipe(5, moid, moad, molen, mob);
+    }
 
     // a stretch of idle cycles
     idle_cycles(8);
