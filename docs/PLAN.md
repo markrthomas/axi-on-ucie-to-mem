@@ -160,21 +160,25 @@ AXI-Lite protocol property set. Flagged optional, not part of the core five.
 4. UVM mirror (license-gated) + single-file variant. Push.
 5. README + CI polish; final push. (Formal = optional follow-on.)
 
-Resource planes, multi-message QoS, and AXI4 bursts are explicitly **out of
-scope for this pass** (documented as future phases in the README).  (UPDATE: §6
-credit flow control, byte-exact §4.3/§5.8 packing, and the full §8 activation
-FSM — bring-up (§6.4.2 `CrdtGrant` / §6.4.3 reset credit exchange), teardown,
-re-activation, and `ERROR` recovery — all originally listed here as out of
-scope, have since been implemented; only Deactivate quiescing Option 2 (§8.3.2,
-OPTIONAL) remains future.)
+Resource planes and multi-message QoS are explicitly **out of scope for this
+pass** (documented as future phases in the README).  (UPDATE: §6 credit flow
+control, byte-exact §4.3/§5.8 packing, the full §8 activation FSM — bring-up
+(§6.4.2 `CrdtGrant` / §6.4.3 reset credit exchange), teardown, re-activation, and
+`ERROR` recovery — **AXI4 INCR/WRAP/FIXED bursts** (`AxLEN`/`AxSIZE`/burst type
+in FLEX[1:0], per-beat target expansion, `{B,R}ID` echo), and
+**multiple-outstanding transactions with in-order completion** (initiator request
+queue) have all since been implemented.  Only Deactivate quiescing Option 2
+(§8.3.2, OPTIONAL) and the wide-data / true out-of-order-by-ID parts of F2 remain
+future.)
 
 ## Remaining follow-ons (actionable backlog)
 
 Each item below is self-contained and ordered by rough priority / value. For
 each: **Spec** = driving spec sections, **Touch** = files to change, **Approach**
 = a starting sketch, **Verify** = how to prove it. The current baseline is
-RP0-only, single-outstanding, AXI4-Lite 32-bit, with the full §8 activation FSM
-(bring-up + teardown + ERROR) already in place.
+RP0-only, 32-bit, with the full §8 activation FSM (bring-up + teardown + ERROR),
+**AXI4 INCR/WRAP/FIXED bursts**, and **multiple-outstanding transactions with
+in-order completion** (initiator request queue) already in place.
 
 ### F1 — Multiple resource planes (RP0..RP3) + multi-outstanding
 - **Spec:** §3 (resource planes / FDId routing), §4.3 (FDId header field), §6
@@ -189,7 +193,7 @@ RP0-only, single-outstanding, AXI4-Lite 32-bit, with the full §8 activation FSM
   RP0-only (`a_fdid_rp0`, `a_credit_rp0` = `mc_rp==0`) — relax to per-plane
   bounds; `dv/sva/bind_sva.sv`.
 - **Approach:** parameterize `NUM_RP` (start with 2). Replicate the credit
-  counters and the single-outstanding transaction slot per plane; add a small
+  counters and the initiator request queue per plane; add a small
   round-robin/priority arbiter selecting which plane's message packs into the
   next flit. Keep one plane == today's behavior so the RP0 path is unchanged.
 - **Verify:** extend `dv/pack` with multi-RP round-trips; add a cocotb/SV test
@@ -197,20 +201,30 @@ RP0-only, single-outstanding, AXI4-Lite 32-bit, with the full §8 activation FSM
   credit/response leakage; SVA bounds hold per plane.
 - **Effort:** large (data-path + arbitration + DV). Biggest single item.
 
-### F2 — Full AXI4 (INCR bursts, out-of-order IDs, wide data)
+### F2 — Full AXI4 (bursts ✅, multiple-outstanding ✅, wide data + OOO remain)
 - **Spec:** AoU §5 message formats for `WriteData512/1024` and multi-beat
-  Read/Write data; AXI4 (`AxLEN>0` INCR, `AxSIZE`, ID-based reordering).
-- **Touch:** `rtl/axi_lite_mem.sv` → a full AXI4 slave (or a new
-  `rtl/axi_mem.sv`), both bridges (burst→multi-granule packing, per-ID response
-  reorder buffers), `rtl/aou_pkg.sv` (wider `WriteData`/`ReadData` builders +
-  `MSG_MAX_BITS`), the cocotb BFM `dv/cocotb/axi_lite_bfm.py` (AXI4 burst driver)
-  and scoreboard, the SV/SystemC TBs, and `dv/pack` (wide-data byte-exactness).
-- **Approach:** stage it — (a) single-beat 512b/1024b data first (just wider
-  granule packing), then (b) INCR bursts with `AxLEN`, then (c) multiple
-  outstanding IDs with reorder. Each sub-stage is independently committable.
-- **Verify:** burst read/write scoreboard in cocotb; `dv/pack` byte-exact checks
-  for the wide `WriteData`/`ReadData` layouts; SVA for beat counts vs `AxLEN`.
-- **Effort:** large; naturally splits into (a)/(b)/(c).
+  Read/Write data; AXI4 (`AxLEN>0`, `AxSIZE`, burst types, ID-based reordering).
+- **DONE (sub-stages b + in-order c):**
+  - **INCR/WRAP/FIXED bursts** — `AxLEN`/`AxSIZE` carried in the request, burst
+    type in `FLEX[1:0]` (AoU has no `AxBURST`); the target expands each burst into
+    single-beat AXI-Lite accesses (per-beat `axi_burst_next`), `{B,R}ID` echoed,
+    `RLAST` on the final beat. Credit ceilings raised to 128 granules (16 beats).
+  - **Multiple-outstanding, in-order** — a `REQ_QD`-deep request queue in
+    `aou_axi_initiator_bridge` decouples AW/AR accept from the FSM, so several
+    transactions (distinct IDs) can be outstanding at once. Verified in cocotb
+    (`multi_outstanding_test`), SV, SystemC, and the coverage harness.
+- **REMAINING:**
+  - **Wide data (512b/1024b):** `rtl/aou_pkg.sv` wider `WriteData`/`ReadData`
+    builders + `MSG_MAX_BITS`; `dv/pack` byte-exactness for the wide layouts.
+  - **True out-of-order-by-ID completion:** the current topology (single
+    serialized flit link + single in-order memory) gives OOO **no natural
+    source**, so completions return in issue order. Genuine OOO would need a
+    deliberate per-ID reorder buffer on the initiator (and interleaved target
+    servicing) built specifically to reorder — larger and somewhat artificial
+    here; deferred until a multi-channel / variable-latency target motivates it.
+- **Verify (done parts):** per-beat burst scoreboards in cocotb/SV/SystemC;
+  multiple-outstanding tests fill the queue and check in-order completion.
+- **Effort:** remaining parts (wide data, OOO reorder) are independently sized.
 
 ### F3 — Deactivate quiescing Option 2 (hardware-managed quiescing)
 - **Spec:** §8.3.2 (Option 2 is OPTIONAL; Option 1 already implemented).
