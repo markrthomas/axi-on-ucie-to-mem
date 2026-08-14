@@ -76,7 +76,8 @@ jobs:
         run: |
           make ci \
             VERILATOR="$OSS/bin/verilator" \
-            VERILATOR_ROOT="$OSS/share/verilator"
+            VERILATOR_ROOT="$OSS/share/verilator" \
+            VERILATOR_COV="$OSS/bin/verilator_coverage"
         env:
           # cocotb runs under the setup-python interpreter; iverilog+vvp are the
           # apt pair, so ICARUS_BIN_DIR points at the system bin.

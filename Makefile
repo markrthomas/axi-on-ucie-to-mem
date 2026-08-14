@@ -15,6 +15,10 @@
 
 IVERILOG  ?= iverilog
 VERILATOR ?= verilator
+# lcov exporter that ships with Verilator.  Parameterized (like VERILATOR) so a
+# pinned/out-of-PATH Verilator install can point it at the matching binary;
+# otherwise the coverage floor is silently skipped when it is not on PATH.
+VERILATOR_COV ?= verilator_coverage
 
 RTL_DIR := rtl
 # Package first, then leaf modules, then the top (compile order matters).
@@ -212,8 +216,8 @@ coverage:
 		-I$(COV_DIR) -I$(VERILATOR_INC) -I$(VERILATOR_INC)/vltstd \
 		$(VERILATOR_CPP) -pthread -lm; \
 	( cd $(COV_DIR) && ./sim_cov ); \
-	if command -v verilator_coverage >/dev/null 2>&1; then \
-		verilator_coverage --write-info sim/coverage.info $(COV_DIR)/coverage.dat; \
+	if command -v $(VERILATOR_COV) >/dev/null 2>&1; then \
+		$(VERILATOR_COV) --write-info sim/coverage.info $(COV_DIR)/coverage.dat; \
 		echo "[COVERAGE] sim/coverage.info written"; \
 		pct=$$(awk -F: '/^DA:/{split($$2,a,","); f++; if(a[2]+0>0) h++} END{printf "%.1f", (f? 100*h/f : 0)}' sim/coverage.info); \
 		echo "[COVERAGE] line coverage: $$pct% (floor $(COV_MIN)%)"; \
