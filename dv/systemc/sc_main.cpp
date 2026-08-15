@@ -38,6 +38,12 @@ SC_MODULE(Stim) {
   int                        reads  = 0;
   std::map<uint32_t, uint32_t> ref;
 
+  // Opt-in per-beat transaction tracing into sc.log; enabled when the
+  // AOU_VERBOSE env var is set (the repo-root `make ... VERBOSE=1` exports it).
+  // Trace lines carry the [SC-TB][T] tag; default (unset) leaves sc.log
+  // byte-identical.
+  bool verbose = (std::getenv("AOU_VERBOSE") != nullptr);
+
   SC_CTOR(Stim) { SC_THREAD(run); sensitive << clk.pos(); }
 
   void axi_write(uint32_t addr, uint32_t data) {
@@ -54,6 +60,9 @@ SC_MODULE(Stim) {
       if (!w  && WREADY.read())  { w  = true; WVALID.write(false); WLAST.write(false); }
     }
     do { wait(); } while (!BVALID.read());
+    if (verbose)
+      std::cout << "[SC-TB][T] W   addr=0x" << std::hex << addr << " data=0x"
+                << data << " resp=" << std::dec << BRESP.read() << "\n";
     if (BRESP.read() != 0) { errors++; std::cout << "[SC-TB] bad BRESP\n"; }
     wait();
     BREADY.write(false);
@@ -67,6 +76,9 @@ SC_MODULE(Stim) {
     ARVALID.write(false);
     do { wait(); } while (!RVALID.read());
     uint32_t d = RDATA.read();
+    if (verbose)
+      std::cout << "[SC-TB][T] R   addr=0x" << std::hex << addr << " data=0x"
+                << d << " resp=" << std::dec << RRESP.read() << "\n";
     if (RRESP.read() != 0) { errors++; std::cout << "[SC-TB] bad RRESP\n"; }
     wait();
     RREADY.write(false);
@@ -96,17 +108,25 @@ SC_MODULE(Stim) {
     AWID.write(id); AWADDR.write(addr); AWLEN.write(len); AWSIZE.write(SZ4);
     AWBURST.write(burst); AWPROT.write(0); AWVALID.write(true); BREADY.write(true);
     do { wait(); } while (!AWREADY.read());
+    if (verbose)
+      std::cout << "[SC-TB][T] AW  id=" << id << " addr=0x" << std::hex << addr
+                << std::dec << " len=" << len << " burst=" << burst << "\n";
     AWVALID.write(false);
     uint32_t a = addr;
     for (uint32_t k = 0; k <= len; k++) {
       uint32_t dv = d0 + k * dstep;
       WDATA.write(dv); WSTRB.write(0xF); WLAST.write(k == len); WVALID.write(true);
       do { wait(); } while (!WREADY.read());
+      if (verbose)
+        std::cout << "[SC-TB][T] W   beat " << k << " addr=0x" << std::hex << a
+                  << " data=0x" << dv << std::dec << " last=" << (k == len) << "\n";
       ref[a] = dv;
       a = next_addr(a, addr, burst, SZ4, len);
       WVALID.write(false); WLAST.write(false);
     }
     do { wait(); } while (!BVALID.read());
+    if (verbose)
+      std::cout << "[SC-TB][T] B   id=" << BID.read() << " resp=" << BRESP.read() << "\n";
     if (BRESP.read() != 0) { errors++; std::cout << "[SC-TB] bad BRESP\n"; }
     if (BID.read() != id)  { errors++; std::cout << "[SC-TB] BID mismatch\n"; }
     wait();
@@ -119,11 +139,18 @@ SC_MODULE(Stim) {
     ARID.write(id); ARADDR.write(addr); ARLEN.write(len); ARSIZE.write(SZ4);
     ARBURST.write(burst); ARPROT.write(0); ARVALID.write(true); RREADY.write(true);
     do { wait(); } while (!ARREADY.read());
+    if (verbose)
+      std::cout << "[SC-TB][T] AR  id=" << id << " addr=0x" << std::hex << addr
+                << std::dec << " len=" << len << " burst=" << burst << "\n";
     ARVALID.write(false);
     uint32_t a = addr;
     for (uint32_t k = 0; k <= len; k++) {
       do { wait(); } while (!RVALID.read());
       uint32_t exp = ref.count(a) ? ref[a] : 0;
+      if (verbose)
+        std::cout << "[SC-TB][T] R   beat " << k << " addr=0x" << std::hex << a
+                  << " data=0x" << RDATA.read() << std::dec << " resp=" << RRESP.read()
+                  << " id=" << RID.read() << " last=" << RLAST.read() << "\n";
       check(a, RDATA.read(), exp);
       if (RRESP.read() != 0)        { errors++; std::cout << "[SC-TB] bad RRESP\n"; }
       if (RID.read() != id)         { errors++; std::cout << "[SC-TB] RID mismatch\n"; }
@@ -146,6 +173,9 @@ SC_MODULE(Stim) {
       ARSIZE.write(SZ4); ARBURST.write(bursts[i]); ARPROT.write(0);
       ARVALID.write(true);
       do { wait(); } while (!ARREADY.read());
+      if (verbose)
+        std::cout << "[SC-TB][T] AR  (mo) id=" << ids[i] << " addr=0x" << std::hex
+                  << addrs[i] << std::dec << " len=" << lens[i] << "\n";
       ARVALID.write(false);
       wait();                              // gap cycle between handshakes
     }
@@ -155,6 +185,10 @@ SC_MODULE(Stim) {
       for (uint32_t k = 0; k <= lens[i]; k++) {
         do { wait(); } while (!RVALID.read());
         uint32_t exp = ref.count(a) ? ref[a] : 0;
+        if (verbose)
+          std::cout << "[SC-TB][T] R   (mo) req " << i << " beat " << k << " addr=0x"
+                    << std::hex << a << " data=0x" << RDATA.read() << std::dec
+                    << " id=" << RID.read() << " last=" << RLAST.read() << "\n";
         check(a, RDATA.read(), exp);
         if (RRESP.read() != 0)            { errors++; std::cout << "[SC-TB] MO bad RRESP\n"; }
         if (RID.read() != ids[i])         { errors++; std::cout << "[SC-TB] MO RID mismatch\n"; }
@@ -176,6 +210,8 @@ SC_MODULE(Stim) {
   }
 
   void run() {
+    if (verbose)
+      std::cout << "[SC-TB][T] verbose transaction tracing enabled\n";
     // idle + reset
     ARESETn.write(false);
     AWVALID.write(false); WVALID.write(false); ARVALID.write(false);

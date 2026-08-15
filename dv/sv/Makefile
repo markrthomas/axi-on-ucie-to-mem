@@ -27,6 +27,12 @@ SVA := $(SVA_DIR)/axi_lite_sva.sv $(SVA_DIR)/aou_flit_sva.sv \
 
 PASS_RE := \[SV-TB\] PASS
 
+# Per-beat transaction tracing: when AOU_VERBOSE is set (the repo-root
+# `make ... VERBOSE=1` exports it) pass +verbose so the TB prints [SV-TB][T]
+# traces.  Works the same under Icarus (vvp) and Verilator (--binary), both of
+# which honour $test$plusargs.
+PLUSARGS := $(if $(AOU_VERBOSE),+verbose,)
+
 .PHONY: all icarus verilator clean
 all: icarus verilator
 
@@ -34,7 +40,7 @@ all: icarus verilator
 icarus:
 	@mkdir -p sim_build
 	$(IVERILOG) -g2012 -s $(TOP) -o sim_build/svtb.vvp $(RTL) $(TB)
-	@$(VVP) sim_build/svtb.vvp 2>&1 | tee sim_build/icarus.log
+	@$(VVP) sim_build/svtb.vvp $(PLUSARGS) 2>&1 | tee sim_build/icarus.log
 	@grep -q "$(PASS_RE)" sim_build/icarus.log || { echo "[SV] Icarus run FAILED"; exit 1; }
 	@echo "[SV] Icarus PASSED"
 
@@ -49,7 +55,7 @@ verilator:
 	$(VERILATOR) --binary --timing --assert -j 0 -Wall -Wno-DECLFILENAME \
 		-Wno-SYNCASYNCNET -Wno-BLKSEQ \
 		--top-module $(TOP) --Mdir obj_dir $(RTL) $(SVA) $(TB) -o vsvtb; \
-	./obj_dir/vsvtb 2>&1 | tee sim_build/verilator.log; \
+	./obj_dir/vsvtb $(PLUSARGS) 2>&1 | tee sim_build/verilator.log; \
 	grep -q "$(PASS_RE)" sim_build/verilator.log || { echo "[SV] Verilator run FAILED"; exit 1; }; \
 	echo "[SV] Verilator PASSED"
 
