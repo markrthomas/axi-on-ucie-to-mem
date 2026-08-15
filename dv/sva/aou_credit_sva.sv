@@ -17,7 +17,9 @@
 `define AOU_CREDIT_SVA_SV
 
 module aou_credit_sva #(
-    parameter int CEIL = 8            // max held credits across all types here
+    parameter int CEIL0 = 8,          // per-counter ceilings (differ by msg type)
+    parameter int CEIL1 = 8,
+    parameter int CEIL2 = 8
 ) (
     input logic       clk,
     input logic       rstn,
@@ -27,9 +29,9 @@ module aou_credit_sva #(
 );
 
   // `disable iff (!rstn)` inlined per property (see axi_lite_sva note).
-  a_c0_bound: assert property (@(posedge clk) disable iff (!rstn) c0 <= CEIL[7:0]);
-  a_c1_bound: assert property (@(posedge clk) disable iff (!rstn) c1 <= CEIL[7:0]);
-  a_c2_bound: assert property (@(posedge clk) disable iff (!rstn) c2 <= CEIL[7:0]);
+  a_c0_bound: assert property (@(posedge clk) disable iff (!rstn) c0 <= CEIL0[7:0]);
+  a_c1_bound: assert property (@(posedge clk) disable iff (!rstn) c1 <= CEIL1[7:0]);
+  a_c2_bound: assert property (@(posedge clk) disable iff (!rstn) c2 <= CEIL2[7:0]);
 
 endmodule
 `endif

@@ -215,6 +215,18 @@ package aou_pkg;
   function automatic logic [FLEX_W-1:0] wr_flex(input msg_t m);
     wr_flex = m[MSG_MAX_BITS-1-8 -: FLEX_W];  // after 4+2+1+1 = 8 bits
   endfunction
+  function automatic logic [AOU_SIZE_W-1:0] wr_size(input msg_t m);
+    wr_size = m[MSG_MAX_BITS-1-34 -: AOU_SIZE_W];   // after 24 + AWID(10)
+  endfunction
+  function automatic logic [AOU_LEN_W-1:0] wr_len(input msg_t m);
+    wr_len = m[MSG_MAX_BITS-1-40 -: AOU_LEN_W];     // after 34 + AWSIZE(3)+AWPROT(3)
+  endfunction
+  // AoU Table 2 WriteReq has no AWBURST field; the burst type rides in FLEX[1:0]
+  // as a Basic-Profile extension (§5.2 FLEX "additional information / extensions").
+  function automatic logic [1:0] wr_burst(input msg_t m);
+    logic [FLEX_W-1:0] f;                 // temp: Icarus rejects func(...)[range]
+    begin f = wr_flex(m); wr_burst = f[1:0]; end
+  endfunction
 
   // ReadReq field getters (identical layout to WriteReq)
   function automatic logic [AOU_ADDR_W-1:0] rr_addr(input msg_t m);
@@ -225,6 +237,48 @@ package aou_pkg;
   endfunction
   function automatic logic [FLEX_W-1:0] rr_flex(input msg_t m);
     rr_flex = m[MSG_MAX_BITS-1-8 -: FLEX_W];
+  endfunction
+  function automatic logic [AOU_SIZE_W-1:0] rr_size(input msg_t m);
+    rr_size = m[MSG_MAX_BITS-1-34 -: AOU_SIZE_W];
+  endfunction
+  function automatic logic [AOU_LEN_W-1:0] rr_len(input msg_t m);
+    rr_len = m[MSG_MAX_BITS-1-40 -: AOU_LEN_W];
+  endfunction
+  function automatic logic [1:0] rr_burst(input msg_t m);
+    logic [FLEX_W-1:0] f;
+    begin f = rr_flex(m); rr_burst = f[1:0]; end
+  endfunction
+
+  // AXI burst types (AxBURST encoding).  Carried in FLEX[1:0] (see wr_burst).
+  localparam logic [1:0] AXBURST_FIXED = 2'b00;
+  localparam logic [1:0] AXBURST_INCR  = 2'b01;
+  localparam logic [1:0] AXBURST_WRAP  = 2'b10;
+
+  // Next-beat address for an AXI burst (FIXED/INCR/WRAP), per the AXI4 spec.
+  //   addr = current beat address, base = burst start address,
+  //   size = log2(bytes/beat), len = AxLEN (beats-1).
+  // WRAP wraps at the aligned boundary of (len+1)*2^size bytes (len+1 in {2,4,
+  // 8,16}); FIXED holds the address; INCR increments by 2^size.
+  function automatic logic [AOU_ADDR_W-1:0] axi_burst_next(
+      input logic [AOU_ADDR_W-1:0] addr,
+      input logic [AOU_ADDR_W-1:0] base,
+      input logic [1:0]            burst,
+      input logic [AOU_SIZE_W-1:0] size,
+      input logic [AOU_LEN_W-1:0]  len);
+    logic [AOU_ADDR_W-1:0] nbytes, total, low, nxt;
+    begin
+      nbytes = (1 << size);
+      unique case (burst)
+        AXBURST_FIXED: axi_burst_next = addr;
+        AXBURST_WRAP: begin
+          total = ({{(AOU_ADDR_W-AOU_LEN_W){1'b0}}, len} + 1) << size;
+          low   = base & ~(total - 1);
+          nxt   = addr + nbytes;
+          axi_burst_next = (nxt == (low + total)) ? low : nxt;
+        end
+        default: axi_burst_next = addr + nbytes;   // AXBURST_INCR
+      endcase
+    end
   endfunction
 
   // WriteData256 getters: after MSGTYPE(4),RP(2),DLENGTH(2),FLEX(16) = 24 bits

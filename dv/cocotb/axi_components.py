@@ -28,11 +28,15 @@ class AxiDriver(uvm_driver):
         while True:
             item = await self.seq_item_port.get_next_item()
             strb = getattr(item, "strb", 0xF)
-            await self.bfm.send_command(item.addr, item.write, item.data, strb)
-            rdata, resp = await self.bfm.get_result()
+            beats = item.beats if item.beats is not None else [item.data]
+            await self.bfm.send_command(item.addr, item.write, item.data, strb,
+                                        length=item.length, burst=item.burst,
+                                        size=item.size, beats=beats)
+            rbeats, resp = await self.bfm.get_result()
             item.resp = resp
             if not item.write:
-                item.rdata = rdata
+                item.rbeats = rbeats
+                item.rdata = rbeats[0] if rbeats else 0
             self.seq_item_port.item_done()
 
 

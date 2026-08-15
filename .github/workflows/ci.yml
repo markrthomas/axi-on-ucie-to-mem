@@ -7,17 +7,47 @@ on:
 
 jobs:
   ci:
-    # 24.04 ships Verilator 5.x (needed for --binary/--timing and --sc) and
-    # SystemC 2.3.3, so the full regression runs for real here.
+    # 24.04 ships SystemC 2.3.3 (libsystemc-dev) and the apt Icarus used by the
+    # cocotb VPI.  Verilator is pinned to oss-cad-suite below (see that step).
     runs-on: ubuntu-24.04
+    env:
+      # oss-cad-suite install root (extracted below); its self-rooting verilator
+      # wrapper is invoked by absolute path so it never shadows the apt iverilog
+      # that the cocotb VPI is built against.
+      OSS: ${{ github.workspace }}/oss-cad-suite
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install RTL tools (Icarus + Verilator + SystemC)
+      # Icarus (cocotb VPI + the directed/pack/act Icarus flows) and SystemC come
+      # from apt; Verilator does NOT (see the pin below).
+      - name: Install RTL tools (Icarus + SystemC)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            iverilog verilator libsystemc-dev
+            iverilog libsystemc-dev
+
+      # Pin Verilator to the exact oss-cad-suite build used for local development
+      # (tag 2026-04-13, Verilator 5.047).  The apt Verilator (5.020) attributes
+      # line coverage ~9 points stricter, which would push `make coverage` below
+      # the 85% floor on a declaration-heavy design even though real coverage is
+      # unchanged; pinning to the validated build keeps CI and local coverage in
+      # agreement.  The tag is exact (not "latest") on purpose: a newer build
+      # added SIMILARNAME under -Wall, which the local build predates, so drifting
+      # would reintroduce a lint delta between CI and local.
+      - name: Cache oss-cad-suite (pinned Verilator)
+        id: cache-oss
+        uses: actions/cache@v4
+        with:
+          path: oss-cad-suite
+          key: oss-cad-suite-linux-x64-20260413
+
+      - name: Install oss-cad-suite (pinned Verilator)
+        if: steps.cache-oss.outputs.cache-hit != 'true'
+        run: |
+          curl -fL -o oss.tgz \
+            https://github.com/YosysHQ/oss-cad-suite-build/releases/download/2026-04-13/oss-cad-suite-linux-x64-20260413.tgz
+          tar xzf oss.tgz
+          rm oss.tgz
 
       - uses: actions/setup-python@v5
         with:
@@ -31,15 +61,23 @@ jobs:
       - name: Tool versions
         run: |
           iverilog -V | head -1
-          verilator --version
+          "$OSS/bin/verilator" --version
           python -c "import cocotb, pyuvm; print('cocotb', cocotb.__version__, 'pyuvm', pyuvm.__version__)"
 
       # lint + PyUVM/cocotb regression + SV directed TB (Icarus & Verilator, with
       # bound SVA) + SystemC + Verilator coverage, as one pass/fail gate.  The
       # SV/UVM flow (make uvm) is not run here: GitHub runners have no UVM-capable
       # simulator, so it would only skip.
+      #
+      # VERILATOR / VERILATOR_ROOT are passed as make command-line args (not env)
+      # so they override the Makefile's `VERILATOR_ROOT :=` computation and
+      # propagate to the sub-makes; iverilog stays on PATH from apt.
       - name: make ci
-        run: make ci
+        run: |
+          make ci \
+            VERILATOR="$OSS/bin/verilator" \
+            VERILATOR_ROOT="$OSS/share/verilator" \
+            VERILATOR_COV="$OSS/bin/verilator_coverage"
         env:
           # cocotb runs under the setup-python interpreter; iverilog+vvp are the
           # apt pair, so ICARUS_BIN_DIR points at the system bin.

@@ -61,17 +61,21 @@ granule counts (1 granule = 5 bytes = 40 bits; 48 granules per PLP payload):
 
 A write flit therefore carries **two messages** (`MsgStart` bits 0 and 3 set),
 exercising real multi-message packing; the unpacker is bitmap-driven. This build
-covers the Basic Profile, Resource Plane RP0, 32-bit single-beat AXI-Lite
-(`AWLEN=ARLEN=0`, `DLENGTH=256b`); AXI data occupies the low 32 bits of the AoU
-data field and the AoU 10-bit ID carries a per-transaction tag echoed on the
-response. Flit fields are packed **byte-exact** to the spec (§5.8 message
+covers the Basic Profile, Resource Plane RP0, 32-bit AXI4 with **INCR/WRAP/FIXED
+bursts** (`AxLEN` beats, `AxSIZE`, burst type carried in `FLEX[1:0]` since AoU has
+no `AxBURST`; the target expands each burst into single-beat AXI-Lite accesses,
+`DLENGTH=256b` per beat) and **multiple-outstanding transactions with in-order
+completion** (a request queue in the initiator bridge lets several transactions be
+in flight at once). AXI data occupies the low 32 bits of the AoU data field and
+the AoU 10-bit ID carries a per-transaction tag echoed on `{B,R}ID`. Flit fields are packed **byte-exact** to the spec (§5.8 message
 layouts and the §4.3 Figure-5 protocol header), and **§6 per-message-type credit
 flow control** (RP0) runs on both bridges, carried in the header `MsgCredit`
 field. The interface follows the full §8 activation state machine — bring-up
 (with a §6.4.2 `CrdtGrant` / §6.4.3 reset credit exchange), teardown,
 re-activation, and `ERROR` recovery (no AXI accepted until `ENABLED`).
 See [`docs/PLAN.md`](docs/PLAN.md) for the full architecture and the remaining
-out-of-scope follow-ons (multiple resource planes, AXI4 bursts).
+out-of-scope follow-ons (multiple resource planes; wide 512b/1024b data and true
+out-of-order-by-ID completion).
 
 ## Directory layout
 
@@ -98,7 +102,7 @@ All drive the same DUT and check reads against a reference word memory.
 
 | Environment | Directory | Runs here? | What it is |
 |-------------|-----------|-----------|------------|
-| cocotb + PyUVM | `dv/cocotb/` | ✅ | AXI-Lite BFM + driver/monitor/agent/scoreboard; write-read / random / walking tests |
+| cocotb + PyUVM | `dv/cocotb/` | ✅ | AXI-Lite BFM + driver/monitor/agent/scoreboard; write-read / random / walking / burst / multi-outstanding tests |
 | Icarus (SV) | `dv/sv/` | ✅ | portable self-checking SV directed TB under `iverilog`+`vvp` |
 | Verilator (SV) | `dv/sv/` | ✅ | same SV TB under `--binary --timing`, **plus bound SVA** (`--assert`) |
 | SystemC | `dv/systemc/` | ✅ | `verilator --sc` DUT model + hand-written `sc_main` driver/scoreboard |
@@ -118,7 +122,7 @@ The **PyUVM** and **UVM** testbenches map one-for-one:
 
 ```mermaid
 flowchart TB
-    SEQ["Sequence<br/>write-read · random · walking"]
+    SEQ["Sequence<br/>write-read · random · walking · burst · multi-outstanding"]
     subgraph TEST["test — builds env, drives reset, starts the sequence"]
       subgraph ENV["env"]
         subgraph AG["agent (active)"]
@@ -143,8 +147,8 @@ Everything runs from the repo root and degrades gracefully if a tool is absent.
 
 | Flow | Command | What it does |
 |------|---------|--------------|
-| Full regression | `make test` | all three cocotb tests (write-read, random, walking) |
-| Directed | `make test-write-read` / `test-random` / `test-walking` | one cocotb test |
+| Full regression | `make test` | all five cocotb tests (write-read, random, walking, burst, multi-outstanding) |
+| Directed | `make test-write-read` / `test-random` / `test-walking` / `test-burst` / `test-outstanding` | one cocotb test |
 | SV (Icarus) | `make sv` | portable SV directed TB under Icarus |
 | SV (Verilator) | `make vlt` | same TB under Verilator + bound SVA assertions |
 | Packing | `make pack` | §4.3/§5.8 byte-exact packing conformance (Icarus + Verilator) |
@@ -197,8 +201,10 @@ make pack        # byte-exact packing conformance      -> "[PACK] Icarus/Verilat
 make systemc     # SystemC TB                          -> "[SC] SystemC PASSED"
 ```
 
-Each prints `... PASS: 65 reads checked, 0 errors`. All four runnable
-environments cross-check the identical DUT.
+Each self-checking TB prints a `... PASS: N reads checked, 0 errors` banner (the
+SV and SystemC read counts differ, as each walks single-beat, INCR/WRAP/FIXED
+burst, and multiple-outstanding traffic). All four runnable environments
+cross-check the identical DUT.
 
 ### 4. Coverage, lint, and the CI gate
 
@@ -298,8 +304,11 @@ AXI is accepted until the interface is `ENABLED`; transmit credits reset to zero
 - **Deactivate quiescing Option 2** (spec §8.3.2) — only Option 1 (System
   Software quiesces the link before setting the deactivate flag; MANDATORY) is
   modeled; hardware-managed quiescing (OPTIONAL) is not.
-- **Multiple resource planes** (RP0..RP3) and multi-outstanding transactions.
-- **Full AXI4** — INCR bursts (`AxLEN>0`), out-of-order IDs, 512b/1024b data.
+- **Multiple resource planes** (RP0..RP3).
+- **Full AXI4, remaining parts** — 512b/1024b wide data and true
+  out-of-order-by-ID completion. (INCR/WRAP/FIXED bursts and multiple-outstanding
+  transactions with in-order completion are **implemented**; genuine OOO has no
+  natural source in the single-link / single-in-order-memory topology.)
 - **Whole-chain formal** — the current proof covers `axi_lite_mem`; proving the
   bridges/flit path needs a Verific-based front end (or hand-abstracted flits).
 

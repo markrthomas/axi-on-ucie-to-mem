@@ -15,6 +15,10 @@
 
 IVERILOG  ?= iverilog
 VERILATOR ?= verilator
+# lcov exporter that ships with Verilator.  Parameterized (like VERILATOR) so a
+# pinned/out-of-PATH Verilator install can point it at the matching binary;
+# otherwise the coverage floor is silently skipped when it is not on PATH.
+VERILATOR_COV ?= verilator_coverage
 
 RTL_DIR := rtl
 # Package first, then leaf modules, then the top (compile order matters).
@@ -53,7 +57,8 @@ COV_DIR := sim/obj_dir_cov
 COV_MIN ?= 85
 
 .PHONY: default help \
-	test test-all test-write-read test-random test-walking \
+	test test-all test-write-read test-random test-walking test-burst \
+	test-outstanding \
 	sv vlt pack act systemc uvm coverage formal waves wave check regress ci \
 	lint _lint_iverilog _lint_verilator clean
 
@@ -63,10 +68,12 @@ help:
 	@echo "axi-on-ucie-to-mem — common targets"
 	@echo ""
 	@echo "  Tests (PyUVM / cocotb):"
-	@echo "    make test              # all three cocotb tests"
+	@echo "    make test              # all five cocotb tests"
 	@echo "    make test-write-read   # write-then-read-back sequence"
 	@echo "    make test-random       # constrained-random read/write mix"
 	@echo "    make test-walking      # directed address/data edge cases"
+	@echo "    make test-burst        # INCR/WRAP/FIXED burst read-back"
+	@echo "    make test-outstanding  # multiple-outstanding reads (fills initiator queue)"
 	@echo "    make waves             # dump $(FST) (TEST=<name> for one test)"
 	@echo "    make wave              # open the dump in GTKWave"
 	@echo ""
@@ -107,7 +114,9 @@ test-all:
 	$(call run_one_test,write_read_test)
 	$(call run_one_test,random_test)
 	$(call run_one_test,walking_test)
-	@echo "[TEST] all three PyUVM tests passed"
+	$(call run_one_test,burst_test)
+	$(call run_one_test,multi_outstanding_test)
+	@echo "[TEST] all five PyUVM tests passed"
 
 test-write-read:
 	$(call run_one_test,write_read_test)
@@ -118,10 +127,16 @@ test-random:
 test-walking:
 	$(call run_one_test,walking_test)
 
+test-burst:
+	$(call run_one_test,burst_test)
+
+test-outstanding:
+	$(call run_one_test,multi_outstanding_test)
+
 # Waveform dump.  All three tests share one sim by default; TEST=<name> dumps
 # just one.  cocotb's Icarus dump module is only compiled into a FRESH
 # sim_build, so wipe it first.
-WAVE_TESTS := write_read_test random_test walking_test
+WAVE_TESTS := write_read_test random_test walking_test burst_test multi_outstanding_test
 
 waves:
 	@if [ -n "$(TEST)" ] && ! echo " $(WAVE_TESTS) " | grep -q " $(TEST) "; then \
@@ -201,8 +216,8 @@ coverage:
 		-I$(COV_DIR) -I$(VERILATOR_INC) -I$(VERILATOR_INC)/vltstd \
 		$(VERILATOR_CPP) -pthread -lm; \
 	( cd $(COV_DIR) && ./sim_cov ); \
-	if command -v verilator_coverage >/dev/null 2>&1; then \
-		verilator_coverage --write-info sim/coverage.info $(COV_DIR)/coverage.dat; \
+	if command -v $(VERILATOR_COV) >/dev/null 2>&1; then \
+		$(VERILATOR_COV) --write-info sim/coverage.info $(COV_DIR)/coverage.dat; \
 		echo "[COVERAGE] sim/coverage.info written"; \
 		pct=$$(awk -F: '/^DA:/{split($$2,a,","); f++; if(a[2]+0>0) h++} END{printf "%.1f", (f? 100*h/f : 0)}' sim/coverage.info); \
 		echo "[COVERAGE] line coverage: $$pct% (floor $(COV_MIN)%)"; \
