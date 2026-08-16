@@ -62,6 +62,13 @@ module tb_axi_ucie_mem;
   logic [DW-1:0] ref_mem [0:WORDS-1];
   int            errors, reads;
 
+  // Opt-in per-beat transaction tracing.  Enabled with the +verbose plusarg
+  // (the dv/sv Makefile passes it when AOU_VERBOSE is set, i.e. `make ...
+  // VERBOSE=1` at the repo root).  Trace lines carry the [SV-TB][T] tag so they
+  // are greppable and never collide with the PASS/FAIL or MISMATCH banners;
+  // default (plusarg absent) leaves the log byte-identical.
+  bit verbose;
+
   // independent AXI next-beat address (mirror of the spec rule)
   function automatic logic [AW-1:0] nxt_addr(input logic [AW-1:0] a, base,
                                              input logic [1:0] bt,
@@ -93,6 +100,8 @@ module tb_axi_ucie_mem;
       AWID = id; AWADDR = addr; AWLEN = len; AWSIZE = SZ4; AWBURST = bt;
       AWPROT = 3'b000; AWVALID = 1'b1;
       @(posedge ACLK); while (!AWREADY) @(posedge ACLK);
+      if (verbose) $display("[SV-TB][T] AW  id=%0d addr=0x%05h len=%0d burst=%0d",
+                            id, addr, len, bt);
       @(negedge ACLK); AWVALID = 1'b0;
       a = addr;
       for (k = 0; k <= len; k++) begin
@@ -100,11 +109,14 @@ module tb_axi_ucie_mem;
         WDATA = d0 + k*dstep; WSTRB = {SW{1'b1}};
         WLAST = (k == int'(len)); WVALID = 1'b1;
         @(posedge ACLK); while (!WREADY) @(posedge ACLK);
+        if (verbose) $display("[SV-TB][T] W   beat %0d addr=0x%05h data=0x%08h last=%0b",
+                              k, a, WDATA, WLAST);
         ref_mem[a[MEM_ADDR_W-1:2]] = d0 + k*dstep;
         a = nxt_addr(a, addr, bt, SZ4, len);
         @(negedge ACLK); WVALID = 1'b0; WLAST = 1'b0;
       end
       @(posedge ACLK); while (!BVALID) @(posedge ACLK);
+      if (verbose) $display("[SV-TB][T] B   id=%0d resp=%0d", BID, BRESP);
       if (BRESP !== 2'b00) begin errors++; $display("[SV-TB] bad BRESP=%b", BRESP); end
       if (BID   !== id)    begin errors++; $display("[SV-TB] BID got %0d exp %0d", BID, id); end
     end
@@ -119,11 +131,15 @@ module tb_axi_ucie_mem;
       ARID = id; ARADDR = addr; ARLEN = len; ARSIZE = SZ4; ARBURST = bt;
       ARPROT = 3'b000; ARVALID = 1'b1;
       @(posedge ACLK); while (!ARREADY) @(posedge ACLK);
+      if (verbose) $display("[SV-TB][T] AR  id=%0d addr=0x%05h len=%0d burst=%0d",
+                            id, addr, len, bt);
       @(negedge ACLK); ARVALID = 1'b0;
       a = addr;
       for (k = 0; k <= len; k++) begin
         @(posedge ACLK); while (!RVALID) @(posedge ACLK);
         reads++;
+        if (verbose) $display("[SV-TB][T] R   beat %0d addr=0x%05h data=0x%08h resp=%0d id=%0d last=%0b",
+                              k, a, RDATA, RRESP, RID, RLAST);
         if (RDATA !== ref_mem[a[MEM_ADDR_W-1:2]]) begin
           errors++;
           $display("[SV-TB] MISMATCH beat %0d @0x%05h: got 0x%08h exp 0x%08h",
@@ -159,6 +175,8 @@ module tb_axi_ucie_mem;
     ARID = '0; ARADDR = '0; ARLEN = '0; ARSIZE = '0; ARBURST = '0; ARPROT = '0;
     BREADY = 1'b1; RREADY = 1'b1;
     errors = 0; reads = 0;
+    verbose = ($test$plusargs("verbose") != 0);
+    if (verbose) $display("[SV-TB][T] verbose transaction tracing enabled");
     for (i = 0; i < WORDS; i++) ref_mem[i] = '0;
     repeat (3) @(negedge ACLK);
     ARESETn = 1'b1;
@@ -224,6 +242,8 @@ module tb_axi_ucie_mem;
         ARID = oid[m]; ARADDR = oa[m]; ARLEN = ol[m]; ARSIZE = SZ4;
         ARBURST = BI; ARPROT = 3'b000; ARVALID = 1'b1;
         @(posedge ACLK); while (!ARREADY) @(posedge ACLK);
+        if (verbose) $display("[SV-TB][T] AR  (mo) id=%0d addr=0x%05h len=%0d",
+                              oid[m], oa[m], ol[m]);
         @(negedge ACLK); ARVALID = 1'b0;
       end
       // Phase 2: drain in issue order (in-order completion) and self-check.
@@ -233,6 +253,8 @@ module tb_axi_ucie_mem;
         for (k = 0; k <= int'(ol[m]); k++) begin
           @(posedge ACLK); while (!RVALID) @(posedge ACLK);
           reads++;
+          if (verbose) $display("[SV-TB][T] R   (mo) req %0d beat %0d addr=0x%05h data=0x%08h id=%0d last=%0b",
+                                m, k, ca, RDATA, RID, RLAST);
           if (RDATA !== ref_mem[ca[MEM_ADDR_W-1:2]]) begin
             errors++;
             $display("[SV-TB] MO MISMATCH req %0d beat %0d @0x%05h: got 0x%08h exp 0x%08h",

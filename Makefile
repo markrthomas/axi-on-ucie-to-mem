@@ -56,6 +56,17 @@ COV_DIR := sim/obj_dir_cov
 # differs slightly between versions (e.g. 89.8% on 5.020 vs 93.5% on 5.047).
 COV_MIN ?= 85
 
+# Transaction tracing (opt-in, off by default).  `make <target> VERBOSE=1`
+# exports AOU_VERBOSE to every sub-make, turning on per-beat AXI traces in each
+# environment's log: the SV directed TB and the SystemC TB print [SV-TB][T] /
+# [SC-TB][T] lines, the coverage harness prints [sim_cov][T], and the cocotb BFM
+# raises its "axi.bfm" logger to DEBUG.  Leaving VERBOSE unset keeps all output
+# byte-identical, so CI banners, log baselines, and the coverage ratio are
+# unaffected.  (AOU_VERBOSE can also be exported directly.)
+ifeq ($(VERBOSE),1)
+export AOU_VERBOSE := 1
+endif
+
 .PHONY: default help \
 	test test-all test-write-read test-random test-walking test-burst \
 	test-outstanding \
@@ -92,6 +103,10 @@ help:
 	@echo "    make check             # lint + cocotb + SV(Icarus+Verilator) + pack + act + SystemC"
 	@echo "    make regress           # check + coverage (CI-style pass/fail)"
 	@echo "    make ci                # regress"
+	@echo ""
+	@echo "  Tracing:"
+	@echo "    VERBOSE=1               # add to any target for per-beat AXI transaction traces"
+	@echo "                           #   (e.g. make sv VERBOSE=1 / make systemc VERBOSE=1)"
 	@echo ""
 	@echo "  Other: make clean"
 

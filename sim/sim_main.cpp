@@ -22,8 +22,15 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 
 static Vaxi_ucie_mem_top* dut = nullptr;
+
+// Opt-in per-beat transaction tracing (parity with the SV/SystemC/cocotb TBs).
+// Set when the AOU_VERBOSE env var is present (`make ... VERBOSE=1` exports it);
+// prints carry the [sim_cov][T] tag.  Default (unset) leaves output unchanged
+// and never affects coverage (measured on RTL, not this harness).
+static bool g_verbose = false;
 
 // AXI burst-type encodings (AoU carries these in FLEX[1:0]; the boundary AXI
 // interface uses the standard AxBURST values).
@@ -56,16 +63,24 @@ static void axi_wburst(uint32_t id, uint32_t addr, uint32_t len, uint32_t burst,
     dut->BREADY = 1;
     int guard = 0;
     do { tick(); } while (!dut->AWREADY && ++guard < 400);
+    if (g_verbose)
+        printf("[sim_cov][T] AW  id=%u addr=0x%05X len=%u burst=%u\n",
+               id, addr, len, burst);
     dut->AWVALID = 0;
     for (uint32_t k = 0; k <= len; ++k) {
         dut->WDATA = d0 + k * dstep; dut->WSTRB = 0xF;
         dut->WLAST = (k == len); dut->WVALID = 1;
         guard = 0;
         do { tick(); } while (!dut->WREADY && ++guard < 400);
+        if (g_verbose)
+            printf("[sim_cov][T] W   beat %u data=0x%08X last=%d\n",
+                   k, d0 + k * dstep, (int)(k == len));
         dut->WVALID = 0; dut->WLAST = 0;
     }
     guard = 0;
     do { tick(); } while (!dut->BVALID && ++guard < 400);
+    if (g_verbose)
+        printf("[sim_cov][T] B   id=%u resp=%u\n", (unsigned)dut->BID, (unsigned)dut->BRESP);
     tick();                 // accept B (BREADY high)
     dut->BREADY = 0;
 }
@@ -77,11 +92,16 @@ static void axi_rburst(uint32_t id, uint32_t addr, uint32_t len, uint32_t burst)
     dut->RREADY = 1;
     int guard = 0;
     do { tick(); } while (!dut->ARREADY && ++guard < 400);
+    if (g_verbose)
+        printf("[sim_cov][T] AR  id=%u addr=0x%05X len=%u burst=%u\n",
+               id, addr, len, burst);
     dut->ARVALID = 0;
     for (uint32_t k = 0; k <= len; ++k) {
         guard = 0;
         do { tick(); } while (!dut->RVALID && ++guard < 400);
-        (void)dut->RDATA;
+        if (g_verbose)
+            printf("[sim_cov][T] R   beat %u data=0x%08X id=%u last=%d\n",
+                   k, (unsigned)dut->RDATA, (unsigned)dut->RID, (int)dut->RLAST);
         tick();             // accept R beat (RREADY high)
     }
     dut->RREADY = 0;
@@ -108,6 +128,9 @@ static void axi_read_pipe(int n, const uint32_t* ids, const uint32_t* addrs,
         dut->ARVALID = 1;
         int guard = 0;
         do { tick(); } while (!dut->ARREADY && ++guard < 400);
+        if (g_verbose)
+            printf("[sim_cov][T] AR  (mo) id=%u addr=0x%05X len=%u\n",
+                   ids[i], addrs[i], lens[i]);
         dut->ARVALID = 0;
         tick();                            // gap cycle between handshakes
     }
@@ -116,7 +139,9 @@ static void axi_read_pipe(int n, const uint32_t* ids, const uint32_t* addrs,
         for (uint32_t k = 0; k <= lens[i]; ++k) {
             int guard = 0;
             do { tick(); } while (!dut->RVALID && ++guard < 400);
-            (void)dut->RDATA;
+            if (g_verbose)
+                printf("[sim_cov][T] R   (mo) req %d beat %u data=0x%08X id=%u last=%d\n",
+                       i, k, (unsigned)dut->RDATA, (unsigned)dut->RID, (int)dut->RLAST);
             tick();
         }
     }
@@ -125,6 +150,8 @@ static void axi_read_pipe(int n, const uint32_t* ids, const uint32_t* addrs,
 
 int main(int argc, char** argv) {
     Verilated::commandArgs(argc, argv);
+    g_verbose = (std::getenv("AOU_VERBOSE") != nullptr);
+    if (g_verbose) printf("[sim_cov][T] verbose transaction tracing enabled\n");
     dut = new Vaxi_ucie_mem_top;
 
     const uint32_t LAST = 0xFFFC;   // top word of the 64 KiB space

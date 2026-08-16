@@ -160,8 +160,22 @@ Everything runs from the repo root and degrades gracefully if a tool is absent.
 | Formal | `make formal` | SymbiYosys proof of `axi_lite_mem` (bmc + cover + unbounded `prove`); skips cleanly if `sby` absent |
 | Gate | `make check` | lint + cocotb + SV(both sims) + pack + SystemC |
 | CI | `make ci` | `check` + coverage as one pass/fail gate |
+| Trace | `make <target> VERBOSE=1` | per-beat AXI transaction traces in each env's log |
 
 Run `make help` for the full list.
+
+**Transaction tracing.** Add `VERBOSE=1` to any target (it exports `AOU_VERBOSE`
+to the sub-makes) to log every AW/W/B/AR/R beat — address, data, id, burst,
+resp, last — for debugging. The SV directed TB and SystemC TB tag their lines
+`[SV-TB][T]` / `[SC-TB][T]`, the coverage harness `[sim_cov][T]`, and the cocotb
+BFM raises its `axi.bfm` logger to `DEBUG`. Off by default, so normal runs (and
+CI) stay byte-identical:
+
+```bash
+make sv VERBOSE=1        # SV directed TB, per-beat traces to dv/sv/sim_build/icarus.log
+make systemc VERBOSE=1   # SystemC TB, traces to dv/systemc/sc.log
+make test-burst VERBOSE=1
+```
 
 ## Tutorial
 

@@ -7,6 +7,9 @@ clean, race-free values on the following rising edge; handshakes are observed on
 the rising edge.
 """
 
+import logging
+import os
+
 import cocotb
 from cocotb.clock import Clock
 from cocotb.queue import Queue
@@ -23,6 +26,14 @@ class AxiLiteBfm(metaclass=utility_classes.Singleton):
         self.driver_queue = Queue()        # command items handed to the driver
         self.result_queue = Queue()        # (rdata, resp) returned to the driver
         self.monitor_queue = Queue()       # completed transfers seen on the bus
+        # Opt-in per-beat transaction tracing.  Setting AOU_VERBOSE (the repo-root
+        # `make ... VERBOSE=1` exports it) raises this BFM's logger to DEBUG so
+        # every AW/W/B/AR/R beat is logged with sim time; default (unset) leaves
+        # the log unchanged.
+        self.log = logging.getLogger("axi.bfm")
+        if os.environ.get("AOU_VERBOSE"):
+            self.log.setLevel(logging.DEBUG)
+            self.log.debug("verbose transaction tracing enabled")
 
     # -- clock / reset --------------------------------------------------------
     async def start_clock(self, period_ns=10):
@@ -59,6 +70,7 @@ class AxiLiteBfm(metaclass=utility_classes.Singleton):
             await RisingEdge(d.ACLK)
             if d.AWREADY.value == 1:
                 break
+        self.log.debug("AW  addr=0x%05X len=%d burst=%d", addr, length, burst)
         await FallingEdge(d.ACLK)
         d.AWVALID.value = 0
 
@@ -71,6 +83,8 @@ class AxiLiteBfm(metaclass=utility_classes.Singleton):
                 await RisingEdge(d.ACLK)
                 if d.WREADY.value == 1:
                     break
+            self.log.debug("W   beat %d data=0x%08X last=%d",
+                           k, beat, 1 if k == length else 0)
             await FallingEdge(d.ACLK)
             d.WVALID.value = 0
             d.WLAST.value = 0
@@ -78,6 +92,7 @@ class AxiLiteBfm(metaclass=utility_classes.Singleton):
         while d.BVALID.value != 1:
             await RisingEdge(d.ACLK)
         resp = int(d.BRESP.value)
+        self.log.debug("B   resp=%d", resp)
         await FallingEdge(d.ACLK)
         d.BREADY.value = 0
         return resp
@@ -99,16 +114,20 @@ class AxiLiteBfm(metaclass=utility_classes.Singleton):
             await RisingEdge(d.ACLK)
             if d.ARREADY.value == 1:
                 break
+        self.log.debug("AR  addr=0x%05X len=%d burst=%d", addr, length, burst)
         await FallingEdge(d.ACLK)
         d.ARVALID.value = 0
 
         beats = []
         resp = 0
-        for _ in range(length + 1):
+        for k in range(length + 1):
             while d.RVALID.value != 1:
                 await RisingEdge(d.ACLK)
             beats.append(int(d.RDATA.value))
             resp = int(d.RRESP.value)
+            self.log.debug("R   beat %d data=0x%08X resp=%d id=%d last=%d",
+                           k, int(d.RDATA.value), resp, int(d.RID.value),
+                           int(d.RLAST.value))
             await RisingEdge(d.ACLK)     # beat accepted (RREADY high); advance
         await FallingEdge(d.ACLK)
         d.RREADY.value = 0
@@ -136,6 +155,8 @@ class AxiLiteBfm(metaclass=utility_classes.Singleton):
                 await RisingEdge(d.ACLK)
                 if d.ARREADY.value == 1:
                     break
+            self.log.debug("AR  (mo) id=%d addr=0x%05X len=%d",
+                           r.get("id", 0), r["addr"], r["length"])
             await FallingEdge(d.ACLK)
             d.ARVALID.value = 0
         d.RREADY.value = 1                         # phase 2: drain in issue order
@@ -143,6 +164,9 @@ class AxiLiteBfm(metaclass=utility_classes.Singleton):
         while remaining > 0:
             await RisingEdge(d.ACLK)
             if d.RVALID.value == 1 and d.RREADY.value == 1:
+                self.log.debug("R   (mo) data=0x%08X id=%d last=%d",
+                               int(d.RDATA.value), int(d.RID.value),
+                               int(d.RLAST.value))
                 remaining -= 1
         await FallingEdge(d.ACLK)
         d.RREADY.value = 0
