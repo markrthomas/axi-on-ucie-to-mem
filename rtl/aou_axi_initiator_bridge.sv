@@ -161,6 +161,7 @@ module aou_axi_initiator_bridge
   logic [2:0]            seed_rdata;
   logic [1:0]            seed_wresp;
   logic                  act_error;
+  logic                  act_quiescing;   // Opt-2 drain hint, unused (deact tied 0)
   // verilator lint_on UNUSEDSIGNAL
 
   aou_activation #(
@@ -168,7 +169,9 @@ module aou_axi_initiator_bridge
   ) u_act (
     .clk(clk), .rstn(rstn), .enabled(act_enabled),
     .act_disabled(act_disabled), .error(act_error),
-    .deact_trig(1'b0), .err_clear(1'b0),
+    // deact/quiesce unused here (no SW teardown in the full chain); data_idle
+    // tied high = Option-1 degenerate.  Option 2 is exercised in dv/act.
+    .deact_trig(1'b0), .data_idle(1'b1), .quiescing(act_quiescing), .err_clear(1'b0),
     .tx_data(tx_data),  .tx_valid(tx_valid),  .tx_ready(tx_ready),
     .rx_data(rx_data),  .rx_valid(rx_valid),  .rx_ready(rx_ready),
     .d_tx_data(dtx_data), .d_tx_valid(dtx_valid), .d_tx_ready(dtx_ready),
