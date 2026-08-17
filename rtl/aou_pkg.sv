@@ -5,8 +5,11 @@
 //   Chapter 4 (Packing) and Chapter 5 (Message Structures).
 //
 // Scope of THIS package (see docs/PLAN.md):
-//   * Basic Profile messages: WriteReq, ReadReq, WriteData(256b),
-//     ReadData(256b), WriteResp.  (WriteDataFull / 512b / 1024b not built.)
+//   * Basic Profile messages: WriteReq, ReadReq, WriteData(256b/512b/1024b),
+//     ReadData(256b/512b/1024b), WriteResp.  The AXI-Lite front door is 32-bit,
+//     so the end-to-end path only builds 256b data messages; the 512b/1024b
+//     builders/getters model the §5.4 formats and are byte-exactly conformance-
+//     tested in dv/pack.  (WriteDataFull is not built.)
 //   * Resource Plane RP0 only; §6 per-message-type credit flow control (see the
 //     credit helpers below and the bridges); no activation FSM (§8).
 //   * AXI4-Lite front door, 32-bit data / 32-bit address, single beat
@@ -79,8 +82,12 @@ package aou_pkg;
   localparam int AOU_DATA_W  = 256;  // WriteData/ReadData(256b)
   localparam int AOU_STRB_W  = 32;
   localparam int AOU_RESP_W  = 2;    // RRESP/BRESP
+  // Wide data-message widths (§5.4 Tables 5/6/11/12).  End-to-end traffic is
+  // 256b (32-bit AXI-Lite); these back the 512b/1024b format models below.
+  localparam int AOU_DATA512_W  = 512;   localparam int AOU_STRB512_W  = 64;
+  localparam int AOU_DATA1024_W = 1024;  localparam int AOU_STRB1024_W = 128;
 
-  // DLENGTH encodings (spec §5.4).  This design uses 256b only.
+  // DLENGTH encodings (spec §5.4): 256b / 512b / 1024b data-message widths.
   localparam logic [DLENGTH_W-1:0] DLEN_256  = 2'b00;
   localparam logic [DLENGTH_W-1:0] DLEN_512  = 2'b01;
   localparam logic [DLENGTH_W-1:0] DLEN_1024 = 2'b10;
@@ -88,12 +95,19 @@ package aou_pkg;
   // --- Message bit-lengths and granule counts (spec §5.3-5.5) ---------------
   localparam int WRITEREQ_BITS  = 120; localparam int WRITEREQ_GRAN  = 3;
   localparam int READREQ_BITS   = 120; localparam int READREQ_GRAN   = 3;
-  localparam int WRITEDATA_BITS = 320; localparam int WRITEDATA_GRAN = 8;
-  localparam int READDATA_BITS  = 320; localparam int READDATA_GRAN  = 8;
+  localparam int WRITEDATA_BITS = 320; localparam int WRITEDATA_GRAN = 8;   // 256b
+  localparam int READDATA_BITS  = 320; localparam int READDATA_GRAN  = 8;   // 256b
   localparam int WRITERESP_BITS = 40;  localparam int WRITERESP_GRAN = 1;
+  // Wide data messages (Tables 5/6/11/12): totals include the trailing RsvdZero.
+  localparam int WRITEDATA512_BITS  = 600;  localparam int WRITEDATA512_GRAN  = 15;
+  localparam int WRITEDATA1024_BITS = 1200; localparam int WRITEDATA1024_GRAN = 30;
+  localparam int READDATA512_BITS   = 560;  localparam int READDATA512_GRAN   = 14;
+  localparam int READDATA1024_BITS  = 1080; localparam int READDATA1024_GRAN  = 27;
 
-  localparam int MSG_MAX_BITS = 320;   // largest built message (WriteData256)
-  localparam int MSG_MAX_GRAN = 8;
+  // Largest modelled message is WriteData(1024b) = 1200b / 30 granules (Table 6);
+  // every message is left-justified (granule 0 in the MSBs) in this container.
+  localparam int MSG_MAX_BITS = 1200;
+  localparam int MSG_MAX_GRAN = 30;
 
   typedef logic [MSG_MAX_BITS-1:0] msg_t;   // left-justified message container
 
@@ -158,17 +172,18 @@ package aou_pkg;
   endfunction
 
   // WriteData 256b (Table 4): MSGTYPE,RP,DLENGTH,FLEX,WDATA(256),WSTRB(32),
-  //                           RsvdZero(8) => 320b (exactly MSG_MAX_BITS)
+  //                           RsvdZero(8) => 320b, left-justified in MSG_MAX_BITS
   function automatic msg_t mk_writedata256(
       input logic [RP_W-1:0]       rp,
       input logic [FLEX_W-1:0]     flex,
       input logic [AOU_DATA_W-1:0] wdata,
       input logic [AOU_STRB_W-1:0] wstrb);
-    mk_writedata256 = {MT_WRITEDATA, rp, DLEN_256, flex, wdata, wstrb, 8'b0};
+    mk_writedata256 = {MT_WRITEDATA, rp, DLEN_256, flex, wdata, wstrb, 8'b0,
+                       {(MSG_MAX_BITS-WRITEDATA_BITS){1'b0}}};
   endfunction
 
   // ReadData 256b (Table 10): MSGTYPE,RP,DLENGTH,FLEX,RID,RRESP,RLAST,
-  //   RsvdZero(3),RDATA(256),RsvdZero(24) => 320b
+  //   RsvdZero(3),RDATA(256),RsvdZero(24) => 320b, left-justified
   function automatic msg_t mk_readdata256(
       input logic [RP_W-1:0]       rp,
       input logic [FLEX_W-1:0]     flex,
@@ -177,8 +192,58 @@ package aou_pkg;
       input logic                  rlast,
       input logic [AOU_DATA_W-1:0] rdata);
     mk_readdata256 = {MT_READDATA, rp, DLEN_256, flex, rid, rresp, rlast,
-                      3'b0, rdata, 24'b0};
+                      3'b0, rdata, 24'b0, {(MSG_MAX_BITS-READDATA_BITS){1'b0}}};
   endfunction
+
+  // Wide WriteData/ReadData builders (§5.4 Tables 5/6/11/12).  Same field order
+  // as the 256b variants, wider WDATA/RDATA + WSTRB and per-width trailing
+  // RsvdZero, left-justified in MSG_MAX_BITS.  Exercised in dv/pack (format
+  // conformance), never on the 32-bit end-to-end path, so kept out of the
+  // coverage harness's line accounting.
+  // verilator coverage_off
+  // WriteData 512b (Table 5): +WSTRB(64), no trailing RsvdZero => 600b
+  function automatic msg_t mk_writedata512(
+      input logic [RP_W-1:0]          rp,
+      input logic [FLEX_W-1:0]        flex,
+      input logic [AOU_DATA512_W-1:0] wdata,
+      input logic [AOU_STRB512_W-1:0] wstrb);
+    mk_writedata512 = {MT_WRITEDATA, rp, DLEN_512, flex, wdata, wstrb,
+                       {(MSG_MAX_BITS-WRITEDATA512_BITS){1'b0}}};
+  endfunction
+
+  // WriteData 1024b (Table 6): +WSTRB(128), RsvdZero(24) => 1200b (== MSG_MAX)
+  function automatic msg_t mk_writedata1024(
+      input logic [RP_W-1:0]           rp,
+      input logic [FLEX_W-1:0]         flex,
+      input logic [AOU_DATA1024_W-1:0] wdata,
+      input logic [AOU_STRB1024_W-1:0] wstrb);
+    mk_writedata1024 = {MT_WRITEDATA, rp, DLEN_1024, flex, wdata, wstrb, 24'b0};
+  endfunction
+
+  // ReadData 512b (Table 11): RDATA(512), trailing RsvdZero(8) => 560b
+  function automatic msg_t mk_readdata512(
+      input logic [RP_W-1:0]          rp,
+      input logic [FLEX_W-1:0]        flex,
+      input logic [AOU_ID_W-1:0]      rid,
+      input logic [AOU_RESP_W-1:0]    rresp,
+      input logic                     rlast,
+      input logic [AOU_DATA512_W-1:0] rdata);
+    mk_readdata512 = {MT_READDATA, rp, DLEN_512, flex, rid, rresp, rlast,
+                      3'b0, rdata, 8'b0, {(MSG_MAX_BITS-READDATA512_BITS){1'b0}}};
+  endfunction
+
+  // ReadData 1024b (Table 12): RDATA(1024), trailing RsvdZero(16) => 1080b
+  function automatic msg_t mk_readdata1024(
+      input logic [RP_W-1:0]           rp,
+      input logic [FLEX_W-1:0]         flex,
+      input logic [AOU_ID_W-1:0]       rid,
+      input logic [AOU_RESP_W-1:0]     rresp,
+      input logic                      rlast,
+      input logic [AOU_DATA1024_W-1:0] rdata);
+    mk_readdata1024 = {MT_READDATA, rp, DLEN_1024, flex, rid, rresp, rlast,
+                       3'b0, rdata, 16'b0, {(MSG_MAX_BITS-READDATA1024_BITS){1'b0}}};
+  endfunction
+  // verilator coverage_on
 
   // WriteResp (Table 13): MSGTYPE,RP,RsvdZero(2),FLEX,BID,BRESP,RsvdZero(4)
   //                       => 40b (1 granule) left-justified in 320b
@@ -303,6 +368,35 @@ package aou_pkg;
   function automatic logic [AOU_DATA_W-1:0] rd_data(input msg_t m);
     rd_data = m[MSG_MAX_BITS-1-40 -: AOU_DATA_W];  // after 24+10+2+1+3 = 40
   endfunction
+
+  // DLENGTH selector, shared by all data messages (after MSGTYPE(4),RP(2) = 6).
+  function automatic logic [DLENGTH_W-1:0] msg_dlength(input msg_t m);
+    msg_dlength = m[MSG_MAX_BITS-1-6 -: DLENGTH_W];
+  endfunction
+
+  // Wide WriteData/ReadData getters.  The fields preceding WDATA (24 bits) and
+  // RDATA (40 bits) are identical across widths, so only the data/strobe widths
+  // change.  Conformance-tested in dv/pack; off the end-to-end path.
+  // verilator coverage_off
+  function automatic logic [AOU_DATA512_W-1:0] wd_data512(input msg_t m);
+    wd_data512 = m[MSG_MAX_BITS-1-24 -: AOU_DATA512_W];
+  endfunction
+  function automatic logic [AOU_STRB512_W-1:0] wd_strb512(input msg_t m);
+    wd_strb512 = m[MSG_MAX_BITS-1-24-AOU_DATA512_W -: AOU_STRB512_W];
+  endfunction
+  function automatic logic [AOU_DATA1024_W-1:0] wd_data1024(input msg_t m);
+    wd_data1024 = m[MSG_MAX_BITS-1-24 -: AOU_DATA1024_W];
+  endfunction
+  function automatic logic [AOU_STRB1024_W-1:0] wd_strb1024(input msg_t m);
+    wd_strb1024 = m[MSG_MAX_BITS-1-24-AOU_DATA1024_W -: AOU_STRB1024_W];
+  endfunction
+  function automatic logic [AOU_DATA512_W-1:0] rd_data512(input msg_t m);
+    rd_data512 = m[MSG_MAX_BITS-1-40 -: AOU_DATA512_W];
+  endfunction
+  function automatic logic [AOU_DATA1024_W-1:0] rd_data1024(input msg_t m);
+    rd_data1024 = m[MSG_MAX_BITS-1-40 -: AOU_DATA1024_W];
+  endfunction
+  // verilator coverage_on
 
   // WriteResp getters: after MSGTYPE(4),RP(2),RsvdZero(2),FLEX(16) = 24 bits
   function automatic logic [AOU_ID_W-1:0] wrsp_id(input msg_t m);

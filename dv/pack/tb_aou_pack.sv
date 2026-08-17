@@ -62,6 +62,12 @@ module tb_aou_pack
     string               s;
     logic [7:0]          byte10;               // func-call result temps (Icarus
     logic [AOU_DATA_W-1:0] rdd;                // can't part-select a call inline)
+    logic [7:0]          dbyte;                // data-field first byte (independent)
+    // wide-data (§5.4) stimulus / round-trip temps
+    logic [AOU_DATA512_W-1:0]  wd512, rdd512;
+    logic [AOU_STRB512_W-1:0]  ws512;
+    logic [AOU_DATA1024_W-1:0] wd1024, rdd1024;
+    logic [AOU_STRB1024_W-1:0] ws1024;
 
     // --- stimulus: values chosen to light up every scattered header byte ----
     fdid = 2'b01;                       // FDId[0]=1, FDId[1]=0
@@ -139,6 +145,79 @@ module tb_aou_pack
     check(cg_rdata0(mg) == 3'b011, "crdt rdata0");
     check(cg_wresp0(mg) == 2'b01,  "crdt wresp0");
     check(cred_decode(cg_wdata0(mg)) == 8, "crdt wdata0 Table-17 decode");
+
+    // --- wide data messages (§5.4 Tables 5/6/11/12): byte-exact conformance --
+    // Field order matches the 256b variants with wider WDATA/RDATA+WSTRB.  The
+    // granule-0 first byte is {MSGTYPE(4),RP(2),DLENGTH(2)}, so DLENGTH is
+    // checked independently from the byte map; WDATA starts at payload byte 3
+    // (after the 1-byte type/len byte + 2-byte FLEX) and RDATA at byte 5 (after
+    // +RID/RRESP/RLAST/RsvdZero = 40b).  Payload byte b sits at PLP byte 10+b.
+
+    // granule-count constants match the spec totals (Tables 5/6/11/12)
+    check(WRITEDATA512_GRAN  == 15, "WriteData512 granules");
+    check(WRITEDATA1024_GRAN == 30, "WriteData1024 granules");
+    check(READDATA512_GRAN   == 14, "ReadData512 granules");
+    check(READDATA1024_GRAN  == 27, "ReadData1024 granules");
+
+    // WriteData 512b (DLENGTH=0b01)
+    wd512 = {64{8'hC5}};                 // 512b: every byte 0xC5
+    ws512 = {8{8'hF0}};                  // 64b strobe
+    mg = mk_writedata512(2'b00, 16'h0, wd512, ws512);
+    pl = payload_put('0, 0, WRITEDATA512_GRAN, mg);
+    f  = flit_assemble('0, msgstart_t'(1), pl);
+    byte10 = flit_get_byte(f, 10);
+    check(byte10[7:4] == MT_WRITEDATA, "wd512 MSGTYPE nibble");
+    check(byte10[1:0] == DLEN_512,     "wd512 DLENGTH byte-map");
+    dbyte = flit_get_byte(f, 13);       // WDATA MSB byte (payload byte 3)
+    check(dbyte == 8'hC5,              "wd512 WDATA lands at byte 3");
+    mg = payload_get(flit_payload(f), 0, WRITEDATA512_GRAN);
+    check(msg_dlength(mg) == DLEN_512, "wd512 DLENGTH round-trip");
+    check(wd_data512(mg)  == wd512,    "wd512 WDATA round-trip");
+    check(wd_strb512(mg)  == ws512,    "wd512 WSTRB round-trip");
+
+    // WriteData 1024b (DLENGTH=0b10)
+    wd1024 = {128{8'h3C}};
+    ws1024 = {16{8'h0F}};
+    mg = mk_writedata1024(2'b00, 16'h0, wd1024, ws1024);
+    pl = payload_put('0, 0, WRITEDATA1024_GRAN, mg);
+    f  = flit_assemble('0, msgstart_t'(1), pl);
+    byte10 = flit_get_byte(f, 10);
+    check(byte10[7:4] == MT_WRITEDATA, "wd1024 MSGTYPE nibble");
+    check(byte10[1:0] == DLEN_1024,    "wd1024 DLENGTH byte-map");
+    dbyte = flit_get_byte(f, 13);
+    check(dbyte == 8'h3C,             "wd1024 WDATA lands at byte 3");
+    mg = payload_get(flit_payload(f), 0, WRITEDATA1024_GRAN);
+    check(wd_data1024(mg) == wd1024,  "wd1024 WDATA round-trip");
+    check(wd_strb1024(mg) == ws1024,  "wd1024 WSTRB round-trip");
+
+    // ReadData 512b (DLENGTH=0b01)
+    rdd512 = {64{8'h9A}};
+    mg = mk_readdata512(2'b00, 16'h0, 10'h2AB, 2'b00, 1'b1, rdd512);
+    pl = payload_put('0, 0, READDATA512_GRAN, mg);
+    f  = flit_assemble('0, msgstart_t'(1), pl);
+    byte10 = flit_get_byte(f, 10);
+    check(byte10[7:4] == MT_READDATA, "rd512 MSGTYPE nibble");
+    check(byte10[1:0] == DLEN_512,    "rd512 DLENGTH byte-map");
+    dbyte = flit_get_byte(f, 15);      // RDATA MSB byte (payload byte 5)
+    check(dbyte == 8'h9A,            "rd512 RDATA lands at byte 5");
+    mg = payload_get(flit_payload(f), 0, READDATA512_GRAN);
+    check(rd_id(mg)      == 10'h2AB,  "rd512 id round-trip");
+    check(rd_last(mg)    == 1'b1,     "rd512 rlast round-trip");
+    check(rd_data512(mg) == rdd512,   "rd512 RDATA round-trip");
+
+    // ReadData 1024b (DLENGTH=0b10)
+    rdd1024 = {128{8'h6D}};
+    mg = mk_readdata1024(2'b00, 16'h0, 10'h35C, 2'b00, 1'b1, rdd1024);
+    pl = payload_put('0, 0, READDATA1024_GRAN, mg);
+    f  = flit_assemble('0, msgstart_t'(1), pl);
+    byte10 = flit_get_byte(f, 10);
+    check(byte10[7:4] == MT_READDATA, "rd1024 MSGTYPE nibble");
+    check(byte10[1:0] == DLEN_1024,   "rd1024 DLENGTH byte-map");
+    dbyte = flit_get_byte(f, 15);
+    check(dbyte == 8'h6D,           "rd1024 RDATA lands at byte 5");
+    mg = payload_get(flit_payload(f), 0, READDATA1024_GRAN);
+    check(rd_id(mg)       == 10'h35C, "rd1024 id round-trip");
+    check(rd_data1024(mg) == rdd1024, "rd1024 RDATA round-trip");
 
     // --- report -------------------------------------------------------------
     if (errors == 0)
