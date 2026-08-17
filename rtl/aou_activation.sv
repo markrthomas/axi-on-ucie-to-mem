@@ -21,10 +21,19 @@
 // (§8.2: "discards all previously received protocol-level credits").
 //
 // Deactivate is triggered by `deact_trig` (§8.3.2: "System Software writing a
-// flag in the AoU bridge").  Only Option 1 (§8.3.2, MANDATORY) is modelled: the
-// bridge asserts `deact_trig` only once the link is quiesced, so DEACTIVATE has
-// no pending Data/WriteResp to drain and the module can own the link for the
-// teardown handshake.  Option 2 (hardware quiescing) is a documented follow-on.
+// flag in the AoU bridge").  Both §8.3.2 options are modelled:
+//   * Option 1 (MANDATORY): SW pre-quiesces the link, so `data_idle` is already
+//     high when `deact_trig` fires and teardown starts the same cycle.
+//   * Option 2 (OPTIONAL, hardware-managed quiescing): `deact_trig` may be
+//     asserted at ANY time (mid-transaction).  The intent is latched
+//     (`deact_pending`) and `quiescing` is raised so the bridge stops accepting
+//     new AXI requests; the module holds in ENABLED — letting in-flight
+//     Data/WriteResp drain, which the spec explicitly permits after the flag is
+//     set — and only enters DEACTIVATE to emit DeactivateReq once the bridge
+//     reports its data path drained (`data_idle`).  Option 1 is the degenerate
+//     case where `data_idle` is tied high.
+// A peer-initiated DeactivateReq (received while ENABLED) is answered
+// immediately, independent of the local quiescing gate.
 //
 // ERROR (§8.3.3): entered when an inconsistent link-state Req is received (e.g.
 // an ActivateReq while ENABLED, or a DeactivateReq while DISABLED).  In ERROR no
@@ -60,6 +69,8 @@ module aou_activation
     output logic                act_disabled,      // DISABLED (credit-reset qual)
     output logic                error,             // ERROR state
     input  logic                deact_trig,        // §8.3.2 SW deactivate flag
+    input  logic                data_idle,         // §8.3.2 Opt-2: data path drained
+    output logic                quiescing,         // draining before teardown (Opt-2)
     input  logic                err_clear,         // §8.4 ERROR->DISABLED trigger
     // physical flit link (owned by this module until ENABLED)
     output logic [PLP_BITS-1:0] tx_data,
@@ -92,10 +103,15 @@ module aou_activation
   // activate-phase / deactivate-phase handshake flags
   logic areq_sent, areq_rcvd, aack_sent, aack_rcvd, crdt_sent, crdt_rcvd;
   logic dreq_sent, dreq_rcvd, dack_sent, dack_rcvd;
+  // §8.3.2 Option 2: SW deactivate intent latched while the data path drains.
+  logic deact_pending;
 
   assign enabled      = (state == ACT_ENABLED);
   assign act_disabled = (state == ACT_DISABLED);
   assign error        = (state == ACT_ERROR);
+  // Raised while a latched SW deactivate waits for the data path to quiesce; the
+  // bridge uses it to stop accepting new AXI requests (Option 2).
+  assign quiescing    = enabled && deact_pending;
 
   wire in_bringup = (state == ACT_DISABLED) || (state == ACT_ACTIVATE);
 
@@ -201,6 +217,7 @@ module aou_activation
       crdt_sent <= 1'b0; crdt_rcvd <= 1'b0;
       dreq_sent <= 1'b0; dreq_rcvd <= 1'b0;
       dack_sent <= 1'b0; dack_rcvd <= 1'b0;
+      deact_pending <= 1'b0;
     end else begin
       // sent-flags: which Misc message went out this cycle.
       // NOTE: the DEACTIVATE / ERROR paths below are unreachable in the
@@ -248,9 +265,23 @@ module aou_activation
         // none of which the full-chain coverage harness stimulates (dv/act does).
         // verilator coverage_off
         ACT_ENABLED: begin
-          if (err_now) state <= ACT_ERROR;
-          else if (deact_trig || (rx_valid && rx_is_dreq))
+          if (err_now) begin
+            state <= ACT_ERROR;
+            deact_pending <= 1'b0;
+          end else if (rx_valid && rx_is_dreq) begin
+            // peer-initiated teardown: answer immediately, ungated
             state <= ACT_DEACTIVATE;
+            deact_pending <= 1'b0;
+          end else if ((deact_pending || deact_trig) && data_idle) begin
+            // §8.3.2 Opt-2: SW teardown proceeds once the data path is drained
+            // (Opt-1 is the case where data_idle is already high on deact_trig)
+            state <= ACT_DEACTIVATE;
+            deact_pending <= 1'b0;
+          end else if (deact_trig) begin
+            // SW wrote the flag while data still in flight: latch and keep
+            // draining (quiescing asserted) until data_idle
+            deact_pending <= 1'b1;
+          end
         end
         ACT_DEACTIVATE: begin
           if (err_now) state <= ACT_ERROR;

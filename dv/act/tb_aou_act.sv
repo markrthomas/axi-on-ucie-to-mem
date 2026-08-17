@@ -9,6 +9,8 @@
 //                   including the decoded credit seed pulse);
 //   * teardown      ENABLED -> DEACTIVATE -> DISABLED, both SW-triggered
 //                   (deact_trig) and peer-initiated (received DeactivateReq);
+//   * quiescing     §8.3.2 Option 2 — deact_trig asserted mid-transaction is
+//                   held (quiescing raised) until data_idle, then tears down;
 //   * re-activation  DISABLED -> ... -> ENABLED again after each teardown;
 //   * error          inconsistent ActivateReq while ENABLED -> ERROR (tx silent,
 //                   rx ignored) -> DISABLED via err_clear.
@@ -28,6 +30,7 @@ module tb_aou_act
   // DUT link + data-path signals
   logic                enabled, act_disabled, error;
   logic                deact_trig, err_clear;
+  logic                data_idle, quiescing;
   logic [PLP_BITS-1:0] tx_data;
   logic                tx_valid;
   logic                tx_ready;
@@ -57,7 +60,8 @@ module tb_aou_act
   ) dut (
     .clk(clk), .rstn(rstn),
     .enabled(enabled), .act_disabled(act_disabled), .error(error),
-    .deact_trig(deact_trig), .err_clear(err_clear),
+    .deact_trig(deact_trig), .data_idle(data_idle), .quiescing(quiescing),
+    .err_clear(err_clear),
     .tx_data(tx_data), .tx_valid(tx_valid), .tx_ready(tx_ready),
     .rx_data(rx_data), .rx_valid(rx_valid), .rx_ready(rx_ready),
     .d_tx_data(d_tx_data), .d_tx_valid(d_tx_valid), .d_tx_ready(d_tx_ready),
@@ -118,6 +122,7 @@ module tb_aou_act
   initial begin
     rstn       = 1'b0;
     deact_trig = 1'b0;
+    data_idle  = 1'b1;                 // Option-1 default: link pre-quiesced
     err_clear  = 1'b0;
     tx_ready   = 1'b1;                 // always accept the DUT's tx flits
     d_tx_valid = 1'b0;
@@ -143,6 +148,25 @@ module tb_aou_act
     feed(mk_activation_other(ACTOP_DEACTIVATE_ACK), MISC_GRAN); // Ack sent&rcvd -> DISABLED
     ticks(1);
     chk(act_disabled === 1'b1, "SW teardown reaches DISABLED");
+
+    // --- 2b) Option 2 (§8.3.2): deact_trig mid-transaction is held until the
+    //         data path drains (data_idle), with `quiescing` raised meanwhile ---
+    bring_up();
+    data_idle = 1'b0;                            // data path busy (in-flight)
+    @(negedge clk); deact_trig = 1'b1;           // SW writes the flag mid-txn
+    @(negedge clk); deact_trig = 1'b0;           // latched even as a 1-cycle pulse
+    ticks(2);
+    chk(enabled === 1'b1, "Opt-2: teardown withheld while data path busy");
+    chk(quiescing === 1'b1, "Opt-2: quiescing asserted while draining");
+    data_idle = 1'b1;                            // bridge reports data path drained
+    ticks(2);
+    chk(enabled === 1'b0 && quiescing === 1'b0, "Opt-2: teardown starts once drained");
+    feed(mk_activation_other(ACTOP_DEACTIVATE_REQ), MISC_GRAN); // -> DUT sends DeactivateAck
+    ticks(1);
+    feed(mk_activation_other(ACTOP_DEACTIVATE_ACK), MISC_GRAN); // Ack sent&rcvd -> DISABLED
+    ticks(1);
+    chk(act_disabled === 1'b1, "Opt-2: teardown reaches DISABLED");
+    data_idle = 1'b1;                            // restore Option-1 default
 
     // --- 3) re-activation ----------------------------------------------------
     bring_up();

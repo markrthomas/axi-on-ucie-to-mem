@@ -42,8 +42,10 @@ AXI. (CHI-C2C is the coherent alternative but far heavier; out of scope.)
   implemented — see the credit helpers in `aou_pkg` and the two bridges. The
   full §8 activation FSM — bring-up (+ §6.4.2 `CrdtGrant` / §6.4.3 reset credit
   exchange), teardown, re-activation, and `ERROR` recovery — is implemented too;
-  see `aou_activation.sv` and the `dv/act` unit test.  Only Deactivate quiescing
-  Option 2 (§8.3.2, OPTIONAL hardware quiescing) is left out.)
+  see `aou_activation.sv` and the `dv/act` unit test.  Both §8.3.2 deactivate
+  quiescing options are now modelled: Option 1 (SW pre-quiesces) and Option 2
+  (hardware-managed — `deact_trig` mid-transaction is latched, `quiescing` gates
+  new requests, teardown withheld until `data_idle`).)
 - **AXI flavor:** **AXI4-Lite, 32-bit** (single-beat AW/W/B/AR/R, AWLEN/ARLEN=0),
   both at the front door and at the memory target.
 - **GitHub:** create **private** repo `markrthomas/axi-on-ucie-to-mem` now, push
@@ -167,9 +169,9 @@ control, byte-exact §4.3/§5.8 packing, the full §8 activation FSM — bring-u
 `ERROR` recovery — **AXI4 INCR/WRAP/FIXED bursts** (`AxLEN`/`AxSIZE`/burst type
 in FLEX[1:0], per-beat target expansion, `{B,R}ID` echo), and
 **multiple-outstanding transactions with in-order completion** (initiator request
-queue) have all since been implemented.  Only Deactivate quiescing Option 2
-(§8.3.2, OPTIONAL) and the wide-data / true out-of-order-by-ID parts of F2 remain
-future.)
+queue), and **Deactivate quiescing Option 2** (§8.3.2 hardware-managed) have all
+since been implemented.  Only the wide-data / true out-of-order-by-ID parts of F2
+remain future.)
 
 ## Remaining follow-ons (actionable backlog)
 
@@ -226,22 +228,25 @@ in-order completion** (initiator request queue) already in place.
   multiple-outstanding tests fill the queue and check in-order completion.
 - **Effort:** remaining parts (wide data, OOO reorder) are independently sized.
 
-### F3 — Deactivate quiescing Option 2 (hardware-managed quiescing)
+### F3 — Deactivate quiescing Option 2 (hardware-managed quiescing) — DONE
 - **Spec:** §8.3.2 (Option 2 is OPTIONAL; Option 1 already implemented).
-- **Touch:** `rtl/aou_activation.sv` (+ a hook into each bridge's data FSM idle
-  status), `dv/act/tb_aou_act.sv`.
-- **Approach:** today `deact_trig` must be asserted only when the data path is
-  quiesced (Option 1). For Option 2, let `deact_trig` be asserted at any time:
-  latch the intent, stop accepting new AXI requests, drain in-flight
-  Data/WriteResp (the spec explicitly permits those to complete after
-  `DeactivateReq`), then send `DeactivateReq` once the bridge reports idle. Needs
-  a `data_idle`/`quiesced` signal from the bridge into the activation module and
-  a "pending requests must finish first" gate.
-- **Verify:** add a `dv/act` case that raises `deact_trig` mid-transaction and
-  checks `DeactivateReq` is withheld until the (stubbed) `data_idle` asserts;
-  full-chain test that deactivates with an outstanding transaction and confirms
-  the response still drains.
-- **Effort:** small–medium; mostly local to `aou_activation` + one bridge signal.
+- **DONE:** `aou_activation` gained a `data_idle` input and a `quiescing` output.
+  `deact_trig` may now be asserted at any time: the FSM latches the intent
+  (`deact_pending`), raises `quiescing` (the bridge's hook to stop accepting new
+  AXI requests), and holds in ENABLED — letting in-flight Data/WriteResp drain,
+  which the spec permits after the flag is set — entering DEACTIVATE to emit
+  `DeactivateReq` only once `data_idle` asserts.  Option 1 is the degenerate case
+  where `data_idle` is tied high (as both bridges tie it in the full chain, where
+  no SW teardown is driven).  A peer-initiated `DeactivateReq` is still answered
+  immediately, independent of the local quiescing gate.
+- **Verify (done):** `dv/act` case 2b raises `deact_trig` mid-transaction with
+  `data_idle=0`, checks the DUT stays ENABLED with `quiescing` high, then asserts
+  `data_idle` and checks teardown proceeds to DISABLED (30 checks, Icarus +
+  Verilator).  Full-chain envs unchanged (deact tied off) — all five green,
+  coverage floor still met.
+- **REMAINING:** wiring `quiescing`/`data_idle` into real bridge request-accept
+  and drain logic (a full-chain SW teardown) is left for when a use case needs
+  it; the mechanism is proven in `dv/act`.
 
 ### F4 — Whole-chain formal
 - **Spec:** n/a (methodology). Current `formal/axi_lite_mem.sby` proves the
