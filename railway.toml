@@ -1,0 +1,26 @@
+# Railway (railway.com) config-as-code — build the DV image and run the gate.
+# https://docs.railway.com/reference/config-as-code
+#
+# This project is a hardware DV suite, not a web service: it has no listening
+# port.  The container runs `make ci` (the full lint + cocotb + SV + pack + act
+# + reorder + SystemC + coverage gate) and exits with the gate's status
+# (0 = green).  Deploy it as a one-off / scheduled job, not an always-on service.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# Batch job: don't restart on exit.  (A normal always-on service that exits 0
+# is flagged "crashed" by Railway — NEVER is correct for a run-to-completion
+# gate.)
+restartPolicyType = "NEVER"
+
+# Do NOT set startCommand: the image's ENTRYPOINT (docker/entrypoint.sh) runs
+# `make ci` with the pinned Verilator args injected.  A Railway startCommand is
+# run via `sh -c`, which bypasses that wrapper and drops the overrides.
+
+# To run the gate on a schedule instead of on demand, uncomment and set a cron
+# expression (UTC).  Railway starts a fresh container per tick; it must exit for
+# the next tick to run — which this gate does.
+#   cronSchedule = "0 6 * * *"   # daily at 06:00 UTC

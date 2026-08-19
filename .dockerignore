@@ -1,0 +1,15 @@
+# Keep the build context small and hermetic — the image builds its own
+# toolchain, so never ship local tool installs or generated sim artifacts.
+.git
+oss-cad-suite
+**/obj_dir
+**/sim_build
+**/__pycache__
+**/*.pyc
+**/results.xml
+**/*.vcd
+**/*.fst
+**/*.log
+sim/coverage.*
+sim/*.dat
+docs/*.pdf
