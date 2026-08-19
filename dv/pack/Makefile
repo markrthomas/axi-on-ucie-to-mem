@@ -4,6 +4,9 @@
 IVERILOG  ?= iverilog
 VVP       ?= $(shell d=$$(dirname $$(command -v $(IVERILOG) 2>/dev/null) 2>/dev/null); echo $${d:-.}/vvp)
 VERILATOR ?= verilator
+# Verilator C++ build parallelism (0 = one job per core; lower on low-RAM
+# builders to keep parallel cc1plus from OOMing — see the Dockerfile).
+VL_JOBS ?= 0
 
 PKG := ../../rtl/aou_pkg.sv
 TB  := tb_aou_pack.sv
@@ -28,7 +31,7 @@ verilator:
 	if [ -z "$$maj" ] || [ "$$maj" -lt 5 ]; then \
 		echo "[PACK] Verilator < 5 — skipping"; exit 0; fi; \
 	mkdir -p sim_build; \
-	$(VERILATOR) --binary --timing -j 0 -Wall -Wno-DECLFILENAME \
+	$(VERILATOR) --binary --timing -j $(VL_JOBS) -Wall -Wno-DECLFILENAME \
 		-Wno-UNUSEDSIGNAL -Wno-TIMESCALEMOD \
 		--top-module $(TOP) --Mdir obj_dir $(PKG) $(TB) -o vpack; \
 	./obj_dir/vpack 2>&1 | tee sim_build/verilator.log; \

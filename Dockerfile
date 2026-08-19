@@ -79,6 +79,11 @@ COPY . /work
 # are `:=`-computed in the Makefile and can only be overridden on the make
 # command line, which the entrypoint does — see docker/entrypoint.sh.
 ENV ICARUS_BIN_DIR=/usr/bin
+# Cap Verilator's C++ build parallelism.  Railway (and other cloud builders)
+# advertise many cores but little RAM, so the default `-j 0` (one cc1plus per
+# core) OOM-kills the compiler.  2 keeps peak memory bounded; lower to 1 on the
+# smallest instances, or raise it (or set VL_JOBS=0) where RAM is ample.
+ENV VL_JOBS=2
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 

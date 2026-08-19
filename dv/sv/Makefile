@@ -6,6 +6,10 @@ IVERILOG  ?= iverilog
 # version mismatch makes vvp reject the compiled .vvp).
 VVP       ?= $(shell d=$$(dirname $$(command -v $(IVERILOG) 2>/dev/null) 2>/dev/null); echo $${d:-.}/vvp)
 VERILATOR ?= verilator
+# Verilator C++ build parallelism.  0 = one job per core (fast on dev/CI); set a
+# small value on memory-constrained builders (e.g. containers that see many
+# cores but little RAM) so parallel cc1plus don't OOM.  See the Dockerfile.
+VL_JOBS ?= 0
 
 RTL_DIR := ../../rtl
 RTL := \
@@ -52,7 +56,7 @@ verilator:
 	if [ -z "$$maj" ] || [ "$$maj" -lt 5 ]; then \
 		echo "[SV] Verilator < 5 (no --binary/--timing) — skipping"; exit 0; fi; \
 	mkdir -p sim_build; \
-	$(VERILATOR) --binary --timing --assert -j 0 -Wall -Wno-DECLFILENAME \
+	$(VERILATOR) --binary --timing --assert -j $(VL_JOBS) -Wall -Wno-DECLFILENAME \
 		-Wno-SYNCASYNCNET -Wno-BLKSEQ \
 		--top-module $(TOP) --Mdir obj_dir $(RTL) $(SVA) $(TB) -o vsvtb; \
 	./obj_dir/vsvtb $(PLUSARGS) 2>&1 | tee sim_build/verilator.log; \
