@@ -49,6 +49,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
         git \
         make \
+        tmux \
     && rm -rf /var/lib/apt/lists/*
 
 # --- Pinned Verilator via oss-cad-suite ---------------------------------------

@@ -29,7 +29,8 @@ docker run --rm aou-dv
 docker run --rm aou-dv make reorder
 docker run --rm aou-dv make check      # the gate without coverage
 
-# open an interactive shell in the toolchain
+# open an interactive shell in the toolchain (tmux is available for long-running
+# / multi-pane sessions inside the container)
 docker run --rm -it --entrypoint bash aou-dv
 ```
 
@@ -57,6 +58,7 @@ Ubuntu 24.04 base, chosen because it ships the exact tool versions CI validates:
 | **Verilator** | **oss-cad-suite, pinned tag `2026-04-13`** | **5.047** | The apt Verilator attributes line coverage ~9 pts stricter (would fail the 85% floor) and a newer oss-cad-suite adds lints this design predates — so the tag is **exact**, not `latest`. |
 | Python | apt (`python3` + **`python3-dev`**) | 3.12 | `python3-dev` provides `libpython3.12.so`, which cocotb's `find_libpython` needs to embed the interpreter in the VPI (see gotcha below). |
 | cocotb / pyuvm | pip, in a venv | 1.9.2 / 4.0.1 | Pinned to the CI versions; a venv satisfies PEP 668 on 24.04. |
+| tmux | apt | 3.4 | Terminal multiplexer for interactive / long-running sessions inside the container. |
 
 The build ends with a healthcheck that fails the image build if any of
 `iverilog`, the pinned `verilator`, or `import cocotb, pyuvm` is missing.
