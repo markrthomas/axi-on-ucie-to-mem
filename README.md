@@ -90,6 +90,7 @@ out-of-order-by-ID completion).
 - `dv/sva/` — AXI-Lite + AoU-flit + §6 credit assertion checkers (bound to the DUT)
 - `dv/pack/` — §4.3/§5.8 byte-exact packing conformance TB (Icarus + Verilator)
 - `dv/act/` — §8 activation FSM unit test: deactivate / re-activate / `ERROR` (Icarus + Verilator)
+- `dv/reorder/` — per-ID response reorder buffer unit test: out-of-order-by-ID completion (Icarus + Verilator)
 - `dv/systemc/` — SystemC testbench (`verilator --sc` model + `sc_main`)
 - `uvm/` — SystemVerilog UVM TB (multi-file + single-file), license-gated
 - `sim/` — Verilator C++ coverage harness
@@ -151,14 +152,16 @@ Everything runs from the repo root and degrades gracefully if a tool is absent.
 | Directed | `make test-write-read` / `test-random` / `test-walking` / `test-burst` / `test-outstanding` | one cocotb test |
 | SV (Icarus) | `make sv` | portable SV directed TB under Icarus |
 | SV (Verilator) | `make vlt` | same TB under Verilator + bound SVA assertions |
-| Packing | `make pack` | §4.3/§5.8 byte-exact packing conformance (Icarus + Verilator) |
+| Packing | `make pack` | §4.3/§5.8 byte-exact packing conformance, incl. 512b/1024b data (Icarus + Verilator) |
+| Activation | `make act` | §8 activation FSM unit test: bring-up / deactivate (Opt-1 & Opt-2) / ERROR (Icarus + Verilator) |
+| Reorder | `make reorder` | per-ID response reorder buffer: out-of-order-by-ID completion (Icarus + Verilator) |
 | SystemC | `make systemc` | SystemC TB (Verilator `--sc` + `sc_main`) |
 | SV/UVM | `make uvm` | UVM TB (VCS/Xcelium/Questa); skips cleanly if unlicensed |
 | Waves | `make waves` / `make wave` | dump / open GTKWave |
 | Lint | `make lint` | `iverilog -Wall` + Verilator RTL lint |
 | Coverage | `make coverage` | Verilator `--coverage` → `sim/coverage.info` (floor `COV_MIN`, default 85%; ~90–94% achieved) |
 | Formal | `make formal` | SymbiYosys proof of `axi_lite_mem` (bmc + cover + unbounded `prove`); skips cleanly if `sby` absent |
-| Gate | `make check` | lint + cocotb + SV(both sims) + pack + SystemC |
+| Gate | `make check` | lint + cocotb + SV(both sims) + pack + act + reorder + SystemC |
 | CI | `make ci` | `check` + coverage as one pass/fail gate |
 | Trace | `make <target> VERBOSE=1` | per-beat AXI transaction traces in each env's log |
 

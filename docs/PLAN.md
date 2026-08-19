@@ -203,10 +203,10 @@ in-order completion** (initiator request queue) already in place.
   credit/response leakage; SVA bounds hold per plane.
 - **Effort:** large (data-path + arbitration + DV). Biggest single item.
 
-### F2 — Full AXI4 (bursts ✅, multiple-outstanding ✅, wide data + OOO remain)
+### F2 — Full AXI4 (bursts ✅, multiple-outstanding ✅, wide data ✅, OOO-by-ID block ✅)
 - **Spec:** AoU §5 message formats for `WriteData512/1024` and multi-beat
   Read/Write data; AXI4 (`AxLEN>0`, `AxSIZE`, burst types, ID-based reordering).
-- **DONE (sub-stages b + in-order c):**
+- **DONE (sub-stages b + in-order c + wide data + OOO-by-ID reorder block):**
   - **INCR/WRAP/FIXED bursts** — `AxLEN`/`AxSIZE` carried in the request, burst
     type in `FLEX[1:0]` (AoU has no `AxBURST`); the target expands each burst into
     single-beat AXI-Lite accesses (per-beat `axi_burst_next`), `{B,R}ID` echoed,
@@ -215,18 +215,31 @@ in-order completion** (initiator request queue) already in place.
     `aou_axi_initiator_bridge` decouples AW/AR accept from the FSM, so several
     transactions (distinct IDs) can be outstanding at once. Verified in cocotb
     (`multi_outstanding_test`), SV, SystemC, and the coverage harness.
-- **REMAINING:**
-  - **Wide data (512b/1024b):** `rtl/aou_pkg.sv` wider `WriteData`/`ReadData`
-    builders + `MSG_MAX_BITS`; `dv/pack` byte-exactness for the wide layouts.
-  - **True out-of-order-by-ID completion:** the current topology (single
-    serialized flit link + single in-order memory) gives OOO **no natural
-    source**, so completions return in issue order. Genuine OOO would need a
-    deliberate per-ID reorder buffer on the initiator (and interleaved target
-    servicing) built specifically to reorder — larger and somewhat artificial
-    here; deferred until a multi-channel / variable-latency target motivates it.
-- **Verify (done parts):** per-beat burst scoreboards in cocotb/SV/SystemC;
-  multiple-outstanding tests fill the queue and check in-order completion.
-- **Effort:** remaining parts (wide data, OOO reorder) are independently sized.
+  - **Wide data (512b/1024b)** — `aou_pkg` gained `mk_writedata512/1024`,
+    `mk_readdata512/1024` and matching width-specific getters (`wd_data512/1024`,
+    `rd_data512/1024`, `msg_dlength`), with `MSG_MAX_BITS` widened to 1200b / 30
+    granules (WriteData1024, Table 6) — every message stays left-justified, so
+    the 256b end-to-end path is byte-identical.  The wide builders/getters are
+    off the 32-bit AXI end-to-end path (kept out of coverage line accounting) and
+    are byte-exactly conformance-tested in `dv/pack` (DLENGTH byte-map, data-field
+    byte offset, full field round-trip; 63 checks, Icarus + Verilator).
+  - **Out-of-order-by-ID completion** — the current topology (single serialized
+    flit link + single in-order memory) gives OOO **no natural source**, so it is
+    delivered as the deliberate per-ID reorder buffer the initiator would need:
+    `rtl/aou_reorder.sv` allocates a slot per transaction in issue order, accepts
+    completions addressed by tag in ANY order, and releases each response as the
+    oldest un-released of its ID — so a younger different-ID response overtakes an
+    older uncompleted one while same-ID responses stay in issue order (the AXI
+    rule).  It is a self-contained, synthesizable block (not wired into the
+    in-order full chain, which never reorders), verified in `dv/reorder`
+    (cross-ID overtake, same-ID ordering, capacity/reclaim, and a scrambled-
+    completion per-ID reference-FIFO drain; 76 checks, Icarus + Verilator).  Full
+    datapath integration (variable-latency / interleaved target) is future work.
+- **Verify:** per-beat burst scoreboards in cocotb/SV/SystemC; multiple-
+  outstanding tests fill the queue and check in-order completion; `dv/pack` for
+  wide data; `dv/reorder` for out-of-order-by-ID release.
+- **Effort:** full-datapath OOO integration (interleaved target) remains, sized
+  independently.
 
 ### F3 — Deactivate quiescing Option 2 (hardware-managed quiescing) — DONE
 - **Spec:** §8.3.2 (Option 2 is OPTIONAL; Option 1 already implemented).
