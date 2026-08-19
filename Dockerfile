@@ -1,0 +1,94 @@
+# syntax=docker/dockerfile:1
+# -----------------------------------------------------------------------------
+# axi-on-ucie-to-mem — reproducible DV toolchain image.
+#
+# Mirrors .github/workflows/ci.yml exactly so `docker run` reproduces the CI
+# gate (lint + cocotb/PyUVM + SV directed on Icarus & Verilator + pack + act +
+# reorder + SystemC + Verilator coverage):
+#   * Ubuntu 24.04 ships SystemC 2.3.3 (libsystemc-dev) and the apt Icarus that
+#     the cocotb VPI is built against.
+#   * Verilator is PINNED to the oss-cad-suite build used for local dev + CI
+#     (tag 2026-04-13, Verilator 5.047).  The apt Verilator attributes line
+#     coverage ~9 pts stricter and would push `make coverage` below its 85%
+#     floor, and a newer oss-cad-suite adds lints this design predates — so the
+#     tag is exact, not "latest".
+#
+# Build:  docker build -t aou-dv .
+# Run  :  docker run --rm aou-dv                 # full gate (make ci)
+#         docker run --rm aou-dv make check      # gate without coverage
+#         docker run --rm aou-dv make reorder    # a single environment
+#
+# On Railway: this is a batch/one-off image (no listening port).  Deploy it as a
+# one-off job or a Cron service — it runs the gate to completion and exits with
+# the gate's status (0 = green).  It is NOT a long-running web service.
+# -----------------------------------------------------------------------------
+FROM ubuntu:24.04
+
+# Pins (bump deliberately — see the coverage/lint note above).
+ARG OSS_TAG=2026-04-13
+ARG OSS_STAMP=20260413
+ARG COCOTB_VERSION=1.9.2
+ARG PYUVM_VERSION=4.0.1
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# --- RTL tools (Icarus + SystemC) + build/runtime deps, from apt --------------
+# iverilog: cocotb VPI + the Icarus directed/pack/act/reorder flows.
+# libsystemc-dev: SystemC 2.3.3 headers + libsystemc.so for the SystemC TB.
+# python3-dev: ships libpython3.x.so, which cocotb's find_libpython needs to
+#   embed the interpreter in the VPI (the plain python3 runtime package omits
+#   it; GitHub's setup-python bundles a shared-lib build, so CI never hit this).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        iverilog \
+        libsystemc-dev \
+        build-essential \
+        python3 \
+        python3-dev \
+        python3-venv \
+        ca-certificates \
+        curl \
+        git \
+        make \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- Pinned Verilator via oss-cad-suite ---------------------------------------
+# Extracted to /opt/oss-cad-suite; invoked by absolute path so it never shadows
+# the apt iverilog the cocotb VPI links against.
+ENV OSS=/opt/oss-cad-suite
+RUN curl -fL -o /tmp/oss.tgz \
+      "https://github.com/YosysHQ/oss-cad-suite-build/releases/download/${OSS_TAG}/oss-cad-suite-linux-x64-${OSS_STAMP}.tgz" \
+    && tar xzf /tmp/oss.tgz -C /opt \
+    && rm /tmp/oss.tgz
+
+# --- Python deps (cocotb + pyuvm) in an isolated venv -------------------------
+# A venv satisfies PEP 668 (Ubuntu 24.04 marks the system Python externally
+# managed) and keeps the cocotb interpreter self-contained.  cocotb's makefiles
+# pick up `python`/`python3` from PATH.
+ENV VIRTUAL_ENV=/opt/venv
+RUN python3 -m venv "$VIRTUAL_ENV"
+ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir "cocotb==${COCOTB_VERSION}" "pyuvm==${PYUVM_VERSION}"
+
+# --- Project ------------------------------------------------------------------
+WORKDIR /work
+COPY . /work
+
+# The cocotb VPI links against the apt iverilog at /usr/bin (ICARUS_BIN_DIR is
+# `?=` in dv/cocotb/Makefile, so env suffices here).  The pinned Verilator paths
+# are `:=`-computed in the Makefile and can only be overridden on the make
+# command line, which the entrypoint does — see docker/entrypoint.sh.
+ENV ICARUS_BIN_DIR=/usr/bin
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+# Fail fast if the toolchain didn't assemble correctly.
+RUN iverilog -V | head -1 \
+    && "$OSS/bin/verilator" --version \
+    && python -c "import cocotb, pyuvm; print('cocotb', cocotb.__version__, 'pyuvm', pyuvm.__version__)"
+
+# Default: run the full CI gate (make ci) with the pinned Verilator overrides
+# injected by the entrypoint.  Override the args to run a subset, e.g.
+#   docker run --rm aou-dv make reorder
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD []
