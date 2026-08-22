@@ -95,6 +95,7 @@ out-of-order-by-ID completion).
 - `uvm/` — SystemVerilog UVM TB (multi-file + single-file), license-gated
 - `sim/` — Verilator C++ coverage harness
 - `formal/` — SymbiYosys proof of `axi_lite_mem` (`.sby` + property wrapper)
+- `Dockerfile` / `docker/` / `railway.toml` — containerized DV gate (see [`docs/DOCKER.md`](docs/DOCKER.md))
 - `Makefile` — standard DV gate targets; `docs/PLAN.md` — the design plan
 
 ## The five DV environments
@@ -163,6 +164,7 @@ Everything runs from the repo root and degrades gracefully if a tool is absent.
 | Formal | `make formal` | SymbiYosys proof of `axi_lite_mem` (bmc + cover + unbounded `prove`); skips cleanly if `sby` absent |
 | Gate | `make check` | lint + cocotb + SV(both sims) + pack + act + reorder + SystemC |
 | CI | `make ci` | `check` + coverage as one pass/fail gate |
+| Container | `docker run --rm aou-dv` | the whole `make ci` gate in a reproducible image ([`docs/DOCKER.md`](docs/DOCKER.md)) |
 | Trace | `make <target> VERBOSE=1` | per-beat AXI transaction traces in each env's log |
 
 Run `make help` for the full list.
@@ -304,6 +306,32 @@ open-source Yosys frontend cannot elaborate the wide pack/unpack functions and
 2000-bit flit datapath in tractable time; that stays with the simulation
 environments above.
 
+### 8. Containerized gate (Docker / Railway)
+
+Run the entire gate in a reproducible image — no local toolchain needed:
+
+```bash
+docker build -t aou-dv .          # builds Icarus + pinned Verilator + SystemC + cocotb
+docker run --rm aou-dv            # runs `make ci`; exits 0 on green
+docker run --rm aou-dv make reorder   # or any single environment
+```
+
+The image (Ubuntu 24.04) mirrors CI exactly: apt Icarus + SystemC 2.3.3, Verilator
+pinned to oss-cad-suite `5.047`, and cocotb 1.9.2 / pyuvm 4.0.1 in a venv. On
+memory-constrained builders, cap Verilator's compile parallelism with
+`VL_JOBS` (the image defaults to `2`; use `-e VL_JOBS=1` on the smallest hosts,
+`-e VL_JOBS=0` where RAM is ample):
+
+```bash
+docker run --rm -e VL_JOBS=1 aou-dv
+```
+
+Deploy on **[Railway](https://railway.com)** as a one-off / cron **job** (it has no
+listening port — it runs the gate and exits): `railway.toml` selects the Dockerfile
+builder with `restartPolicyType = "NEVER"`. Full operation, tuning, and gotchas —
+including why `python3-dev` and the `VL_JOBS` cap are required — are in
+[`docs/DOCKER.md`](docs/DOCKER.md).
+
 ## Scope & follow-ons
 
 This pass implements the Basic Profile message formats, **byte-exact flit
@@ -344,3 +372,6 @@ copyrighted Tenstorrent drafts; get them from
 - **SystemC 2.3.3** (`libsystemc-dev`)
 - Python: **cocotb 1.9.2** + **pyuvm 4.0.1** (system `python3`)
 - UVM flow: any of **VCS / Xcelium / Questa** (license-gated; not on this host)
+- Container: a **`Dockerfile`** packages all of the above (bar the UVM flow) into
+  the `aou-dv` image and runs the gate; deployable on Railway — see
+  [`docs/DOCKER.md`](docs/DOCKER.md)
