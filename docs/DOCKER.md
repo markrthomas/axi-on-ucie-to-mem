@@ -59,6 +59,8 @@ Ubuntu 24.04 base, chosen because it ships the exact tool versions CI validates:
 | Python | apt (`python3` + **`python3-dev`**) | 3.12 | `python3-dev` provides `libpython3.12.so`, which cocotb's `find_libpython` needs to embed the interpreter in the VPI (see gotcha below). |
 | cocotb / pyuvm | pip, in a venv | 1.9.2 / 4.0.1 | Pinned to the CI versions; a venv satisfies PEP 668 on 24.04. |
 | tmux | apt | 3.4 | Terminal multiplexer for interactive / long-running sessions inside the container. |
+| Node.js | NodeSource | 20 LTS | Runtime for the Claude Code CLI (Claude Code needs Node ≥ 18). |
+| Claude Code CLI | npm (`@anthropic-ai/claude-code`) | latest | Headless agent mode (see below); does not affect the DV gate. |
 
 The build ends with a healthcheck that fails the image build if any of
 `iverilog`, the pinned `verilator`, or `import cocotb, pyuvm` is missing.
@@ -136,6 +138,57 @@ Rule of thumb: keep `VL_JOBS × ~0.5 GB` under the instance's RAM. `VL_JOBS=2`
 runs the full gate green under a **2 GB** cap.
 
 ---
+
+## Headless Claude Code agent mode
+
+The same image can run **[Claude Code](https://code.claude.com/docs/en/headless)
+headless** as a cloud agent, layered alongside the DV toolchain (Node.js 20 +
+the `@anthropic-ai/claude-code` CLI are installed; the DV gate is untouched).
+
+```bash
+# task as an argument
+docker run --rm -e ANTHROPIC_API_KEY=sk-ant-… aou-dv agent "summarize rtl/aou_pkg.sv"
+
+# task from the environment
+docker run --rm -e ANTHROPIC_API_KEY=sk-ant-… -e CLAUDE_TASK="run make reorder and explain a failure" aou-dv agent
+
+# task / webhook payload piped on stdin
+printf '%s' "$WEBHOOK_BODY" | docker run --rm -i -e ANTHROPIC_API_KEY=sk-ant-… aou-dv agent
+```
+
+`agent` is a keyword the entrypoint recognizes (see `docker/agent.sh`); it runs
+`claude -p "<task>" --bare` and exits with Claude Code's status. Anything else is
+still the DV gate (`docker run … aou-dv` → `make ci`, `… aou-dv make reorder`, …).
+
+**How non-interactive mode actually works.** It is the CLI's **`-p` / `--print`
+flag**, plus **`--bare`** (skips host hooks/plugins/`CLAUDE.md` for a reproducible
+run) — **not** an environment variable. There is **no `CLAUDE_CODE_NON_INTERACTIVE`
+variable**, and `CI=true` is not Claude Code's setup/telemetry switch. The image
+instead sets the real umbrella **`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`**
+(turns off telemetry, error reporting, and update checks).
+
+**Authentication (required).** Claude Code needs **`ANTHROPIC_API_KEY`** (a
+[Console](https://platform.claude.com) key) — under `-p` the key is always used
+when present. **Inject it at run time** (`docker run -e …`, or a Railway service
+variable); **never bake a key into the image or commit it.** Amazon Bedrock /
+Google Vertex / Microsoft Foundry are supported via their own provider credentials.
+
+**Permission posture.** `docker/agent.sh` defaults to `--permission-mode dontAsk`
+(a locked-down CI posture: only read-only commands and explicit `allow` rules
+run). For a worker that must edit files or run commands, open it up per run:
+
+```bash
+docker run --rm -e ANTHROPIC_API_KEY=… -e CLAUDE_PERMISSION_MODE=acceptEdits aou-dv \
+  agent "apply the lint fixes" --allowedTools "Bash,Read,Edit"
+```
+
+Trailing arguments after the task pass straight through to `claude`, and
+`CLAUDE_OUTPUT_FORMAT` (`text` default, or `json` / `stream-json`) selects the
+output shape for programmatic callers.
+
+> A headless agent with `acceptEdits`/broad `--allowedTools` can run shell
+> commands and edit files in the container unattended — scope the tools and the
+> container's mounts/network to what the task actually needs.
 
 ## Deploying on Railway
 
