@@ -228,8 +228,17 @@ Runtime inputs:
 | `ANTHROPIC_API_KEY` | everything | Console key; injected at run time, never baked. |
 | `GITHUB_TOKEN` | push + PR | repo/PR scope; without it the swarm edits & tests but stops before pushing (leaves a committed branch). |
 | `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` | commit identity | sensible defaults if unset. |
+| `SWARM_MAX_PARALLEL` | throttle | max dv-env-testers run at once. **Auto-sized to available RAM** (`MemAvailable / 2 GB`, clamped 1–6) since each env's Verilator build can need ~2 GB; set it to override. |
 | `SWARM_PERMISSION_MODE` | tuning | default `acceptEdits`. |
 | `SWARM_ALLOWED_TOOLS` | tuning | default `Bash,Read,Edit,Write,Grep,Glob,Task,Agent`. |
+
+**Compute guard.** Running all six DV environments at once means up to six
+concurrent Verilator/g++ compiles — on a small host that OOM-kills `cc1plus`
+(the same failure the `VL_JOBS` cap fixes for a single build). `swarm.sh`
+therefore reads `MemAvailable` and dispatches testers in **batches** of
+`SWARM_MAX_PARALLEL` (≈ 2 on a 5–6 GB box, up to 6 where RAM is ample); the
+manager also retries any OOM-killed env with `VL_JOBS=1`. Sequential
+`make regress` is unaffected — this only bounds the swarm's parallel fan-out.
 
 Unlike `agent` mode, the swarm runs Claude Code **non-`--bare`** so the project's
 `.claude/agents/` are discovered and dispatchable. The manager never commits on

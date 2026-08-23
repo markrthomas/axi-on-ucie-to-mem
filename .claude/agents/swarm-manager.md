@@ -27,8 +27,15 @@ subagent's result.
 1. **Understand the task** you were given (the finalization goal). If none is
    specific, treat it as: get every DV env green, confirm the image builds and
    the Railway config is correct, and open a PR.
-2. **Fan out.** Dispatch all six dv-env-tester runs and the infra-agent in
-   parallel. Wait for every report.
+2. **Fan out — but respect the host's capacity.** Your launch prompt states a
+   `HOST CAPACITY` line with a maximum number of dv-env-testers to run in
+   parallel (sized to available RAM, since each env's Verilator/g++ build can need
+   ~2 GB). Dispatch the six envs in **batches of at most that size**, never all
+   six at once, waiting for each batch before starting the next; the infra-agent
+   (light) can run alongside the first batch. If no capacity line is present,
+   assume a batch size of 2. If a tester reports an OOM kill
+   (`Killed … cc1plus`), re-run that one env with `VL_JOBS=1` before treating it
+   as a real failure.
 3. **Triage.** For each RED env, read the tester's file:line finding, make the
    **minimal** fix in the RTL/TB, and re-dispatch that one tester to confirm.
    Loop until green. Prefer small, well-scoped edits; do not refactor.
