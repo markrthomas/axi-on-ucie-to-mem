@@ -190,6 +190,55 @@ output shape for programmatic callers.
 > commands and edit files in the container unattended — scope the tools and the
 > container's mounts/network to what the task actually needs.
 
+## DV finalization swarm
+
+A step beyond single-agent mode: `agent` runs one Claude Code session, **`swarm`**
+runs a small **manager-led team** that finalizes the DV work and opens a PR. It
+is defined by three agents in `.claude/agents/` (baked into the image) plus
+`docker/swarm.sh` and the default task in `docker/swarm-task.md`.
+
+```
+swarm-manager (opus)                        # the manager — the top-level session
+ ├─ dv-env-tester (sonnet)  × cocotb, sv, pack, act, reorder, systemc  (parallel)
+ └─ infra-agent   (sonnet)  # Dockerfile / entrypoint / railway.toml / CI
+```
+
+The manager dispatches one **`dv-env-tester`** per DV environment (each runs that
+env and reports pass/fail + a file:line finding — read-only) and the
+**`infra-agent`** (verifies/fixes the container & CI plumbing), applies the
+minimal fixes for anything red, runs the whole `make regress` gate, and — only
+when green — commits to a branch and opens a PR. **A human merges.**
+
+```bash
+# default finalization task (docker/swarm-task.md); needs both keys
+docker run --rm \
+  -e ANTHROPIC_API_KEY=sk-ant-… \
+  -e GITHUB_TOKEN=ghp_… \
+  aou-dv swarm
+
+# or give it a specific task
+docker run --rm -e ANTHROPIC_API_KEY=… -e GITHUB_TOKEN=… aou-dv \
+  swarm "get every DV env green and open a PR titled 'DV finalize'"
+```
+
+Runtime inputs:
+
+| Variable | Needed for | Notes |
+|----------|-----------|-------|
+| `ANTHROPIC_API_KEY` | everything | Console key; injected at run time, never baked. |
+| `GITHUB_TOKEN` | push + PR | repo/PR scope; without it the swarm edits & tests but stops before pushing (leaves a committed branch). |
+| `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` | commit identity | sensible defaults if unset. |
+| `SWARM_PERMISSION_MODE` | tuning | default `acceptEdits`. |
+| `SWARM_ALLOWED_TOOLS` | tuning | default `Bash,Read,Edit,Write,Grep,Glob,Task,Agent`. |
+
+Unlike `agent` mode, the swarm runs Claude Code **non-`--bare`** so the project's
+`.claude/agents/` are discovered and dispatchable. The manager never commits on
+`main` and never merges — it branches, pushes, and opens a PR for human review.
+
+> This is autonomous, multi-agent, and API-metered: it edits files, runs shell
+> commands, and pushes a branch on its own. Run it in a disposable container with
+> a **scoped** `GITHUB_TOKEN`, and review the PR before merging.
+
 ## Deploying on Railway
 
 This project is a **hardware DV suite, not a web service** — the container has no
@@ -223,6 +272,14 @@ Steps:
 `sh -c "<command>"`, which bypasses the image `ENTRYPOINT` and would drop the
 injected Verilator args. Leave it unset so the image default runs; to run a
 subset, change the Docker `CMD` (image args) instead.
+
+**Running the agent or the swarm on Railway.** The same image serves them as
+one-off jobs: set the image args to `agent` or `swarm` (via the Docker `CMD` /
+service args, not `startCommand`) and add the required service variables —
+`ANTHROPIC_API_KEY` for both, plus `GITHUB_TOKEN` for the swarm's PR step. They
+run to completion and exit, so keep `restartPolicyType = "NEVER"`. Treat the
+container as disposable and the token as scoped — the swarm edits code and pushes
+a branch autonomously.
 
 **If the build still OOMs** on the smallest instance (the SystemC model compile
 is the memory peak): set a service variable **`VL_JOBS=1`**, or increase the

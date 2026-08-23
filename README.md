@@ -332,6 +332,12 @@ builder with `restartPolicyType = "NEVER"`. Full operation, tuning, and gotchas 
 including why `python3-dev` and the `VL_JOBS` cap are required — are in
 [`docs/DOCKER.md`](docs/DOCKER.md).
 
+The same image also runs **Claude Code headless** on top of the DV toolchain
+(`ANTHROPIC_API_KEY` injected at run time): `aou-dv agent "<task>"` for a single
+session, or `aou-dv swarm` for a manager-led swarm (one `dv-env-tester` per DV
+env + an `infra-agent`) that finalizes the work and opens a PR. Agents live in
+[`.claude/agents/`](.claude/agents/); see [`docs/DOCKER.md`](docs/DOCKER.md).
+
 ## Scope & follow-ons
 
 This pass implements the Basic Profile message formats, **byte-exact flit

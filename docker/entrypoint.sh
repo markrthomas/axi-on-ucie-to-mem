@@ -27,6 +27,13 @@ if [ "${1:-}" = "agent" ] || [ "${1:-}" = "claude" ]; then
   exec /usr/local/bin/agent.sh "$@"
 fi
 
+# Headless DV finalization swarm (manager + per-env testers + infra-agent).
+#   docker run -e ANTHROPIC_API_KEY=… -e GITHUB_TOKEN=… aou-dv swarm ["task"]
+if [ "${1:-}" = "swarm" ]; then
+  shift
+  exec /usr/local/bin/swarm.sh "$@"
+fi
+
 if [ "$#" -eq 0 ]; then
   exec make ci "${VLT_ARGS[@]}"
 elif [ "$1" = "make" ]; then

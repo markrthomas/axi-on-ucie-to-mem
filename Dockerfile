@@ -22,6 +22,9 @@
 #         docker run --rm -e ANTHROPIC_API_KEY=… aou-dv agent "summarize the RTL"
 #         printf '%s' "$payload" | docker run --rm -i -e ANTHROPIC_API_KEY=… aou-dv agent
 #
+# DV finalization swarm (manager + per-env testers + infra; edits, tests, PRs):
+#         docker run --rm -e ANTHROPIC_API_KEY=… -e GITHUB_TOKEN=… aou-dv swarm
+#
 # On Railway: this is a batch/one-off image (no listening port).  Deploy it as a
 # one-off job or a Cron service — it runs the gate to completion and exits with
 # the gate's status (0 = green).  It is NOT a long-running web service.
@@ -91,6 +94,16 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && npm install -g @anthropic-ai/claude-code \
     && npm cache clean --force
 
+# GitHub CLI — lets the finalization swarm (docker/swarm.sh) push a branch and
+# open a PR when GITHUB_TOKEN is provided at run time (never baked in).
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/*
+
 # --- Project ------------------------------------------------------------------
 WORKDIR /work
 COPY . /work
@@ -107,14 +120,16 @@ ENV ICARUS_BIN_DIR=/usr/bin
 ENV VL_JOBS=2
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY docker/agent.sh      /usr/local/bin/agent.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/agent.sh
+COPY docker/swarm.sh      /usr/local/bin/swarm.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/agent.sh /usr/local/bin/swarm.sh
 
 # Fail fast if the toolchain didn't assemble correctly.
 RUN iverilog -V | head -1 \
     && "$OSS/bin/verilator" --version \
     && python -c "import cocotb, pyuvm; print('cocotb', cocotb.__version__, 'pyuvm', pyuvm.__version__)" \
     && node --version \
-    && claude --version
+    && claude --version \
+    && gh --version | head -1
 
 # Default: run the full CI gate (make ci) with the pinned Verilator overrides
 # injected by the entrypoint.  Override the args to run a subset, e.g.
