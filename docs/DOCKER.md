@@ -259,52 +259,77 @@ time from `GITHUB_TOKEN` + the repo slug so the manager can still push a PR.
 > commands, and pushes a branch on its own. Run it in a disposable container /
 > runner with a **scoped** token, and review the PR before merging.
 
-## Deploying on Railway
+## Deploying on Railway — a how-to
 
 This project is a **hardware DV suite, not a web service** — the container has no
-listening port. It runs the gate to completion and exits (`0` = green). Deploy
-it as a **one-off or scheduled (cron) job**, not an always-on service (an
-always-on service that exits `0` is flagged "crashed").
+listening port. It runs to completion and exits (`0` = green). On Railway it is a
+**one-off or scheduled (cron) job**, never an always-on service (a service that
+exits `0` is flagged "crashed"). `railway.toml` already sets
+`builder = "DOCKERFILE"` and `restartPolicyType = "NEVER"`.
 
-`railway.toml` configures this:
+### Step 1 — create the service
 
-```toml
-[build]
-builder = "DOCKERFILE"
-dockerfilePath = "Dockerfile"
+Dashboard **New Project → Deploy from GitHub repo** (or `railway up` from a
+checkout). Railway reads `railway.toml`, builds the `Dockerfile`, and runs the
+container. First builds are **not instant** — the image pulls the ~677 MB
+oss-cad-suite whenever that layer isn't cached.
 
-[deploy]
-restartPolicyType = "NEVER"
-# cronSchedule = "0 6 * * *"   # uncomment to run daily at 06:00 UTC
-```
+### Step 2 — pick what it runs
 
-Steps:
+The image default is the DV gate (`make ci`). To run the agent or swarm instead,
+set the service's **image args** to `agent` or `swarm` (Railway service settings →
+the Docker command / args). **Do not use Railway's `startCommand`** — Railway runs
+it via `sh -c "…"`, which bypasses the image `ENTRYPOINT` and drops the injected
+Verilator args. Leave `startCommand` empty and change the image args instead.
 
-1. Create a Railway project from this repo (dashboard **New Project → Deploy from
-   GitHub repo**, or `railway up` from a checkout). Railway reads `railway.toml`,
-   builds the Dockerfile, and runs the container.
-2. Watch the deploy logs for the `[REGRESS] … PASSED` banner.
-3. To run on a schedule, set `cronSchedule` (UTC) in `railway.toml`. Railway
-   starts a fresh container per tick; it must exit before the next tick, which
-   this gate does.
+| Run mode | Image args | Needs |
+|----------|-----------|-------|
+| DV gate (default) | *(none)* | — |
+| Headless agent | `agent "<task>"` | `ANTHROPIC_API_KEY` |
+| Finalization swarm | `swarm` | `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `SWARM_REPO` |
 
-**Do not set a Railway `startCommand`.** Railway runs `startCommand` via
-`sh -c "<command>"`, which bypasses the image `ENTRYPOINT` and would drop the
-injected Verilator args. Leave it unset so the image default runs; to run a
-subset, change the Docker `CMD` (image args) instead.
+### Step 3 — set the variables (API keys & secrets)
 
-**Running the agent or the swarm on Railway.** The same image serves them as
-one-off jobs: set the image args to `agent` or `swarm` (via the Docker `CMD` /
-service args, not `startCommand`) and add the required service variables —
-`ANTHROPIC_API_KEY` for both, plus `GITHUB_TOKEN` for the swarm's PR step. They
-run to completion and exit, so keep `restartPolicyType = "NEVER"`. Treat the
-container as disposable and the token as scoped — the swarm edits code and pushes
-a branch autonomously.
+Railway → your service → **Variables**. **Secrets go here only** — never in the
+image, `railway.toml`, a commit, or a PR. `agent.sh` / `swarm.sh` read them from
+the runtime environment; nothing is baked in.
 
-**If the build still OOMs** on the smallest instance (the SystemC model compile
-is the memory peak): set a service variable **`VL_JOBS=1`**, or increase the
-instance memory. Note the build pulls the ~677 MB oss-cad-suite each time its
-layer isn't cached, so first builds are not instant.
+| Variable | Mode | Required? | Notes |
+|----------|------|-----------|-------|
+| `ANTHROPIC_API_KEY` | agent, swarm | **required** | A key from the [Claude Console](https://platform.claude.com). Under `-p` this key is always used. |
+| `GITHUB_TOKEN` | swarm | **required to open a PR** | A **fine-grained PAT** scoped to *this repo* with **Contents: write + Pull requests: write** (or a GitHub App token). Without it the swarm edits & tests but stops before pushing. |
+| `SWARM_REPO` | swarm | **required on Railway** | `owner/repo`, e.g. `markrthomas/axi-on-ucie-to-mem`. The image has no `.git`, so `swarm.sh` clones the repo at run time to make its PR — and unlike GitHub Actions, Railway does **not** set `GITHUB_REPOSITORY`, so you must provide this. |
+| `VL_JOBS` | any | optional | Verilator build parallelism; image default `2`. Set **`1`** on the smallest instances if a compile OOMs. |
+| `SWARM_MAX_PARALLEL` | swarm | optional | Max DV envs tested at once; auto-sized to RAM if unset. |
+| `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` | swarm | optional | Commit identity for the swarm's branch. |
+
+### Step 4 — run it, and (optionally) schedule it
+
+Deploy / trigger the service. Watch the deploy logs:
+
+- **gate** → ends with `[REGRESS] … PASSED`, exit `0`.
+- **agent** → prints Claude's result.
+- **swarm** → prints the manager's report and the PR URL.
+
+To run the **gate** on a schedule, set `cronSchedule` (UTC) in `railway.toml`
+(e.g. `cronSchedule = "0 6 * * *"`). Railway starts a fresh container per tick;
+it must exit before the next, which the gate does. (Cron-scheduling the *swarm*
+is possible but means autonomous unattended PRs — do so deliberately.)
+
+### Critical notes
+
+- **Never bake or commit a secret.** Keys live only in Railway Variables (or a
+  shared Railway *shared variable* / environment). Rotate the token if exposed.
+- **Scope the `GITHUB_TOKEN` tightly** — this repo only, minimum write scopes,
+  short expiry. The swarm pushes a branch and opens a PR autonomously; **a human
+  still merges.** Treat every run as a disposable container.
+- **`SWARM_REPO` is the #1 Railway gotcha** — without it the swarm can edit &
+  test but cannot clone/push, so it can't open a PR.
+- **Build memory.** The SystemC model compile is the memory peak; if a build OOMs
+  (`Killed … cc1plus`), set `VL_JOBS=1` or use a larger build instance.
+- **Right-size the instance.** The gate needs enough RAM for the Verilator
+  builds; the swarm additionally runs several env builds in parallel (bounded by
+  `SWARM_MAX_PARALLEL`, auto-sized to `MemAvailable`).
 
 ---
 
