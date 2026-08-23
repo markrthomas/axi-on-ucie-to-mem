@@ -1,0 +1,100 @@
+name: DV swarm
+
+# Manual "Run workflow" button that runs the headless DV finalization swarm
+# (swarm-manager → per-env dv-env-testers + infra-agent) on a GitHub runner:
+# it runs each DV environment, fixes what is red, and opens a PR. See
+# docs/DOCKER.md ("DV finalization swarm").
+#
+# Requires repo/environment secrets:
+#   ANTHROPIC_API_KEY   (always)   Claude Console API key.
+#   SWARM_GITHUB_TOKEN  (optional) a token with contents:write + pull-requests:
+#                       write for the push/PR step; falls back to the built-in
+#                       GITHUB_TOKEN (note: PRs it opens do NOT trigger CI).
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "Task for the swarm (blank = the default finalization task)"
+        required: false
+        default: ""
+      max_parallel:
+        description: "Max DV envs to test in parallel (blank = auto-size to RAM)"
+        required: false
+        default: ""
+
+# The swarm branches, commits, pushes, and opens a PR.
+permissions:
+  contents: write
+  pull-requests: write
+
+# Never run two swarms at once.
+concurrency:
+  group: dv-swarm
+  cancel-in-progress: false
+
+jobs:
+  swarm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      OSS: ${{ github.workspace }}/oss-cad-suite
+      ICARUS_BIN_DIR: /usr/bin
+      # Bound each Verilator build's own parallel cc1plus (the swarm additionally
+      # caps how many envs build at once — see SWARM_MAX_PARALLEL).
+      VL_JOBS: "2"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0     # full history so the manager can branch/commit cleanly
+
+      - name: Install RTL tools (Icarus + SystemC)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends iverilog libsystemc-dev
+
+      - name: Cache oss-cad-suite (pinned Verilator)
+        id: cache-oss
+        uses: actions/cache@v4
+        with:
+          path: oss-cad-suite
+          key: oss-cad-suite-linux-x64-20260413
+
+      - name: Install oss-cad-suite (pinned Verilator)
+        if: steps.cache-oss.outputs.cache-hit != 'true'
+        run: |
+          curl -fL -o oss.tgz \
+            https://github.com/YosysHQ/oss-cad-suite-build/releases/download/2026-04-13/oss-cad-suite-linux-x64-20260413.tgz
+          tar xzf oss.tgz
+          rm oss.tgz
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install Python deps (cocotb + pyuvm)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'cocotb==1.9.2' 'pyuvm==4.0.1'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Tool versions
+        run: |
+          iverilog -V | head -1
+          "$OSS/bin/verilator" --version
+          node --version
+          claude --version
+          gh --version | head -1
+
+      - name: Run the DV swarm
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.SWARM_GITHUB_TOKEN || github.token }}
+          SWARM_MAX_PARALLEL: ${{ inputs.max_parallel }}
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+        run: bash docker/swarm.sh "${{ inputs.task }}"

@@ -244,9 +244,20 @@ Unlike `agent` mode, the swarm runs Claude Code **non-`--bare`** so the project'
 `.claude/agents/` are discovered and dispatchable. The manager never commits on
 `main` and never merges — it branches, pushes, and opens a PR for human review.
 
+**Run it from GitHub Actions.** The **`DV swarm`** workflow
+(`.github/workflows/swarm.yml`) is a manual **Run workflow** button
+(`workflow_dispatch`) — pick an optional task and parallelism, and it sets up the
+same toolchain as CI plus Node/Claude and runs `docker/swarm.sh` on the runner.
+It reads `secrets.ANTHROPIC_API_KEY` (required) and `secrets.SWARM_GITHUB_TOKEN`
+(optional; falls back to the built-in `GITHUB_TOKEN`, whose PRs don't re-trigger
+CI), and the job declares `contents: write` + `pull-requests: write`. The button
+appears only once the workflow is on the default branch. `swarm.sh` runs from the
+runner's checkout; in the container image (no `.git`) it clones the repo at run
+time from `GITHUB_TOKEN` + the repo slug so the manager can still push a PR.
+
 > This is autonomous, multi-agent, and API-metered: it edits files, runs shell
-> commands, and pushes a branch on its own. Run it in a disposable container with
-> a **scoped** `GITHUB_TOKEN`, and review the PR before merging.
+> commands, and pushes a branch on its own. Run it in a disposable container /
+> runner with a **scoped** token, and review the PR before merging.
 
 ## Deploying on Railway
 

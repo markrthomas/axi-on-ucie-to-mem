@@ -23,11 +23,30 @@
 #   CLAUDE_OUTPUT_FORMAT    default "text".
 set -euo pipefail
 
+# Resolve the repo to work in.  On a git checkout (a CI runner, a dev box) use it
+# directly.  The container image ships code WITHOUT .git (see .dockerignore), so
+# there we clone at run time from GITHUB_TOKEN + a repo slug — that is what lets
+# the manager branch / commit / push / open a PR on Railway.
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [ -z "$ROOT" ]; then
+  repo="${SWARM_REPO:-${GITHUB_REPOSITORY:-}}"
+  if [ -n "${GITHUB_TOKEN:-}" ] && [ -n "$repo" ]; then
+    ROOT="${SWARM_CLONE_DIR:-/tmp/aou-swarm-repo}"
+    echo "swarm: no local git checkout — cloning ${repo} into ${ROOT}" >&2
+    rm -rf "$ROOT"
+    git clone --depth 50 "https://x-access-token:${GITHUB_TOKEN}@github.com/${repo}.git" "$ROOT" >&2
+  else
+    ROOT="/work"
+    echo "swarm: no git checkout and no GITHUB_TOKEN+repo — running from ${ROOT} (edit/test only; cannot push a PR)." >&2
+  fi
+fi
+cd "$ROOT"
+
 task="${1:-}"
 [ "$#" -gt 0 ] && shift || true
 [ -z "$task" ] && task="${SWARM_TASK:-}"
 [ -z "$task" ] && [ ! -t 0 ] && task="$(cat)"
-[ -z "$task" ] && [ -f /work/docker/swarm-task.md ] && task="$(cat /work/docker/swarm-task.md)"
+[ -z "$task" ] && [ -f "$ROOT/docker/swarm-task.md" ] && task="$(cat "$ROOT/docker/swarm-task.md")"
 
 if [ -z "$task" ]; then
   echo "swarm: no task (pass an arg, set \$SWARM_TASK, pipe stdin, or ship docker/swarm-task.md)" >&2
@@ -41,7 +60,7 @@ fi
 # Commit identity + GitHub auth so the manager can push a branch and open a PR.
 git config --global user.name  "${GIT_AUTHOR_NAME:-aou-dv swarm}"
 git config --global user.email "${GIT_AUTHOR_EMAIL:-aou-dv-swarm@users.noreply.github.com}"
-git config --global --add safe.directory /work
+git config --global --add safe.directory "$ROOT"
 if [ -n "${GITHUB_TOKEN:-}" ]; then
   export GH_TOKEN="$GITHUB_TOKEN"
   gh auth setup-git 2>/dev/null || true

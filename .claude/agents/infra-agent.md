@@ -11,7 +11,7 @@ strictly the build/deploy plumbing — you may edit these files and only these:
 - `Dockerfile`, `.dockerignore`
 - `docker/entrypoint.sh`, `docker/agent.sh`, `docker/swarm.sh`
 - `railway.toml`
-- `.github/workflows/ci.yml`
+- `.github/workflows/ci.yml`, `.github/workflows/swarm.yml`
 
 **Never edit `rtl/**` or `dv/**`** (the dv-env-testers and the manager own those).
 
