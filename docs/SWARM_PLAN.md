@@ -1,5 +1,5 @@
 ---
-status: draft
+status: ready
 ---
 
 # Swarm implementation plan
