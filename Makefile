@@ -19,6 +19,13 @@ VERILATOR ?= verilator
 # pinned/out-of-PATH Verilator install can point it at the matching binary;
 # otherwise the coverage floor is silently skipped when it is not on PATH.
 VERILATOR_COV ?= verilator_coverage
+# SymbiYosys driver for the formal tier.  Parameterized (like VERILATOR) because
+# oss-cad-suite is deliberately kept OFF $PATH — its bundled iverilog would
+# shadow the apt one the cocotb VPI links against — so the image / CI pass the
+# bundled prover by absolute path: `make formal SBY="$$OSS/bin/sby"`.
+# Left at the bare default, the formal target skips gracefully when sby is not
+# installed; given an explicit path it MUST run (a bad path is a hard error).
+SBY ?= sby
 
 RTL_DIR := rtl
 # Package first, then leaf modules, then the top (compile order matters).
@@ -98,12 +105,14 @@ help:
 	@echo "    make systemc           # SystemC TB (Verilator --sc model + sc_main)"
 	@echo "    make uvm               # SystemVerilog UVM TB (license-gated; skips if no VCS/Xcelium/Questa)"
 	@echo "    make coverage          # Verilator --coverage -> sim/coverage.info (floor COV_MIN=$(COV_MIN)%)"
-	@echo "    make formal            # SymbiYosys proof of axi_lite_mem (TASK=bmc|cover|prove; skips if no sby)"
+	@echo "    make formal            # SymbiYosys proofs: axi_lite_mem + §4.3 flit header + §6 credits"
+	@echo "                           #   (bmc+cover gate, prove best-effort; TASK=bmc|cover|prove;"
+	@echo "                           #    SBY=<path> for an out-of-PATH sby, e.g. SBY=\$$OSS/bin/sby)"
 	@echo ""
 	@echo "  Gates:"
 	@echo "    make lint              # iverilog -Wall + Verilator RTL lint"
 	@echo "    make check             # lint + cocotb + SV(Icarus+Verilator) + pack + act + SystemC"
-	@echo "    make regress           # check + coverage (CI-style pass/fail)"
+	@echo "    make regress           # check + coverage + formal (CI-style pass/fail)"
 	@echo "    make ci                # regress"
 	@echo ""
 	@echo "  Tracing:"
@@ -249,20 +258,59 @@ coverage:
 		echo "[COVERAGE] coverage.dat in $(COV_DIR) (install verilator for lcov export)"; \
 	fi
 
-# formal: SymbiYosys proof of the AXI4-Lite memory target (protocol legality +
-# write->read data integrity).  bmc + cover + an unbounded `prove` (abc pdr).
-# Optional stretch (not in the `ci` gate); degrades gracefully if sby is absent.
-# TASK=<bmc|cover|prove> runs just one.
+# formal: the SymbiYosys proof tier — a first-class, GATING part of `regress`.
+#
+#   formal/axi_lite_mem.sby — AXI4-Lite memory target: channel legality, no
+#       response without a request, write->read data integrity.
+#   formal/aou_flit.sby     — §4.3 byte-exact flit protocol header (checked
+#       against an independent transcription of the Figure-5 byte map), reserved
+#       bits zero, pack->unpack round-trip, §6 MsgCredit (Table 16/17) and §5.8
+#       message-into-payload placement.
+#   formal/aou_credit.sby   — §6 credit flow control on the REAL bridges against
+#       a fully adversarial peer: counters never exceed their ceiling (and, being
+#       unsigned, therefore never underflow), and every presented message is
+#       funded by its own message type's credit.
+#
+# `bmc` (bounded safety) and `cover` (required covers reachable) GATE; `prove`
+# (unbounded k-induction) is run best-effort and only warns if it does not
+# converge, since convergence depends on the solver/depth.
+# TASK=<bmc|cover|prove> runs just that one task, gating.
+FORMAL_SBY := formal/axi_lite_mem.sby formal/aou_flit.sby formal/aou_credit.sby
+
 formal:
-	@if ! command -v sby >/dev/null 2>&1; then \
-		echo "[FORMAL] SymbiYosys (sby) not on PATH — install oss-cad-suite to run proofs"; exit 0; fi; \
-	sby -f formal/axi_lite_mem.sby $(TASK)
+	@set -e; \
+	if [ -z "$(strip $(SBY))" ]; then \
+		echo "[FORMAL] SBY is empty — skipping the formal tier"; exit 0; fi; \
+	if ! command -v $(SBY) >/dev/null 2>&1; then \
+		if [ "$(strip $(SBY))" = "sby" ]; then \
+			echo "[FORMAL] SymbiYosys (sby) not on PATH — install oss-cad-suite, or pass SBY=<path>, to run proofs"; \
+			exit 0; \
+		fi; \
+		echo "[FORMAL] FAIL: SBY='$(strip $(SBY))' is not an executable prover"; exit 1; \
+	fi; \
+	gating="$(strip $(TASK))"; best=""; \
+	if [ -z "$$gating" ]; then gating="bmc cover"; best="prove"; fi; \
+	for f in $(FORMAL_SBY); do \
+		for t in $$gating; do \
+			echo "[FORMAL] $$f: $$t"; \
+			$(SBY) -f $$f $$t || { echo "[FORMAL] FAIL: $$f $$t"; exit 1; }; \
+		done; \
+		for t in $$best; do \
+			echo "[FORMAL] $$f: $$t (best-effort, non-gating)"; \
+			$(SBY) -f $$f $$t || \
+				echo "[FORMAL] NOTE: $$f $$t did not converge — best-effort, not gating"; \
+		done; \
+	done; \
+	echo "[FORMAL] PASS: $(words $(FORMAL_SBY)) proofs, gating tasks: $$gating"
 
 # --- gates -------------------------------------------------------------------
 check: lint test-all sv vlt pack act reorder systemc
 
-regress: check coverage
-	@echo "[REGRESS] lint + cocotb + SV(Icarus+Verilator) + pack + act + reorder + SystemC + coverage PASSED"
+# regress is the single signoff gate: everything `check` runs, plus the coverage
+# floor and the formal tier.  `formal` is kept OUT of the lighter `check` so the
+# quick loop stays quick; only regress/ci pay the prover time.
+regress: check coverage formal
+	@echo "[REGRESS] lint + cocotb + SV(Icarus+Verilator) + pack + act + reorder + SystemC + coverage + formal PASSED"
 
 ci: regress
 	@echo "[CI] full regression PASSED"
@@ -279,3 +327,6 @@ clean:
 	rm -rf $(TB_DIR)/sim_build $(TB_DIR)/__pycache__ __pycache__ \
 		results.xml dump.fst dump.vcd obj_dir \
 		$(COV_DIR) sim/coverage.info sim/coverage.dat sim/annotated
+	rm -rf $(patsubst %.sby,%_bmc,$(FORMAL_SBY)) \
+		$(patsubst %.sby,%_cover,$(FORMAL_SBY)) \
+		$(patsubst %.sby,%_prove,$(FORMAL_SBY))

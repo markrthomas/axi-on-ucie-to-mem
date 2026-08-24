@@ -1,0 +1,42 @@
+# SymbiYosys formal flow for the AoU §4.3 flit header / §5.8 packing map.
+#
+#   sby -f formal/aou_flit.sby            # all tasks
+#   sby -f formal/aou_flit.sby bmc        # safety only
+#
+# Tasks (same shape as formal/axi_lite_mem.sby):
+#   bmc    — bounded safety: the byte map, reserved-zero, and round-trip
+#            assertions hold for `depth` cycles of arbitrary field values.
+#   cover  — reachability: the packer really can emit non-trivial flits.
+#   prove  — unbounded safety.  The harness is purely combinational in free
+#            inputs, so this converges immediately (k=1).
+#
+# NB: read with yosys-slang.  The stock yosys Verilog frontend cannot parse the
+# `module <name> import <pkg>::*;` header form the RTL uses, and it does not
+# resolve wildcard-imported typedefs; slang gives full SV package support.
+
+[tasks]
+bmc
+cover
+prove
+
+[options]
+bmc:   mode bmc
+cover: mode cover
+prove: mode prove
+depth 8
+cover: depth 8
+
+[engines]
+bmc:   btor btormc
+cover: btor btormc
+prove: abc pdr
+
+[script]
+plugin -i slang
+read_slang --top aou_flit_fv aou_pkg.sv aou_flit_fv.sv
+prep -top aou_flit_fv
+opt -fast
+
+[files]
+rtl/aou_pkg.sv
+formal/aou_flit_fv.sv
