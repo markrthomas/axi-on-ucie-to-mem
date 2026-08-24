@@ -255,12 +255,15 @@ Unlike `agent` mode, the swarm runs Claude Code **non-`--bare`** so the project'
 
 **Run it from GitHub Actions.** The **`DV swarm`** workflow
 (`.github/workflows/swarm.yml`) is a manual **Run workflow** button
-(`workflow_dispatch`) — pick an optional task and parallelism, and it sets up the
-same toolchain as CI plus Node/Claude and runs `docker/swarm.sh` on the runner.
-It reads `secrets.ANTHROPIC_API_KEY` (required) and `secrets.SWARM_GITHUB_TOKEN`
-(optional; falls back to the built-in `GITHUB_TOKEN`, whose PRs don't re-trigger
-CI), and the job declares `contents: write` + `pull-requests: write`. The button
-appears only once the workflow is on the default branch. `swarm.sh` runs from the
+(`workflow_dispatch`) — pick an optional task, parallelism, and the **provider**
+(`anthropic` or `kimi`), and it sets up the same toolchain as CI plus Node/Claude
+and runs `docker/swarm.sh` on the runner. It reads `secrets.ANTHROPIC_API_KEY`
+(for `anthropic`), `secrets.KIMI_API_KEY` (for `kimi`), and
+`secrets.SWARM_GITHUB_TOKEN` (optional; falls back to the built-in `GITHUB_TOKEN`,
+whose PRs don't re-trigger CI), and the job declares `contents: write` +
+`pull-requests: write`. It uploads `last-run-metrics.json` as an artifact and
+prints the per-model metrics table to the run's job summary. The button appears
+only once the workflow is on the default branch. `swarm.sh` runs from the
 runner's checkout; in the container image (no `.git`) it clones the repo at run
 time from `GITHUB_TOKEN` + the repo slug so the manager can still push a PR.
 
@@ -314,6 +317,42 @@ Override any Kimi model with `KIMI_OPUS_MODEL` / `KIMI_SONNET_MODEL` /
 
 **Why run on Kimi?** cost, provider independence, or cross-checking that the DV
 gate passes under a *second*, independent model — not just Claude.
+
+### Getting a Kimi API key (no host to stand up)
+
+Kimi K3's open weights are huge (2.8T params) — you do **not** self-host. Claude
+Code only needs Moonshot's **Anthropic-compatible** hosted API, so all you get is
+an API key:
+
+1. **Sign up** at [platform.moonshot.ai](https://platform.moonshot.ai) — the
+   **international** endpoint (`api.moonshot.ai`; there is a separate `.cn` —
+   don't use it). The [Kimi Open Platform console](https://platform.kimi.ai/console/api-keys)
+   is the same account.
+2. **Add ≥ $1 balance to activate** (pay-as-you-go; no free tier). Kimi K3 is
+   **$3 / MTok input, $15 / MTok output, $0.30 / MTok cache-hit** — prepaying
+   **$10–20** covers many runs; the metrics block tells you actual token spend.
+3. **Console → API keys → create key** (`sk-…`). That single key is
+   **`KIMI_API_KEY`** — nothing else to configure. `provider-env.sh` sets the
+   base URL and the `opus`/`sonnet`/`haiku` → Kimi-model map for you, so **don't**
+   set `ANTHROPIC_MODEL` / `ANTHROPIC_BASE_URL` yourself.
+
+**Smoke-test the key** before a full swarm (a few tokens ≈ fractions of a cent):
+
+```bash
+docker run --rm -e AOU_MODEL_PROVIDER=kimi -e KIMI_API_KEY=sk-… \
+  aou-dv agent "reply with one short line naming the model you are"
+```
+
+It should authenticate, answer, and print a metrics block showing `kimi-k3`.
+
+> **Most other Kimi hosts won't drop in.** Providers such as OpenRouter expose
+> only an *OpenAI-compatible* endpoint, which Claude Code can't use without a
+> translation proxy. Moonshot's own `/anthropic` endpoint is what makes this
+> integration need no code change — get the key from Moonshot directly.
+
+> **Data / privacy.** In `kimi` mode your repo contents, diffs, and prompts are
+> sent to **Moonshot (a third-party provider)** instead of Anthropic. Fine for
+> this open DV repo; weigh it before pointing a swarm at anything proprietary.
 
 > **One provider per run.** Claude Code's provider (base URL + auth) is
 > **process-wide**, so a single run cannot put the manager on Claude Opus and a
@@ -395,7 +434,7 @@ the runtime environment; nothing is baked in.
 |----------|------|-----------|-------|
 | `ANTHROPIC_API_KEY` | agent, swarm | **required in `anthropic` mode** (default) | A key from the [Claude Console](https://platform.claude.com). Under `-p` this key is always used. |
 | `AOU_MODEL_PROVIDER` | agent, swarm | optional | `anthropic` (default) or `kimi` — selects which vendor the model aliases resolve to. |
-| `KIMI_API_KEY` | agent, swarm | **required in `kimi` mode** | A [Moonshot](https://platform.kimi.ai) key; used as `ANTHROPIC_AUTH_TOKEN` against `https://api.moonshot.ai/anthropic`. Same secret discipline as `ANTHROPIC_API_KEY` — inject at run time, never bake. |
+| `KIMI_API_KEY` | agent, swarm | **required in `kimi` mode** | A Moonshot key — create one at [platform.moonshot.ai](https://platform.moonshot.ai) (add ≥ $1 balance to activate); used as `ANTHROPIC_AUTH_TOKEN` against `https://api.moonshot.ai/anthropic`. Same secret discipline as `ANTHROPIC_API_KEY` — inject at run time, never bake. See [Getting a Kimi API key](#getting-a-kimi-api-key-no-host-to-stand-up). |
 | `GITHUB_TOKEN` | swarm | **required to open a PR** | A **fine-grained PAT** scoped to *this repo* with **Contents: write + Pull requests: write** (or a GitHub App token). Without it the swarm edits & tests but stops before pushing. |
 | `SWARM_REPO` | swarm | **required on Railway** | `owner/repo`, e.g. `markrthomas/axi-on-ucie-to-mem`. The image has no `.git`, so `swarm.sh` clones the repo at run time to make its PR — and unlike GitHub Actions, Railway does **not** set `GITHUB_REPOSITORY`, so you must provide this. |
 | `VL_JOBS` | any | optional | Verilator build parallelism; image default `2`. Set **`1`** on the smallest instances if a compile OOMs. |

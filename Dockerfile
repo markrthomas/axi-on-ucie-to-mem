@@ -25,6 +25,11 @@
 # DV finalization swarm (manager + per-env testers + infra; edits, tests, PRs):
 #         docker run --rm -e ANTHROPIC_API_KEY=… -e GITHUB_TOKEN=… aou-dv swarm
 #
+# Run on Kimi K3 instead of Claude (whole run; only a Moonshot API key — no host
+# to stand up).  Every agent/swarm run also prints a per-model token/time metrics
+# block at the end.  See docs/DOCKER.md → "Model selection, providers & run metrics":
+#         docker run --rm -e AOU_MODEL_PROVIDER=kimi -e KIMI_API_KEY=… aou-dv agent "hi"
+#
 # On Railway: this is a batch/one-off image (no listening port).  Deploy it as a
 # one-off job or a Cron service — it runs the gate to completion and exits with
 # the gate's status (0 = green).  It is NOT a long-running web service.
@@ -118,6 +123,11 @@ ENV ICARUS_BIN_DIR=/usr/bin
 # core) OOM-kills the compiler.  2 keeps peak memory bounded; lower to 1 on the
 # smallest instances, or raise it (or set VL_JOBS=0) where RAM is ample.
 ENV VL_JOBS=2
+# Model provider for headless agent/swarm runs: "anthropic" (default, needs
+# ANTHROPIC_API_KEY) or "kimi" (whole run on Kimi K3 via Moonshot's
+# Anthropic-compatible endpoint, needs KIMI_API_KEY).  Keys are ALWAYS injected
+# at run time — never baked in.  Resolution lives in docker/provider-env.sh.
+ENV AOU_MODEL_PROVIDER=anthropic
 COPY docker/entrypoint.sh   /usr/local/bin/entrypoint.sh
 COPY docker/agent.sh        /usr/local/bin/agent.sh
 COPY docker/swarm.sh        /usr/local/bin/swarm.sh
