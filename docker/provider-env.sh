@@ -16,6 +16,18 @@
 # returns non-zero if the key for the selected provider is missing.
 
 aou_resolve_provider() {
+  # Defensive: strip ALL whitespace/newlines from pasted API keys.  A trailing
+  # newline or leading space (common when copying a secret into a GitHub/Railway
+  # field) survives into the env var and makes an otherwise-valid key fail with
+  # "401 API key is invalid".  Anthropic/Moonshot keys never contain whitespace,
+  # so removing it is safe.
+  if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+    ANTHROPIC_API_KEY="$(printf '%s' "$ANTHROPIC_API_KEY" | tr -d '[:space:]')"; export ANTHROPIC_API_KEY
+  fi
+  if [ -n "${KIMI_API_KEY:-}" ]; then
+    KIMI_API_KEY="$(printf '%s' "$KIMI_API_KEY" | tr -d '[:space:]')"; export KIMI_API_KEY
+  fi
+
   AOU_PROVIDER="${AOU_MODEL_PROVIDER:-anthropic}"
   case "$AOU_PROVIDER" in
     anthropic)
