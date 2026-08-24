@@ -44,6 +44,12 @@ aou_resolve_provider() {
       export ANTHROPIC_DEFAULT_HAIKU_MODEL="${KIMI_HAIKU_MODEL:-kimi-k2.7-code-highspeed}"
       echo "provider: kimi -> ${ANTHROPIC_BASE_URL}" >&2
       echo "  aliases: opus=${ANTHROPIC_DEFAULT_OPUS_MODEL} sonnet=${ANTHROPIC_DEFAULT_SONNET_MODEL} haiku=${ANTHROPIC_DEFAULT_HAIKU_MODEL}" >&2
+      echo "  ⚠  COMPLIANCE/IP CAUTION: this run sends your repo contents (RTL/DV, diffs," >&2
+      echo "     prompts) to Moonshot, a China-based provider that (as of Aug 2026) is under" >&2
+      echo "     active US BIS investigation with Entity-List designation threatened and IP-theft" >&2
+      echo "     allegations. Do NOT enable kimi for proprietary/export-sensitive IP; verify" >&2
+      echo "     Moonshot is not on the Entity List / SDN list first, and consult export counsel." >&2
+      echo "     See docs/DOCKER.md → 'Compliance & IP risk'. Default is provider=anthropic." >&2
       ;;
     *)
       echo "provider: unknown AOU_MODEL_PROVIDER='$AOU_PROVIDER' (want 'anthropic' or 'kimi')." >&2

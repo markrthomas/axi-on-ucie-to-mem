@@ -315,8 +315,33 @@ Override any Kimi model with `KIMI_OPUS_MODEL` / `KIMI_SONNET_MODEL` /
 `KIMI_HAIKU_MODEL` (defaults `kimi-k3` / `kimi-k2.7-code` /
 `kimi-k2.7-code-highspeed`).
 
+#### Compliance & IP risk
+
+> **⚠️ `kimi` mode is opt-in and OFF by default** (`AOU_MODEL_PROVIDER=anthropic`).
+> Read this before enabling it — the runner also prints this caution at run time.
+>
+> Enabling `kimi` **sends your repo contents — RTL/DV, diffs, and prompts — to
+> Moonshot, a China-based provider.** As of **Aug 2026** Moonshot is **under
+> active US BIS investigation**, with an **Entity-List designation openly
+> threatened** and **IP-theft allegations** (including against Anthropic).
+> Independently, a third-party model host may **retain or train on** whatever you
+> send it.
+>
+> Before enabling `kimi`:
+> - **Don't route proprietary or export-sensitive IP through it.** A generic
+>   AXI↔UCIe↔memory bridge on open, published standards is most likely
+>   EAR99/publishable — but an Entity-List listing can make even EAR99 transfers
+>   license-required, so first verify Moonshot (and affiliates) are **not** on the
+>   [BIS Entity List](https://www.bis.doc.gov/index.php/policy-guidance/lists-of-parties-of-concern/entity-list)
+>   or the Treasury SDN list.
+> - **Confirm your design's classification** and clear it with **export/trade
+>   counsel.** Nothing here is legal advice or an export determination.
+> - Prefer `kimi` only for **non-sensitive / already-public** code — or wait until
+>   Moonshot's status resolves.
+
 **Why run on Kimi?** cost, provider independence, or cross-checking that the DV
-gate passes under a *second*, independent model — not just Claude.
+gate passes under a *second*, independent model — not just Claude. Weigh that
+against the risks above.
 
 ### Getting a Kimi API key (no host to stand up)
 
@@ -467,7 +492,9 @@ is possible but means autonomous unattended PRs — do so deliberately.)
 - **Pick the provider deliberately.** `AOU_MODEL_PROVIDER=kimi` runs the *entire*
   swarm on Kimi K3 (one provider per run) and needs `KIMI_API_KEY`, not
   `ANTHROPIC_API_KEY`. The metrics block's dollar figure is an Anthropic-price
-  estimate and is **meaningless for Kimi** — trust the token counts there.
+  estimate and is **meaningless for Kimi** — trust the token counts there. It also
+  transmits your repo to a China-based provider under active US export-control
+  scrutiny — read [Compliance & IP risk](#compliance--ip-risk) before enabling it.
 - **Build memory.** The SystemC model compile is the memory peak; if a build OOMs
   (`Killed … cc1plus`), set `VL_JOBS=1` or use a larger build instance.
 - **Right-size the instance.** The gate needs enough RAM for the Verilator
