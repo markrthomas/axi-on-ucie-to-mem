@@ -1,0 +1,53 @@
+# SymbiYosys formal flow for the AoU §6 credit flow control (both bridges).
+#
+#   sby -f formal/aou_credit.sby            # all tasks
+#   sby -f formal/aou_credit.sby bmc        # safety only
+#
+# Tasks (same shape as formal/axi_lite_mem.sby):
+#   bmc    — bounded safety: no counter ever leaves its ceiling and no unfunded
+#            message is ever presented, for `depth` cycles from reset, against a
+#            completely adversarial peer (free 2000-bit RX flit every cycle).
+#   cover  — reachability: credits really are granted, a funded send completes,
+#            and the saturating replenish reaches a full-burst ceiling.
+#   prove  — unbounded safety by k-induction (best-effort at this depth).
+#
+# NB: read with yosys-slang.  The bridges use the `module <name> import
+# aou_pkg::*;` header form and the properties are attached with `bind`; the stock
+# yosys Verilog frontend accepts neither.
+
+[tasks]
+bmc
+cover
+prove
+
+[options]
+bmc:   mode bmc
+cover: mode cover
+prove: mode prove
+depth 24
+cover: depth 32
+prove: depth 24
+
+[engines]
+bmc:   btor btormc
+cover: btor btormc
+prove: abc pdr
+
+[script]
+plugin -i slang
+read_slang --top aou_credit_fv \
+    aou_pkg.sv aou_activation.sv \
+    aou_axi_initiator_bridge.sv aou_axi_target_bridge.sv \
+    aou_credit_fv.sv
+prep -top aou_credit_fv
+# Bit-blast the bridges' (small) request-queue arrays to FFs so the solver never
+# enters array theory — the same trick formal/axi_lite_mem.sby uses.
+memory_map
+opt -fast
+
+[files]
+rtl/aou_pkg.sv
+rtl/aou_activation.sv
+rtl/aou_axi_initiator_bridge.sv
+rtl/aou_axi_target_bridge.sv
+formal/aou_credit_fv.sv

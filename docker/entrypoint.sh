@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
-# Entrypoint for the aou-dv image.  The Makefile computes VERILATOR_ROOT with a
-# `:=` shell call (command -v verilator), which environment variables do NOT
-# override — so, exactly like .github/workflows/ci.yml, the pinned Verilator
-# triplet must be passed as make COMMAND-LINE arguments.  This wrapper appends
-# them to every `make` invocation so the pinned build is always used.
+# Entrypoint for the aou-dv image.  The Makefile computes VERILATOR_ROOT (and
+# defaults SBY to the bare `sby`) with `:=`/`?=` that environment variables do
+# NOT override — so, exactly like .github/workflows/ci.yml, the pinned
+# Verilator triplet AND the SymbiYosys prover (bundled in oss-cad-suite, kept
+# off PATH — see the Dockerfile) must be passed as make COMMAND-LINE
+# arguments.  This wrapper appends them to every `make` invocation so the
+# pinned toolchain is always used.
 #
-#   (no args)        -> make ci   <verilator overrides>
-#   make <targets>   -> make <targets> <verilator overrides>
+#   (no args)        -> make ci   <pinned-tool overrides>
+#   make <targets>   -> make <targets> <pinned-tool overrides>
 #   <anything else>  -> exec verbatim (shell, tool version, etc.)
 set -euo pipefail
 
-VLT_ARGS=(
+MAKE_ARGS=(
   "VERILATOR=${OSS}/bin/verilator"
   "VERILATOR_ROOT=${OSS}/share/verilator"
   "VERILATOR_COV=${OSS}/bin/verilator_coverage"
+  "SBY=${OSS}/bin/sby"
 )
 
 # Headless Claude Code agent mode (layered ON TOP of the DV gate — it is only
@@ -35,10 +38,10 @@ if [ "${1:-}" = "swarm" ]; then
 fi
 
 if [ "$#" -eq 0 ]; then
-  exec make ci "${VLT_ARGS[@]}"
+  exec make ci "${MAKE_ARGS[@]}"
 elif [ "$1" = "make" ]; then
   shift
-  exec make "$@" "${VLT_ARGS[@]}"
+  exec make "$@" "${MAKE_ARGS[@]}"
 else
   exec "$@"
 fi

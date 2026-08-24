@@ -4,14 +4,15 @@
 #
 # Mirrors .github/workflows/ci.yml exactly so `docker run` reproduces the CI
 # gate (lint + cocotb/PyUVM + SV directed on Icarus & Verilator + pack + act +
-# reorder + SystemC + Verilator coverage):
+# reorder + SystemC + Verilator coverage + SymbiYosys formal):
 #   * Ubuntu 24.04 ships SystemC 2.3.3 (libsystemc-dev) and the apt Icarus that
 #     the cocotb VPI is built against.
 #   * Verilator is PINNED to the oss-cad-suite build used for local dev + CI
 #     (tag 2026-04-13, Verilator 5.047).  The apt Verilator attributes line
 #     coverage ~9 pts stricter and would push `make coverage` below its 85%
 #     floor, and a newer oss-cad-suite adds lints this design predates — so the
-#     tag is exact, not "latest".
+#     tag is exact, not "latest".  The same oss-cad-suite build also ships the
+#     SymbiYosys prover (sby) used by `make formal` (see docker/entrypoint.sh).
 #
 # Build:  docker build -t aou-dv .
 # Run  :  docker run --rm aou-dv                 # full gate (make ci)
@@ -139,6 +140,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/agent.sh \
 # Fail fast if the toolchain didn't assemble correctly.
 RUN iverilog -V | head -1 \
     && "$OSS/bin/verilator" --version \
+    && "$OSS/bin/sby" --version \
     && python -c "import cocotb, pyuvm; print('cocotb', cocotb.__version__, 'pyuvm', pyuvm.__version__)" \
     && node --version \
     && claude --version \
