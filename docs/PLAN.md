@@ -263,7 +263,7 @@ in-order completion** (initiator request queue) already in place.
   and drain logic (a full-chain SW teardown) is left for when a use case needs
   it; the mechanism is proven in `dv/act`.
 
-### F4 — Whole-chain formal — LARGELY DONE (activation FSM in progress)
+### F4 — Whole-chain formal — DONE
 - **Spec:** n/a (methodology).
 - **DONE — tooling blocker resolved.** The **yosys-slang** frontend (bundled in
   the pinned oss-cad-suite) reads the full SV the RTL uses (`module … import
@@ -271,20 +271,32 @@ in-order completion** (initiator request queue) already in place.
   Verific and no hand-abstraction are needed** — the original blocker is gone.
   Formal is now a **first-class gating tier**: `make regress` / `make ci` run it,
   with the pinned prover passed by absolute path (`SBY=$OSS/bin/sby`), `bmc`+`cover`
-  gating and `prove` best-effort. Proven so far:
+  gating and `prove` best-effort. Proven:
   - `formal/aou_flit*` — §4.3 byte-exact header map + §5.8 packing round-trip,
     checked against an independent Figure-5 transcription.
   - `formal/aou_credit*` — §6 credit invariants on the **real bridges**
     (`aou_axi_initiator_bridge` / `aou_axi_target_bridge`, fully adversarial peer):
     counters never exceed their ceilings; credit is spent only for the message
     type actually sent.
+  - `formal/aou_activation*` — the **§8 activation-FSM invariants**, with the
+    FSM driven by a fully adversarial peer (free 2000-bit RX flit) and free
+    `deact_trig`/`data_idle`/`err_clear` controls: never `ENABLED` before the
+    peer's `CrdtGrant` (proven both from the FSM's own flags *and* from an
+    independent link-level decode of the raw flit); no data-transfer enable
+    (`d_tx_ready`/`d_rx_valid`/`quiescing`) in a non-`ENABLED` state, and only
+    Misc Activation/CrdtGrant messages on the link while not `ENABLED`; only
+    legal Table-24 transitions, with `DEACTIVATE` entered solely from `ENABLED`
+    and solely on a peer `DeactivateReq` or with `data_idle` high (the F3
+    Option-2 gate); and `ERROR` sticky until `err_clear`, then always back to a
+    fully re-armed `DISABLED`. Covers: bring-up → `ENABLED`, credit seeding,
+    Option-2 quiescing, teardown → `DISABLED`, `ERROR` entry and recovery.
   - `formal/axi_lite_mem*` — the memory target (unchanged, stock `read_verilog`).
-- **REMAINING (in progress):** the **§8 activation-FSM invariants**
-  (`formal/aou_activation*`): never `ENABLED` before `CrdtGrant`; no data-transfer
-  enable in a non-`ENABLED` state; legal transitions + teardown / `ERROR`
-  recovery — same yosys-slang + `.sby` pattern.
-- **Verify:** `make formal` (all proofs, `bmc`+`cover` gate; `prove` best-effort).
-- **Effort:** small–medium; the tooling risk is gone.
+- **Verify:** `make formal` (all four proofs, `bmc`+`cover` gate; `prove`
+  best-effort — the activation proof also converges under unbounded k-induction).
+  All three AoU proofs are mutation-tested for non-vacuity.
+- **REMAINING:** only an end-to-end *datapath* proof (an AXI write reappearing in
+  memory through the 2000-bit flit path) is still simulation-only; the memory
+  target, packing map, flow control and interface state machine are all formal.
 
 ## Verification (how to check end-to-end)
 - `make test` — three cocotb/PyUVM tests PASS (fresh memory per test).

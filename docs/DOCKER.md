@@ -69,7 +69,12 @@ The build ends with a healthcheck that fails the image build if any of
 
 The formal tier **is** in the image and **does** run: `sby` is bundled in
 oss-cad-suite, so `make regress` / `make ci` in the container run the SymbiYosys
-proofs and fail on a broken one. Only the UVM flow (`make uvm`) is absent — it
+proofs and fail on a broken one. Four proofs gate: `axi_lite_mem` (the memory
+target), `aou_flit` (the §4.3 byte-exact header map + §5.8 packing), `aou_credit`
+(§6 credit flow on the real bridges) and `aou_activation` (the §8 interface
+activation FSM — never ENABLED before the peer's `CrdtGrant`, no data-transfer
+enable outside ENABLED, legal Table-24 transitions with the Option-2 `data_idle`
+teardown gate, and ERROR recovery). Only the UVM flow (`make uvm`) is absent — it
 needs a licensed simulator (VCS/Xcelium/Questa) and would only skip.
 
 ---

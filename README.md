@@ -95,7 +95,8 @@ out-of-order-by-ID completion).
 - `uvm/` — SystemVerilog UVM TB (multi-file + single-file), license-gated
 - `sim/` — Verilator C++ coverage harness
 - `formal/` — SymbiYosys proofs (`.sby` + property wrappers): `axi_lite_mem`, the
-  §4.3 flit protocol header, and §6 credit flow control on the real bridges
+  §4.3 flit protocol header, §6 credit flow control on the real bridges, and the
+  §8 interface activation FSM
 - `Dockerfile` / `docker/` / `railway.toml` — containerized DV gate (see [`docs/DOCKER.md`](docs/DOCKER.md))
 - `Makefile` — standard DV gate targets; `docs/PLAN.md` — the design plan
 
@@ -162,7 +163,7 @@ Everything runs from the repo root and degrades gracefully if a tool is absent.
 | Waves | `make waves` / `make wave` | dump / open GTKWave |
 | Lint | `make lint` | `iverilog -Wall` + Verilator RTL lint |
 | Coverage | `make coverage` | Verilator `--coverage` → `sim/coverage.info` (floor `COV_MIN`, default 85%; ~90–94% achieved) |
-| Formal | `make formal` | SymbiYosys proofs of `axi_lite_mem`, the §4.3 flit header and §6 credit flow (`bmc` + `cover` gate, unbounded `prove` best-effort); `SBY=<path>` for an out-of-PATH prover, skips cleanly if `sby` absent |
+| Formal | `make formal` | SymbiYosys proofs of `axi_lite_mem`, the §4.3 flit header, §6 credit flow and the §8 activation FSM (`bmc` + `cover` gate, unbounded `prove` best-effort); `SBY=<path>` for an out-of-PATH prover, skips cleanly if `sby` absent |
 | Gate | `make check` | lint + cocotb + SV(both sims) + pack + act + reorder + SystemC |
 | CI | `make ci` | `check` + coverage + formal as one pass/fail gate |
 | Container | `docker run --rm aou-dv` | the whole `make ci` gate in a reproducible image ([`docs/DOCKER.md`](docs/DOCKER.md)) |
@@ -357,20 +358,58 @@ These are the same properties and ceilings that `dv/sva/aou_credit_sva.sv` +
 because `yosys-slang` rejects concurrent SVA — the *wrapper* is adjusted, the
 property is not weakened.
 
+**`formal/aou_activation.sby`** — the §8 interface activation FSM
+(`formal/aou_activation_fv.sv` drives `rtl/aou_activation.sv` with *every*
+external input free: the 2000-bit RX flit and its valid, the link back-pressure,
+the bridge-side data path, and the three IMPLEMENTATION_DEFINED controls
+`deact_trig` / `data_idle` / `err_clear` — so the peer may inject any Misc
+message in any state and System Software may pull the deactivate flag
+mid-transaction):
+
+- **never ENABLED before CrdtGrant** — the FSM cannot reach the data-transfer
+  ENABLED state before the §6.4.2 `CrdtGrant` / §6.4.3 reset-credit exchange.
+  Proven at two independent levels: from the FSM's own `crdt_rcvd` / `aack_*`
+  bookkeeping, *and* from a link-level decoder in the formal top that re-derives
+  "a §5.6.2 CrdtGrant was accepted on this interface" straight from the raw flit
+  wire — that second one trusts no RTL internal at all;
+- **no premature data-transfer enable** — `d_tx_ready`, `d_rx_valid` and the
+  Option-2 `quiescing` qualifier are never asserted outside ENABLED, ERROR
+  transmits nothing, and while this module owns the link the flit it drives is
+  always a §5.6 Misc Activation/CrdtGrant message, never a data message. The gate
+  lives entirely inside `aou_activation`, so this is the tightest sound scope —
+  no bridge abstraction is needed;
+- **FSM safety / legal transitions** — the state register never holds an
+  out-of-Table-24 encoding, `enabled`/`act_disabled`/`error` agree with an
+  independent transcription of that encoding and are mutually exclusive, and
+  every state change is in the legal transition relation. DEACTIVATE is entered
+  **only** from ENABLED and **only** when either the peer's DeactivateReq is
+  being received or `data_idle` is high — so a SW `deact_trig` alone can never
+  tear the link down mid-transaction (the F3 Option-2 mechanism), and
+  `deact_pending` ⇔ `quiescing`;
+- **ERROR recovery (§8.3.3 / §8.4)** — ERROR is sticky until `err_clear` and
+  always returns to DISABLED with *every* handshake flag clear, so a
+  re-activation must redo the whole bring-up, CrdtGrant included;
+- **cover** — bring-up reaches ENABLED, a CrdtGrant pulses the credit seed,
+  Option-2 quiescing happens, teardown runs ENABLED → DEACTIVATE → DISABLED, and
+  the §8.3.3 ERROR state is both entered and recovered.
+
 Notes: the `axi_lite_mem` proof targets that module in isolation with a
 deliberately small address width (`.sby` reads with `-defer`; otherwise the
-64 KiB array bit-blasts and never elaborates). The two AoU proofs are read with
+64 KiB array bit-blasts and never elaborates). The three AoU proofs are read with
 the **`yosys-slang`** frontend bundled in oss-cad-suite (`plugin -i slang;
 read_slang`): the stock Yosys Verilog frontend cannot parse the
-`module <name> import aou_pkg::*;` header form the RTL uses, nor `bind`. Both
-new proofs were mutation-tested — swapping the FDId header bits, lowering a
-credit ceiling by one, and funding WriteData from the wrong counter each make
-`bmc` FAIL — so they are known to be non-vacuous.
+`module <name> import aou_pkg::*;` header form the RTL uses, nor `bind`. All
+three were mutation-tested — swapping the FDId header bits, lowering a credit
+ceiling by one, funding WriteData from the wrong counter, and negating either
+"ENABLED implies a CrdtGrant was received" or "`d_tx_ready` implies ENABLED"
+each make `bmc` FAIL — so they are known to be non-vacuous. The activation proof
+is small enough that unbounded `prove` (k-induction) also converges, not just
+bounded `bmc`.
 
 The end-to-end AoU *datapath* (address/data flowing all the way through the
 2000-bit flit path into memory and back) is still verified by simulation, not
-formally; the proofs above cover the memory target, the packing map, and the
-flow-control protocol.
+formally; the proofs above cover the memory target, the packing map, the
+flow-control protocol and the interface state machine.
 
 ### 8. Containerized gate (Docker / Railway)
 
@@ -433,9 +472,9 @@ AXI is accepted until the interface is `ENABLED`; transmit credits reset to zero
   transactions with in-order completion are **implemented**; genuine OOO has no
   natural source in the single-link / single-in-order-memory topology.)
 - **Whole-chain formal** — the proofs cover `axi_lite_mem`, the §4.3 flit header
-  map and §6 credit flow control on the real bridges; an end-to-end
-  *datapath* proof (an AXI write reappearing in memory through the 2000-bit
-  flit path) is still simulation-only.
+  map, §6 credit flow control on the real bridges and the §8 activation FSM; an
+  end-to-end *datapath* proof (an AXI write reappearing in memory through the
+  2000-bit flit path) is still simulation-only.
 
 ## Specs
 
