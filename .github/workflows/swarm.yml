@@ -6,7 +6,9 @@ name: DV swarm
 # docs/DOCKER.md ("DV finalization swarm").
 #
 # Requires repo/environment secrets:
-#   ANTHROPIC_API_KEY   (provider=anthropic)  Claude Console API key.
+#   ANTHROPIC_API_KEY   (provider=anthropic)  Claude Console API key (sk-ant-api…), OR
+#   CLAUDE_CODE_OAUTH_TOKEN  (provider=anthropic)  subscription token (sk-ant-oat…,
+#                       from `claude setup-token`) — set one of these two.
 #   KIMI_API_KEY        (provider=kimi)        Moonshot key for Kimi K3.
 #   SWARM_GITHUB_TOKEN  (optional) a token with contents:write + pull-requests:
 #                       write for the push/PR step; falls back to the built-in
@@ -104,6 +106,7 @@ jobs:
         env:
           AOU_MODEL_PROVIDER: ${{ inputs.provider }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.SWARM_GITHUB_TOKEN || github.token }}
           SWARM_MAX_PARALLEL: ${{ inputs.max_parallel }}

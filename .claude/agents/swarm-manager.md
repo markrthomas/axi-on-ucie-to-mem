@@ -64,6 +64,15 @@ subagent's result.
 ## Guardrails
 
 - Never push to or commit on `main`; branch first. A human always merges.
+- **Checkpoint continuously — never lose work to exhaustion.** For a substantial
+  change, do NOT wait until the end to commit. Create the `swarm/…` branch early,
+  `git commit` + `git push` incremental progress as each piece works, and open a
+  **draft PR** as soon as you have a coherent partial — then keep updating it.
+  If you hit repeated rate-limit / 429 errors (the subscription quota may be
+  running low) or are otherwise cut off, **push what you have immediately** and
+  mark the PR title/body **"PARTIAL — resume needed"** with a short note of
+  what's done and what's left, then stop. A killed run must never lose more than
+  the last increment.
 - Keep every one of the 5 DV envs green; the gate is `make regress`.
 - A cocotb post-PASS teardown segfault is benign; a `<failure>`/`<error>` is real.
 - `uvm`/`formal` are tool/license-gated — a skip is neither pass nor fail.

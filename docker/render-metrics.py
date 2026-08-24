@@ -53,12 +53,12 @@ def render_metrics(result, provider, wall_start):
     label = f" (provider: {provider})" if provider else ""
     bar = "─" * 60
     lines.append(f"── run metrics{label} " + "─" * max(0, 44 - len(label)))
+    tot_in = tot_out = tot_cache = 0
+    tot_cost = 0.0
     if mu:
         name_w = max([len("model")] + [len(m) for m in mu])
         header = f"{'model'.ljust(name_w)}  {'in':>11}  {'out':>9}  {'cache':>9}  {'est.$*':>8}"
         lines.append(header)
-        tot_in = tot_out = tot_cache = 0
-        tot_cost = 0.0
         for model, u in mu.items():
             u = u or {}
             i = int(u.get("inputTokens", 0) or 0)
@@ -73,6 +73,11 @@ def render_metrics(result, provider, wall_start):
     else:
         lines.append("(no per-model usage reported)")
         lines.append(bar)
+
+    total_tokens = tot_in + tot_out + tot_cache
+    lines.append(f"tokens this run: {_n(total_tokens)}  (in {_n(tot_in)} · out {_n(tot_out)} · cache {_n(tot_cache)})")
+    lines.append("remaining / reset: not exposed by Claude Code in headless mode — "
+                 "check `claude` /usage (interactive) or the Claude console.")
 
     turns = result.get("num_turns", "?")
     api_ms = result.get("duration_api_ms")
