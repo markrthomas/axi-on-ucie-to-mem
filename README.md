@@ -339,7 +339,9 @@ env + an `infra-agent`) that finalizes the work and opens a PR. Each agent is
 tier-matched to its job, the run can target Claude **or Kimi K3**
 (`AOU_MODEL_PROVIDER=kimi` — opt-in, off by default; mind the compliance/IP note
 in the docs), and per-model token/time metrics print at the end.
-Agents live in [`.claude/agents/`](.claude/agents/); see
+You can also hand the swarm a plan — fill in [`docs/SWARM_PLAN.md`](docs/SWARM_PLAN.md),
+set `status: ready`, push to `main`, and the **Plan swarm** workflow implements it
+and opens a PR. Agents live in [`.claude/agents/`](.claude/agents/); see
 [`docs/DOCKER.md`](docs/DOCKER.md).
 
 ## Scope & follow-ons
