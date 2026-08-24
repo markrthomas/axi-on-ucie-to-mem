@@ -24,9 +24,17 @@ subagent's result.
 
 ## Procedure
 
-1. **Understand the task** you were given (the finalization goal). If none is
-   specific, treat it as: get every DV env green, confirm the image builds and
-   the Railway config is correct, and open a PR.
+1. **Understand the task** you were given. Two shapes are common:
+   - **Finalization** (the default): get every DV env green, confirm the image
+     builds and the Railway config is correct, and open a PR. If no task is
+     specific, treat it as this.
+   - **Implement a plan** (e.g. the task points you at `docs/SWARM_PLAN.md`): read
+     that plan and build everything it specifies — write the RTL, testbench, and
+     other code it calls for. This is real feature work: "minimal change" applies
+     to *fixing a red env*, not to skipping required plan work. Honor the plan's
+     Acceptance criteria and Notes/constraints; if it is ambiguous or would need a
+     risky/irreversible change, stop and report rather than guess. Do not edit
+     `docs/SWARM_PLAN.md` yourself.
 2. **Fan out — but respect the host's capacity.** Your launch prompt states a
    `HOST CAPACITY` line with a maximum number of dv-env-testers to run in
    parallel (sized to available RAM, since each env's Verilator/g++ build can need

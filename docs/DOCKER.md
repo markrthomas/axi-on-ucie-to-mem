@@ -271,6 +271,36 @@ time from `GITHUB_TOKEN` + the repo slug so the manager can still push a PR.
 > commands, and pushes a branch on its own. Run it in a disposable container /
 > runner with a **scoped** token, and review the PR before merging.
 
+## Plan-driven swarm
+
+Beyond running the swarm by hand, you can hand it a **plan** and let it do the
+coding. The loop:
+
+1. Write the change into **`docs/SWARM_PLAN.md`** (Goal / Scope & files /
+   Acceptance / Notes) — ideally with a planning session that nails the
+   requirement down first.
+2. Set **`status: ready`** in its front-matter and **push it to `main`**.
+3. The **`Plan swarm`** workflow (`.github/workflows/plan-swarm.yml`) fires: it
+   runs the swarm with the "implement the plan" task
+   (`docker/swarm-plan-task.md`), the manager builds what the plan specifies, gets
+   `make regress` green (coverage ≥ 85%), and **opens a PR**.
+4. Review and merge that PR, then set `status` back to `draft` for the next cycle.
+
+Gating & safety:
+- Only a push that **changes `docs/SWARM_PLAN.md`** *and* has **`status: ready`**
+  triggers it — a `draft` plan is ignored. You can also run it on demand from the
+  Actions **Run workflow** button (which ignores status), with a `provider`
+  choice (`anthropic` / `kimi`).
+- The swarm **never commits to `main`** — it branches and opens a PR; a human
+  merges. It doesn't touch `docs/SWARM_PLAN.md`, so merging its code PR can't
+  re-fire the workflow.
+- It needs `secrets.ANTHROPIC_API_KEY` (or `KIMI_API_KEY` for the `kimi`
+  provider), shares the `dv-swarm` concurrency group so it never overlaps a manual
+  swarm, and prints/uploads the per-model run metrics.
+
+> This runs an autonomous coding agent on your plan and is API-metered. The
+> `status: ready` gate keeps hand-offs deliberate — always review the resulting PR.
+
 ## Model selection, providers & run metrics
 
 Every agent picks a model **tier** by alias (`opus` / `sonnet`), and a single

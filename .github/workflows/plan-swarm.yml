@@ -1,0 +1,158 @@
+name: Plan swarm
+
+# Plan-driven autonomous DV swarm.
+#
+# You (with your planning session) write docs/SWARM_PLAN.md, set `status: ready`
+# in its front-matter, and push it to `main`.  This workflow then runs the DV
+# swarm, which IMPLEMENTS the plan, gets `make regress` green, and opens a PR.
+# The swarm never commits to main — a human reviews and merges.  See
+# docs/DOCKER.md -> "Plan-driven swarm".
+#
+# Triggers:
+#   * push to main that changes docs/SWARM_PLAN.md AND has `status: ready`
+#   * manual "Run workflow" (runs regardless of status)
+#
+# Secrets:
+#   ANTHROPIC_API_KEY   (provider=anthropic)  Claude Console API key.
+#   KIMI_API_KEY        (provider=kimi)        Moonshot key for Kimi K3.
+#   SWARM_GITHUB_TOKEN  (optional) contents:write + pull-requests:write; falls
+#                       back to the built-in GITHUB_TOKEN (its PRs don't re-run CI).
+on:
+  push:
+    branches: [main]
+    paths: ["docs/SWARM_PLAN.md"]
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: "Model provider for the run"
+        required: false
+        default: "anthropic"
+        type: choice
+        options:
+          - anthropic
+          - kimi
+
+permissions:
+  contents: write
+  pull-requests: write
+
+# Share the swarm serialization group so a plan run and a manual DV swarm never
+# run at the same time.
+concurrency:
+  group: dv-swarm
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    outputs:
+      run: ${{ steps.check.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual dispatch — running the plan swarm." >> "$GITHUB_STEP_SUMMARY"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if head -n 20 docs/SWARM_PLAN.md | grep -qiE '^status:[[:space:]]*ready'; then
+            echo "docs/SWARM_PLAN.md is 'status: ready' — running the plan swarm." >> "$GITHUB_STEP_SUMMARY"
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "docs/SWARM_PLAN.md is not 'status: ready' — skipping (set status: ready to arm)." >> "$GITHUB_STEP_SUMMARY"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  swarm:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      OSS: ${{ github.workspace }}/oss-cad-suite
+      ICARUS_BIN_DIR: /usr/bin
+      VL_JOBS: "2"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0     # full history so the manager can branch/commit cleanly
+
+      - name: Install RTL tools (Icarus + SystemC)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends iverilog libsystemc-dev
+
+      - name: Cache oss-cad-suite (pinned Verilator)
+        id: cache-oss
+        uses: actions/cache@v4
+        with:
+          path: oss-cad-suite
+          key: oss-cad-suite-linux-x64-20260413
+
+      - name: Install oss-cad-suite (pinned Verilator)
+        if: steps.cache-oss.outputs.cache-hit != 'true'
+        run: |
+          curl -fL -o oss.tgz \
+            https://github.com/YosysHQ/oss-cad-suite-build/releases/download/2026-04-13/oss-cad-suite-linux-x64-20260413.tgz
+          tar xzf oss.tgz
+          rm oss.tgz
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install Python deps (cocotb + pyuvm)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install 'cocotb==1.9.2' 'pyuvm==4.0.1'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Tool versions
+        run: |
+          iverilog -V | head -1
+          "$OSS/bin/verilator" --version
+          node --version
+          claude --version
+          gh --version | head -1
+
+      - name: Run the plan swarm
+        env:
+          AOU_MODEL_PROVIDER: ${{ github.event.inputs.provider || 'anthropic' }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.SWARM_GITHUB_TOKEN || github.token }}
+          AOU_METRICS_JSON: ${{ github.workspace }}/last-run-metrics.json
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+        run: bash docker/swarm.sh "$(cat docker/swarm-plan-task.md)"
+
+      - name: Publish run metrics
+        if: always()
+        env:
+          AOU_MODEL_PROVIDER: ${{ github.event.inputs.provider || 'anthropic' }}
+        run: |
+          f="${{ github.workspace }}/last-run-metrics.json"
+          if [ -f "$f" ]; then
+            {
+              echo "### Plan swarm run metrics (provider: ${AOU_MODEL_PROVIDER:-anthropic})"
+              echo '```'
+              python3 docker/render-metrics.py --result-file "$f" --provider "${AOU_MODEL_PROVIDER:-anthropic}"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No metrics file was produced (the run may have failed before a result)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload run metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: plan-swarm-metrics
+          path: ${{ github.workspace }}/last-run-metrics.json
+          if-no-files-found: ignore
