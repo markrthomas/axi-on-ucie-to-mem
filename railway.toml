@@ -20,7 +20,11 @@ restartPolicyType = "NEVER"
 # `make ci` with the pinned Verilator args injected.  A Railway startCommand is
 # run via `sh -c`, which bypasses that wrapper and drops the overrides.
 
-# To run the gate on a schedule instead of on demand, uncomment and set a cron
-# expression (UTC).  Railway starts a fresh container per tick; it must exit for
-# the next tick to run — which this gate does.
-#   cronSchedule = "0 6 * * *"   # daily at 06:00 UTC
+# Run the gate on a schedule.  Railway cron is UTC and starts a fresh container
+# per tick; the container must exit before the next tick — which this gate does.
+#
+# 2:00 AM MST (Mountain Standard, UTC-7) = 09:00 UTC.
+# NOTE: Railway cron is fixed UTC and does NOT follow US daylight saving, so from
+# mid-Mar to early-Nov (MDT, UTC-6) 09:00 UTC lands at 3:00 AM local.  For 2:00 AM
+# *local year-round* you'd need to switch this to "0 8 * * *" during MDT.
+cronSchedule = "0 9 * * *"   # daily at 09:00 UTC = 02:00 MST
