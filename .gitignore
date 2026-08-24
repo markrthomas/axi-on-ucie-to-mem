@@ -43,3 +43,7 @@ uvm/vsim.wlf
 uvm/*.fsdb
 uvm/novas.*
 uvm/verdi*
+
+# Headless run metrics (per-model token/time summary)
+last-run-metrics.json
+docker/last-run-metrics.json

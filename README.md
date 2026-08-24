@@ -335,8 +335,11 @@ including why `python3-dev` and the `VL_JOBS` cap are required — are in
 The same image also runs **Claude Code headless** on top of the DV toolchain
 (`ANTHROPIC_API_KEY` injected at run time): `aou-dv agent "<task>"` for a single
 session, or `aou-dv swarm` for a manager-led swarm (one `dv-env-tester` per DV
-env + an `infra-agent`) that finalizes the work and opens a PR. Agents live in
-[`.claude/agents/`](.claude/agents/); see [`docs/DOCKER.md`](docs/DOCKER.md).
+env + an `infra-agent`) that finalizes the work and opens a PR. Each agent is
+tier-matched to its job, the run can target Claude **or Kimi K3**
+(`AOU_MODEL_PROVIDER=kimi`), and per-model token/time metrics print at the end.
+Agents live in [`.claude/agents/`](.claude/agents/); see
+[`docs/DOCKER.md`](docs/DOCKER.md).
 
 ## Scope & follow-ons
 

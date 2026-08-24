@@ -118,10 +118,13 @@ ENV ICARUS_BIN_DIR=/usr/bin
 # core) OOM-kills the compiler.  2 keeps peak memory bounded; lower to 1 on the
 # smallest instances, or raise it (or set VL_JOBS=0) where RAM is ample.
 ENV VL_JOBS=2
-COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
-COPY docker/agent.sh      /usr/local/bin/agent.sh
-COPY docker/swarm.sh      /usr/local/bin/swarm.sh
-RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/agent.sh /usr/local/bin/swarm.sh
+COPY docker/entrypoint.sh   /usr/local/bin/entrypoint.sh
+COPY docker/agent.sh        /usr/local/bin/agent.sh
+COPY docker/swarm.sh        /usr/local/bin/swarm.sh
+COPY docker/provider-env.sh /usr/local/bin/provider-env.sh
+COPY docker/render-metrics.py /usr/local/bin/render-metrics.py
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/agent.sh \
+             /usr/local/bin/swarm.sh /usr/local/bin/render-metrics.py
 
 # Fail fast if the toolchain didn't assemble correctly.
 RUN iverilog -V | head -1 \

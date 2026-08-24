@@ -10,6 +10,8 @@ strictly the build/deploy plumbing — you may edit these files and only these:
 
 - `Dockerfile`, `.dockerignore`
 - `docker/entrypoint.sh`, `docker/agent.sh`, `docker/swarm.sh`
+- `docker/provider-env.sh` (anthropic|kimi routing), `docker/render-metrics.py`
+  (per-model token/time metrics)
 - `railway.toml`
 - `.github/workflows/ci.yml`, `.github/workflows/swarm.yml`
 

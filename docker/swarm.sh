@@ -14,14 +14,24 @@
 #   4. the default task in docker/swarm-task.md
 #
 # Runtime inputs:
-#   ANTHROPIC_API_KEY   (required) Console API key.
+#   AOU_MODEL_PROVIDER  "anthropic" (default, needs ANTHROPIC_API_KEY) or "kimi"
+#                       (whole swarm on Kimi K3 via Moonshot, needs KIMI_API_KEY).
+#                       See docker/provider-env.sh.
 #   GITHUB_TOKEN        (for commit+PR) a token with repo/PR scope; without it
 #                       the swarm still edits & tests but cannot push/open a PR.
 #   GIT_AUTHOR_NAME / GIT_AUTHOR_EMAIL   commit identity (sensible defaults).
 #   SWARM_PERMISSION_MODE   default "acceptEdits".
 #   SWARM_ALLOWED_TOOLS     default "Bash,Read,Edit,Write,Grep,Glob,Task,Agent".
-#   CLAUDE_OUTPUT_FORMAT    default "text".
+#   AOU_METRICS / AOU_METRICS_JSON   per-model token/time metrics at end of run
+#                       (set AOU_METRICS=0 to disable); see render-metrics.py.
 set -euo pipefail
+
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=docker/provider-env.sh
+. "$SELF_DIR/provider-env.sh"
+# Resolve the provider (anthropic|kimi) up front: sets auth + Kimi alias remaps
+# and fails fast if the selected provider's key is missing — before any cloning.
+aou_resolve_provider || exit $?
 
 # Resolve the repo to work in.  On a git checkout (a CI runner, a dev box) use it
 # directly.  The container image ships code WITHOUT .git (see .dockerignore), so
@@ -52,10 +62,6 @@ if [ -z "$task" ]; then
   echo "swarm: no task (pass an arg, set \$SWARM_TASK, pipe stdin, or ship docker/swarm-task.md)" >&2
   exit 2
 fi
-if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-  echo "swarm: ANTHROPIC_API_KEY is not set — Claude Code cannot authenticate." >&2
-  exit 3
-fi
 
 # Commit identity + GitHub auth so the manager can push a branch and open a PR.
 git config --global user.name  "${GIT_AUTHOR_NAME:-aou-dv swarm}"
@@ -81,13 +87,40 @@ if [ -z "${SWARM_MAX_PARALLEL:-}" ]; then
 fi
 echo "swarm: ~${avail_mb} MB available, VL_JOBS=${VL_JOBS:-2} -> at most ${SWARM_MAX_PARALLEL} dv-env-tester(s) in parallel." >&2
 
-exec claude -p "You are the swarm manager. Use the swarm-manager subagent to carry out the task below, following its documented procedure, then print its final report verbatim.
+prompt="You are the swarm manager. Use the swarm-manager subagent to carry out the task below, following its documented procedure, then print its final report verbatim.
 
 HOST CAPACITY: ~${avail_mb} MB memory available.  Dispatch AT MOST ${SWARM_MAX_PARALLEL} dv-env-tester subagent(s) in parallel — run the six DV environments in batches of that size, never all six at once.  If a Verilator/g++ compile is OOM-killed (\"Killed … cc1plus\"), re-run that environment with VL_JOBS=1.
 
 TASK:
-$task" \
-  --permission-mode "${SWARM_PERMISSION_MODE:-acceptEdits}" \
-  --allowedTools "${SWARM_ALLOWED_TOOLS:-Bash,Read,Edit,Write,Grep,Glob,Task,Agent}" \
-  --output-format "${CLAUDE_OUTPUT_FORMAT:-text}" \
-  "$@"
+$task"
+
+perm="${SWARM_PERMISSION_MODE:-acceptEdits}"
+tools="${SWARM_ALLOWED_TOOLS:-Bash,Read,Edit,Write,Grep,Glob,Task,Agent}"
+
+# Fast path: metrics disabled -> original behavior.
+if [ "${AOU_METRICS:-1}" = "0" ]; then
+  exec claude -p "$prompt" \
+    --permission-mode "$perm" \
+    --allowedTools "$tools" \
+    --output-format "${CLAUDE_OUTPUT_FORMAT:-text}" \
+    "$@"
+fi
+
+# Metrics path: run in stream-json and let render-metrics.py print the manager's
+# report on stdout and the per-model token/time summary on stderr, and archive
+# the raw result JSON for CI.
+metrics_json="${AOU_METRICS_JSON:-$ROOT/docker/last-run-metrics.json}"
+start="$(date +%s)"
+set +e
+claude -p "$prompt" \
+  --permission-mode "$perm" \
+  --allowedTools "$tools" \
+  --output-format stream-json --verbose \
+  "$@" \
+  | python3 "$SELF_DIR/render-metrics.py" \
+      --emit text --provider "$AOU_PROVIDER" \
+      --json-out "$metrics_json" --wall-start "$start"
+rc_claude=${PIPESTATUS[0]}; rc_render=${PIPESTATUS[1]}
+set -e
+[ "$rc_claude" -ne 0 ] && exit "$rc_claude"
+exit "$rc_render"

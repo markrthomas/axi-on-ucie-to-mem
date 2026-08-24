@@ -6,7 +6,8 @@ name: DV swarm
 # docs/DOCKER.md ("DV finalization swarm").
 #
 # Requires repo/environment secrets:
-#   ANTHROPIC_API_KEY   (always)   Claude Console API key.
+#   ANTHROPIC_API_KEY   (provider=anthropic)  Claude Console API key.
+#   KIMI_API_KEY        (provider=kimi)        Moonshot key for Kimi K3.
 #   SWARM_GITHUB_TOKEN  (optional) a token with contents:write + pull-requests:
 #                       write for the push/PR step; falls back to the built-in
 #                       GITHUB_TOKEN (note: PRs it opens do NOT trigger CI).
@@ -21,6 +22,14 @@ on:
         description: "Max DV envs to test in parallel (blank = auto-size to RAM)"
         required: false
         default: ""
+      provider:
+        description: "Model provider for the run"
+        required: false
+        default: "anthropic"
+        type: choice
+        options:
+          - anthropic
+          - kimi
 
 # The swarm branches, commits, pushes, and opens a PR.
 permissions:
@@ -93,8 +102,36 @@ jobs:
 
       - name: Run the DV swarm
         env:
+          AOU_MODEL_PROVIDER: ${{ inputs.provider }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.SWARM_GITHUB_TOKEN || github.token }}
           SWARM_MAX_PARALLEL: ${{ inputs.max_parallel }}
+          AOU_METRICS_JSON: ${{ github.workspace }}/last-run-metrics.json
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
         run: bash docker/swarm.sh "${{ inputs.task }}"
+
+      - name: Publish run metrics
+        if: always()
+        env:
+          AOU_MODEL_PROVIDER: ${{ inputs.provider }}
+        run: |
+          f="${{ github.workspace }}/last-run-metrics.json"
+          if [ -f "$f" ]; then
+            {
+              echo "### DV swarm run metrics (provider: ${AOU_MODEL_PROVIDER:-anthropic})"
+              echo '```'
+              python3 docker/render-metrics.py --result-file "$f" --provider "${AOU_MODEL_PROVIDER:-anthropic}"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No metrics file was produced (the run may have failed before a result)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload run metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dv-swarm-metrics
+          path: ${{ github.workspace }}/last-run-metrics.json
+          if-no-files-found: ignore

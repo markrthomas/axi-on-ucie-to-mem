@@ -186,6 +186,10 @@ Trailing arguments after the task pass straight through to `claude`, and
 `CLAUDE_OUTPUT_FORMAT` (`text` default, or `json` / `stream-json`) selects the
 output shape for programmatic callers.
 
+The agent can also run on **Kimi K3** (`AOU_MODEL_PROVIDER=kimi` + `KIMI_API_KEY`)
+and prints a per-model token/time **metrics block** at the end of the run — see
+[Model selection, providers & run metrics](#model-selection-providers--run-metrics).
+
 > A headless agent with `acceptEdits`/broad `--allowedTools` can run shell
 > commands and edit files in the container unattended — scope the tools and the
 > container's mounts/network to what the task actually needs.
@@ -202,6 +206,11 @@ swarm-manager (opus)                        # the manager — the top-level sess
  ├─ dv-env-tester (sonnet)  × cocotb, sv, pack, act, reorder, systemc  (parallel)
  └─ infra-agent   (sonnet)  # Dockerfile / entrypoint / railway.toml / CI
 ```
+
+> The `opus` / `sonnet` labels are model **tiers**, not fixed models. The active
+> provider maps them to concrete models — Claude by default, or **Kimi K3** — and
+> the runner prints per-model token/time metrics at the end. See
+> [Model selection, providers & run metrics](#model-selection-providers--run-metrics).
 
 The manager dispatches one **`dv-env-tester`** per DV environment (each runs that
 env and reports pass/fail + a file:line finding — read-only) and the
@@ -259,6 +268,94 @@ time from `GITHUB_TOKEN` + the repo slug so the manager can still push a PR.
 > commands, and pushes a branch on its own. Run it in a disposable container /
 > runner with a **scoped** token, and review the PR before merging.
 
+## Model selection, providers & run metrics
+
+Every agent picks a model **tier** by alias (`opus` / `sonnet`), and a single
+knob — **`AOU_MODEL_PROVIDER`** — decides which vendor's models those aliases
+resolve to for the whole run. Both `agent` and `swarm` honor it.
+
+### Right model for the job
+
+| Agent | Job | Tier | Claude (default) | Kimi (`AOU_MODEL_PROVIDER=kimi`) |
+|-------|-----|------|------------------|----------------------------------|
+| `swarm-manager` | orchestrate, triage, fix, land the PR | `opus` | `opus` | `kimi-k3` |
+| `dv-runner` | run all DV envs + code review | `opus` | `opus` | `kimi-k3` |
+| `infra-agent` | edit Dockerfile / CI / scripts | `sonnet` | `sonnet` | `kimi-k2.7-code` |
+| `dv-env-tester` | run ONE env read-only + focused review | `sonnet` | `sonnet` | `kimi-k2.7-code-highspeed` |
+
+The heavy reasoning (the manager, the whole-suite `dv-runner`) gets the top tier;
+the mechanical read-only per-env testers and the scoped infra editor get the mid
+tier. Because the agents reference **aliases**, switching provider needs **no edit
+to any agent** — only the alias→model map changes.
+
+### Providers
+
+- **`anthropic`** (default) — today's behavior. Needs **`ANTHROPIC_API_KEY`**.
+- **`kimi`** — routes Claude Code at Moonshot's Anthropic-compatible endpoint
+  (`https://api.moonshot.ai/anthropic`). Needs **`KIMI_API_KEY`** (a Moonshot
+  key). The runner exports `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` and the
+  alias remaps `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` for you (and unsets
+  `ANTHROPIC_API_KEY` so it can't shadow the Moonshot endpoint).
+  [Kimi K3](https://platform.kimi.ai/docs/guide/claude-code-kimi) is Moonshot's
+  1M-context coding model; it speaks the Anthropic Messages API, so no code
+  change is needed.
+
+```bash
+# run the swarm on Kimi K3 instead of Claude
+docker run --rm \
+  -e AOU_MODEL_PROVIDER=kimi -e KIMI_API_KEY=sk-… \
+  -e GITHUB_TOKEN=ghp_… -e SWARM_REPO=owner/repo \
+  aou-dv swarm
+```
+
+Override any Kimi model with `KIMI_OPUS_MODEL` / `KIMI_SONNET_MODEL` /
+`KIMI_HAIKU_MODEL` (defaults `kimi-k3` / `kimi-k2.7-code` /
+`kimi-k2.7-code-highspeed`).
+
+**Why run on Kimi?** cost, provider independence, or cross-checking that the DV
+gate passes under a *second*, independent model — not just Claude.
+
+> **One provider per run.** Claude Code's provider (base URL + auth) is
+> **process-wide**, so a single run cannot put the manager on Claude Opus and a
+> tester on Kimi K3 at the same time — `AOU_MODEL_PROVIDER` swaps the engine for
+> the *entire* run; the per-agent aliases only choose the tier within it. To
+> compare the two vendors, run the swarm twice (once each) and diff the metrics.
+
+### Run metrics
+
+At the end of every `agent` / `swarm` run the runner prints a **per-model metrics
+block** and writes the raw result JSON to `docker/last-run-metrics.json`
+(override with `AOU_METRICS_JSON`; disable the block with `AOU_METRICS=0`). It is
+derived from Claude Code's `--output-format json` result (`modelUsage` +
+`duration_*` + `num_turns`):
+
+```
+── run metrics (provider: kimi) ─────────────────────────────
+model                          in      out    cache    est.$*
+kimi-k3                    184,203   12,904   96,010   —
+kimi-k2.7-code-highspeed    52,110    8,431   40,006   —
+────────────────────────────────────────────────────────────
+turns 37 · API time 214.8s · wall 631s · est. cost $— *
+* cost is a client-side estimate from Anthropic's price table
+  and is unreliable for non-Anthropic (Kimi) models.
+```
+
+- **Per-model token use is exact and includes subagents** — it comes from the
+  result's `modelUsage` map. (The top-level `usage` field undercounts once
+  subagents run, so it is deliberately *not* used.)
+- **Per-model wall time is not reported by Claude Code** — only whole-run
+  `duration_ms` / `duration_api_ms` / `num_turns`. The block shows total API
+  time, total turns, and the runner's own wall-clock; it does **not** invent a
+  per-model time split.
+- **Cost is an estimate** — client-side, from a bundled Anthropic price table.
+  Fine as a rough Claude figure; meaningless for Kimi (shown as `—`). Use each
+  vendor's usage dashboard for authoritative billing.
+
+In GitHub Actions the **`DV swarm`** workflow uploads `last-run-metrics.json` as a
+build artifact and prints the same table to the job summary.
+
+---
+
 ## Deploying on Railway — a how-to
 
 This project is a **hardware DV suite, not a web service** — the container has no
@@ -285,8 +382,8 @@ Verilator args. Leave `startCommand` empty and change the image args instead.
 | Run mode | Image args | Needs |
 |----------|-----------|-------|
 | DV gate (default) | *(none)* | — |
-| Headless agent | `agent "<task>"` | `ANTHROPIC_API_KEY` |
-| Finalization swarm | `swarm` | `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `SWARM_REPO` |
+| Headless agent | `agent "<task>"` | `ANTHROPIC_API_KEY` (or `KIMI_API_KEY` when `AOU_MODEL_PROVIDER=kimi`) |
+| Finalization swarm | `swarm` | `ANTHROPIC_API_KEY` (or `KIMI_API_KEY`), `GITHUB_TOKEN`, `SWARM_REPO` |
 
 ### Step 3 — set the variables (API keys & secrets)
 
@@ -296,11 +393,14 @@ the runtime environment; nothing is baked in.
 
 | Variable | Mode | Required? | Notes |
 |----------|------|-----------|-------|
-| `ANTHROPIC_API_KEY` | agent, swarm | **required** | A key from the [Claude Console](https://platform.claude.com). Under `-p` this key is always used. |
+| `ANTHROPIC_API_KEY` | agent, swarm | **required in `anthropic` mode** (default) | A key from the [Claude Console](https://platform.claude.com). Under `-p` this key is always used. |
+| `AOU_MODEL_PROVIDER` | agent, swarm | optional | `anthropic` (default) or `kimi` — selects which vendor the model aliases resolve to. |
+| `KIMI_API_KEY` | agent, swarm | **required in `kimi` mode** | A [Moonshot](https://platform.kimi.ai) key; used as `ANTHROPIC_AUTH_TOKEN` against `https://api.moonshot.ai/anthropic`. Same secret discipline as `ANTHROPIC_API_KEY` — inject at run time, never bake. |
 | `GITHUB_TOKEN` | swarm | **required to open a PR** | A **fine-grained PAT** scoped to *this repo* with **Contents: write + Pull requests: write** (or a GitHub App token). Without it the swarm edits & tests but stops before pushing. |
 | `SWARM_REPO` | swarm | **required on Railway** | `owner/repo`, e.g. `markrthomas/axi-on-ucie-to-mem`. The image has no `.git`, so `swarm.sh` clones the repo at run time to make its PR — and unlike GitHub Actions, Railway does **not** set `GITHUB_REPOSITORY`, so you must provide this. |
 | `VL_JOBS` | any | optional | Verilator build parallelism; image default `2`. Set **`1`** on the smallest instances if a compile OOMs. |
 | `SWARM_MAX_PARALLEL` | swarm | optional | Max DV envs tested at once; auto-sized to RAM if unset. |
+| `AOU_METRICS_JSON` | agent, swarm | optional | Path for the raw run-metrics JSON (default `docker/last-run-metrics.json`); `AOU_METRICS=0` disables the metrics block. |
 | `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` | swarm | optional | Commit identity for the swarm's branch. |
 
 ### Step 4 — run it, and (optionally) schedule it
@@ -325,6 +425,10 @@ is possible but means autonomous unattended PRs — do so deliberately.)
   still merges.** Treat every run as a disposable container.
 - **`SWARM_REPO` is the #1 Railway gotcha** — without it the swarm can edit &
   test but cannot clone/push, so it can't open a PR.
+- **Pick the provider deliberately.** `AOU_MODEL_PROVIDER=kimi` runs the *entire*
+  swarm on Kimi K3 (one provider per run) and needs `KIMI_API_KEY`, not
+  `ANTHROPIC_API_KEY`. The metrics block's dollar figure is an Anthropic-price
+  estimate and is **meaningless for Kimi** — trust the token counts there.
 - **Build memory.** The SystemC model compile is the memory peak; if a build OOMs
   (`Killed … cc1plus`), set `VL_JOBS=1` or use a larger build instance.
 - **Right-size the instance.** The gate needs enough RAM for the Verilator
