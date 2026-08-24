@@ -13,3 +13,4 @@ oss-cad-suite
 sim/coverage.*
 sim/*.dat
 docs/*.pdf
+**/last-run-metrics.json
