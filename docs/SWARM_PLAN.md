@@ -1,92 +1,75 @@
 ---
-status: draft
+status: ready
 ---
 
 # Swarm implementation plan
 
 <!--
-  status: draft  = ignored.   status: ready = the Plan swarm implements this on a
+  status: draft = ignored. status: ready = the Plan swarm implements this on a
   push to main (.github/workflows/plan-swarm.yml). Review the resulting PR, then
   set status back to draft. See docs/DOCKER.md -> "Plan-driven swarm".
 -->
 
 ## Goal
 
-Turn on **open-source formal verification** as a first-class, gating DV tier.
-SymbiYosys (`sby`) + yosys + SMT solvers are already bundled inside the
-oss-cad-suite the image installs for Verilator, and real proofs already exist
-under `formal/` — but `make formal` **silently skips** because `sby` is off
-`PATH`, and `formal` is not part of `check`/`regress`. Make the existing proofs
-actually run and block on failure, then **extend formal coverage to the
-AoU-specific properties** (the §4.3 byte-exact flit header and the §6 credit flow)
-that today are only simulated, never proven.
+Complete **F4 — whole-chain formal** (`docs/PLAN.md`). The formal tier now proves
+the §4.3 flit header (`formal/aou_flit*`) and the §6 credit flow on the real
+bridges (`formal/aou_credit*`), using the bundled **yosys-slang** frontend. The
+one piece left is the **§8 activation FSM invariants**. Add formal proofs of them
+so whole-chain formal covers flit + credit + activation, and mark F4 done.
 
 ## Scope & files
 
-1. **`Makefile`**
-   - Add an overridable `SBY ?= sby` variable and use `$(SBY)` in the `formal`
-     target instead of a bare `sby`. Keep a graceful skip only when `SBY` truly
-     resolves to nothing; when a path is provided it must run (no silent skip).
-   - Run all three tasks (`bmc`, `prove`, `cover`) and fail the target if any
-     assertion fails or a required cover is unreachable. `prove` (k-induction) may
-     stay best-effort if it doesn't converge at the current depth — but `bmc` and
-     `cover` must pass and gate.
-   - Add `formal` to the `regress` gate (and a `help`/`.PHONY` entry to match
-     style). It's fine to keep it out of the lighter `check` if runtime is a
-     concern — pick whichever keeps `regress` the single signoff gate.
+1. **New `formal/aou_activation_fv.sv` + `formal/aou_activation.sby`** — a formal
+   harness over `rtl/aou_activation.sv` (mirror `aou_credit_fv.sv` / `.sby`:
+   `plugin -i slang; read_slang`, bmc+cover gating, prove best-effort). Prove the
+   activation-FSM safety invariants:
+   - **Never ENABLED before CrdtGrant.** The FSM cannot reach the data-transfer
+     ENABLED state before the §6.4.2 `CrdtGrant` / §6.4.3 reset-credit exchange it
+     depends on — i.e. the enable/"credits ready" gate must have occurred.
+   - **No premature data-transfer enable.** The signal the bridges use to allow a
+     data/message flit (the ENABLED/`quiescing` gating out of `aou_activation`) is
+     never asserted in a non-ENABLED state. Prove it at the tightest sound scope —
+     FSM-level if the gate lives in `aou_activation`; otherwise a small bridge
+     abstraction.
+   - **FSM safety / legal transitions.** No illegal state transition; teardown
+     enters DEACTIVATE only from ENABLED and (per the F3 Option-2 mechanism) only
+     once `data_idle`/quiescing allow it; `deact_pending`→`quiescing` holds;
+     `ERROR` recovery is reachable and returns to a defined state.
+   - **Cover traces:** bring-up reaches ENABLED; teardown reaches DISABLED;
+     ERROR-recovery path is reachable.
 
-2. **`docker/entrypoint.sh`** — inject `SBY=$OSS/bin/sby` alongside the existing
-   pinned-Verilator make args, so `make formal` / `make regress` in the image use
-   the bundled prover (oss-cad-suite stays OFF `PATH`; pass it by absolute path,
-   exactly like the `VERILATOR` triplet).
+2. **`Makefile`** — add `formal/aou_activation.sby` to the `FORMAL_SBY` list so
+   `make formal` / `regress` runs it (gating). No `ci.yml` change is needed — CI
+   already runs `make ci` with `SBY=$OSS/bin/sby`.
 
-3. **`.github/workflows/ci.yml`** — add a formal step/job that runs
-   `make formal SBY="$OSS/bin/sby"` (bmc + prove + cover) and blocks on failure,
-   reusing the oss-cad-suite the workflow already installs. Keep proof depths
-   bounded so CI runtime stays reasonable.
+3. **Reuse existing properties** where one already exists; otherwise restate the
+   invariant as immediate assertions in the wrapper (as `aou_credit_fv.sv` did for
+   the SVA it couldn't `bind`) — **never weaken a property**.
 
-4. **`formal/` — new AoU proofs.** Add formal wrappers + `.sby` for the AoU
-   properties, mirroring the existing `axi_lite_mem` structure:
-   - **Flit header (§4.3):** prove the byte-exact map — reconstruct the Figure-5
-     header bytes and prove they equal `flit_get_byte(...)` for arbitrary field
-     inputs, and that pack→unpack round-trips (`flit_fdid`/`flit_msgstart`/
-     `flit_credit` recover what was packed). Reuse `dv/sva/aou_flit_sva.sv` via a
-     bound formal top where practical.
-   - **Credit flow (§6):** prove the invariants — credits never go negative, never
-     exceed their configured max (no overflow on replenish), and gating holds
-     (no send when the relevant credit is zero). Reuse `dv/sva/aou_credit_sva.sv`.
-
-5. **Docs** — correct `docs/DOCKER.md` (the "formal … would only skip" claim is
-   now wrong: `sby` ships in the image) and document the formal tier + the `SBY`
-   knob next to the `VL_JOBS`/Verilator-args explanation. Update the README
-   verification table with a Formal row. Optionally add `sby --version` to the
-   Dockerfile healthcheck.
+4. **Docs** — `docs/PLAN.md`: mark **F4 DONE** (tooling unblocked by yosys-slang;
+   flit + credit + activation all proven). `README.md` verification/formal list
+   and `docs/DOCKER.md` formal section: add the activation proof so the formal
+   tier's coverage reads flit + credit + activation.
 
 ## Acceptance
 
-- `make formal SBY="$OSS/bin/sby"` runs bmc/prove/cover and **passes** (all
-  asserts hold to depth; required covers reachable) for the existing
-  `axi_lite_mem` proof.
-- The **new AoU flit and credit formal proofs pass** (bmc + cover at minimum).
-- `make regress` includes formal and ends `[REGRESS] … PASSED` with coverage
-  ≥ 85% — no existing sim environment regresses.
-- CI has a **formal job/step that is green and blocks on failure**.
-- Docs corrected; README Formal row added.
+- `make formal SBY="$OSS/bin/sby"` runs **all** `.sby` (now including
+  `aou_activation`) with **bmc + cover PASS**; covers reachable.
+- The new activation invariants are **proven** (bmc), not skipped.
+- `make regress` ends `[REGRESS] … + formal PASSED` with coverage ≥ 85% — no
+  existing DV env regresses.
+- The CI formal step stays green.
+- Docs updated; `docs/PLAN.md` F4 marked complete.
 
 ## Notes / constraints
 
-- `sby` lives at `$OSS/bin/sby`; oss-cad-suite must stay OFF `PATH` (its bundled
-  `iverilog` would shadow the apt one the cocotb VPI links against) — pass `SBY`
-  by absolute path, the same pattern as `VERILATOR`/`VERILATOR_ROOT`.
-- **yosys SV-frontend limits are a real risk.** If yosys can't ingest a property
-  or package construct, adjust the *formal wrapper* (a thin FV top / `read -sv`
-  tweaks / a small combinational restatement of the check) — **do not weaken the
-  RTL or the assertion** to force a pass. If a genuine property can't be proven
-  (too deep, or a real design bug), **STOP and report it** in the PR rather than
-  deleting/relaxing the assertion.
-- Keep proof depths bounded for CI runtime (start from the existing `depth 24` /
-  cover `depth 32`); raise only if needed for a specific property.
-- Formal is **additive** — it must not change RTL behavior or break the existing
-  cocotb / SV / Verilator / pack / act / reorder / SystemC envs.
+- Use the **yosys-slang** pattern from `formal/aou_credit.sby`
+  (`plugin -i slang`, `read_slang`, RTL uses `module … import aou_pkg::*;`).
+- Keep proof depths bounded — the activation FSM is small, so bmc should be cheap.
+- **Additive only** — do NOT change RTL behavior. If a property exposes a real
+  RTL bug, or a genuine invariant can't be proven (too deep / a real
+  counterexample), **STOP and report it** in the PR rather than weakening the
+  assertion or "fixing" the RTL to force green.
 - Follow repo conventions (pinned-tool absolute paths, one clean commit, the
-  Co-Authored-By trailer). Never commit on `main`; open a PR.
+  Co-Authored-By trailer). Never commit on `main`; branch and open a PR.

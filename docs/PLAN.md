@@ -160,7 +160,7 @@ AXI-Lite protocol property set. Flagged optional, not part of the core five.
 2. Icarus SV TB + Verilator SV TB + SVA + Verilator coverage harness. Push.
 3. SystemC (`verilator --sc`) env. Push.
 4. UVM mirror (license-gated) + single-file variant. Push.
-5. README + CI polish; final push. (Formal = optional follow-on.)
+5. README + CI polish; final push. (Formal is now a landed, gating tier — see F4.)
 
 Resource planes and multi-message QoS are explicitly **out of scope for this
 pass** (documented as future phases in the README).  (UPDATE: §6 credit flow
@@ -169,9 +169,11 @@ control, byte-exact §4.3/§5.8 packing, the full §8 activation FSM — bring-u
 `ERROR` recovery — **AXI4 INCR/WRAP/FIXED bursts** (`AxLEN`/`AxSIZE`/burst type
 in FLEX[1:0], per-beat target expansion, `{B,R}ID` echo), and
 **multiple-outstanding transactions with in-order completion** (initiator request
-queue), and **Deactivate quiescing Option 2** (§8.3.2 hardware-managed) have all
-since been implemented.  Only the wide-data / true out-of-order-by-ID parts of F2
-remain future.)
+queue), **Deactivate quiescing Option 2** (§8.3.2 hardware-managed), **wide data
+(512/1024b)**, the **out-of-order-by-ID reorder block**, and a **formal-verification
+tier** (yosys-slang; flit + credit proofs, activation in progress) have all since
+been implemented.  Only F1 (multiple resource planes) and the full-datapath OOO
+integration part of F2 remain.)
 
 ## Remaining follow-ons (actionable backlog)
 
@@ -261,22 +263,28 @@ in-order completion** (initiator request queue) already in place.
   and drain logic (a full-chain SW teardown) is left for when a use case needs
   it; the mechanism is proven in `dv/act`.
 
-### F4 — Whole-chain formal
-- **Spec:** n/a (methodology). Current `formal/axi_lite_mem.sby` proves the
-  memory target only.
-- **Touch:** `formal/` (new `.sby` + properties), reuse `dv/sva/*` bound checkers
-  as the property source.
-- **Approach:** the bridge/flit path needs a SystemVerilog front end that Yosys's
-  built-in reader can't fully handle (packed structs, functions in `always_comb`).
-  Options: (a) a Verific-based front end (Tabby CAD / commercial), or (b)
-  hand-abstract the flit packing into bit-blasted helpers Yosys can read. Start
-  with bounded (`bmc`) proofs of the credit-counter and activation-FSM invariants
-  (no counter overflow; never `ENABLED` before `CrdtGrant`; never a data flit
-  while a peer is not `ENABLED`).
-- **Verify:** `make formal TASK=bmc` extended to the bridges; `prove` for the
-  FSM/credit invariants if the front end supports it.
-- **Effort:** medium, but **blocked on tooling** (no Verific in the local
-  oss-cad-suite) unless the hand-abstraction route is taken.
+### F4 — Whole-chain formal — LARGELY DONE (activation FSM in progress)
+- **Spec:** n/a (methodology).
+- **DONE — tooling blocker resolved.** The **yosys-slang** frontend (bundled in
+  the pinned oss-cad-suite) reads the full SV the RTL uses (`module … import
+  aou_pkg::*;`, packed structs, functions in `always_comb`, `bind`), so **no
+  Verific and no hand-abstraction are needed** — the original blocker is gone.
+  Formal is now a **first-class gating tier**: `make regress` / `make ci` run it,
+  with the pinned prover passed by absolute path (`SBY=$OSS/bin/sby`), `bmc`+`cover`
+  gating and `prove` best-effort. Proven so far:
+  - `formal/aou_flit*` — §4.3 byte-exact header map + §5.8 packing round-trip,
+    checked against an independent Figure-5 transcription.
+  - `formal/aou_credit*` — §6 credit invariants on the **real bridges**
+    (`aou_axi_initiator_bridge` / `aou_axi_target_bridge`, fully adversarial peer):
+    counters never exceed their ceilings; credit is spent only for the message
+    type actually sent.
+  - `formal/axi_lite_mem*` — the memory target (unchanged, stock `read_verilog`).
+- **REMAINING (in progress):** the **§8 activation-FSM invariants**
+  (`formal/aou_activation*`): never `ENABLED` before `CrdtGrant`; no data-transfer
+  enable in a non-`ENABLED` state; legal transitions + teardown / `ERROR`
+  recovery — same yosys-slang + `.sby` pattern.
+- **Verify:** `make formal` (all proofs, `bmc`+`cover` gate; `prove` best-effort).
+- **Effort:** small–medium; the tooling risk is gone.
 
 ## Verification (how to check end-to-end)
 - `make test` — three cocotb/PyUVM tests PASS (fresh memory per test).
