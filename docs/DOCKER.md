@@ -202,9 +202,9 @@ is defined by three agents in `.claude/agents/` (baked into the image) plus
 `docker/swarm.sh` and the default task in `docker/swarm-task.md`.
 
 ```
-swarm-manager (opus)                        # the manager — the top-level session
- ├─ dv-env-tester (sonnet)  × cocotb, sv, pack, act, reorder, systemc  (parallel)
- └─ infra-agent   (sonnet)  # Dockerfile / entrypoint / railway.toml / CI
+swarm-manager (opus → claude-opus-5)        # the manager — the top-level session
+ ├─ dv-env-tester (haiku → claude-haiku-4-5)  × cocotb, sv, pack, act, reorder, systemc  (parallel)
+ └─ infra-agent   (sonnet → claude-sonnet-5)  # Dockerfile / entrypoint / railway.toml / CI
 ```
 
 > The `opus` / `sonnet` labels are model **tiers**, not fixed models. The active
@@ -281,15 +281,31 @@ resolve to for the whole run. Both `agent` and `swarm` honor it.
 
 | Agent | Job | Tier | Claude (default) | Kimi (`AOU_MODEL_PROVIDER=kimi`) |
 |-------|-----|------|------------------|----------------------------------|
-| `swarm-manager` | orchestrate, triage, fix, land the PR | `opus` | `opus` | `kimi-k3` |
-| `dv-runner` | run all DV envs + code review | `opus` | `opus` | `kimi-k3` |
-| `infra-agent` | edit Dockerfile / CI / scripts | `sonnet` | `sonnet` | `kimi-k2.7-code` |
-| `dv-env-tester` | run ONE env read-only + focused review | `sonnet` | `sonnet` | `kimi-k2.7-code-highspeed` |
+| `swarm-manager` | orchestrate, triage, fix, land the PR | `opus` | `claude-opus-5` | `kimi-k3` |
+| `dv-runner` | run all DV envs + code review | `opus` | `claude-opus-5` | `kimi-k3` |
+| `infra-agent` | edit Dockerfile / CI / scripts | `sonnet` | `claude-sonnet-5` | `kimi-k2.7-code` |
+| `dv-env-tester` | run ONE env read-only + report | `haiku` | `claude-haiku-4-5` | `kimi-k2.7-code-highspeed` |
 
-The heavy reasoning (the manager, the whole-suite `dv-runner`) gets the top tier;
-the mechanical read-only per-env testers and the scoped infra editor get the mid
-tier. Because the agents reference **aliases**, switching provider needs **no edit
-to any agent** — only the alias→model map changes.
+Rationale for the Anthropic set:
+- **Manager + `dv-runner` → Claude Opus 5** — the deep agentic reasoning: triage,
+  minimal RTL/TB fixes, running the gate, branching and opening the PR. This is
+  where model quality most affects the outcome.
+- **`infra-agent` → Claude Sonnet 5** — strong, inexpensive coding for the
+  well-scoped Dockerfile / CI / script edits; it doesn't need Opus.
+- **`dv-env-testers` → Claude Haiku 4.5** — they fan out in parallel (up to six)
+  and mostly *run one env and report its banner*, so the fast/cheap tier keeps
+  latency and cost down. The manager re-runs the whole `make regress` gate itself
+  on Opus 5, so a tester's judgement is never the last word (escalate a tester to
+  Sonnet 5 with `ANTHROPIC_HAIKU_MODEL=claude-sonnet-5` if you want richer failure
+  reviews; note Haiku's 200K context vs. 1M on Opus/Sonnet 5).
+
+The exact models are **pinned** in `docker/provider-env.sh` (via the
+`ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` alias map) so the selection is
+deterministic instead of drifting with the account default — override any with
+`ANTHROPIC_{OPUS,SONNET,HAIKU}_MODEL` (e.g. `claude-fable-5` for the manager tier
+if you want maximum capability regardless of cost). Because the agents reference
+**aliases**, switching provider needs **no edit to any agent** — only the map
+changes.
 
 ### Providers
 

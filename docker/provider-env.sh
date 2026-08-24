@@ -25,6 +25,21 @@ aou_resolve_provider() {
         echo "  (Or run on Kimi: AOU_MODEL_PROVIDER=kimi with KIMI_API_KEY.)" >&2
         return 3
       fi
+      # Pin the "best set" of Anthropic models to the tier aliases the agents use,
+      # so the selection is deterministic instead of drifting with the account
+      # default.  Override any with ANTHROPIC_{OPUS,SONNET,HAIKU}_MODEL (e.g. use
+      # claude-fable-5 for the manager tier if you want maximum capability).
+      #   opus   -> claude-opus-5   : manager + whole-suite dv-runner (deep agentic
+      #                               reasoning, code fixes, git/PR).
+      #   sonnet -> claude-sonnet-5 : infra-agent (strong, cheap coding for the
+      #                               well-scoped Dockerfile/CI/script edits).
+      #   haiku  -> claude-haiku-4-5: dv-env-testers (fast/cheap, they fan out in
+      #                               parallel and just run+report; the manager
+      #                               re-runs the full gate itself as the backstop).
+      export ANTHROPIC_DEFAULT_OPUS_MODEL="${ANTHROPIC_OPUS_MODEL:-claude-opus-5}"
+      export ANTHROPIC_DEFAULT_SONNET_MODEL="${ANTHROPIC_SONNET_MODEL:-claude-sonnet-5}"
+      export ANTHROPIC_DEFAULT_HAIKU_MODEL="${ANTHROPIC_HAIKU_MODEL:-claude-haiku-4-5}"
+      echo "provider: anthropic (opus=${ANTHROPIC_DEFAULT_OPUS_MODEL}, sonnet=${ANTHROPIC_DEFAULT_SONNET_MODEL}, haiku=${ANTHROPIC_DEFAULT_HAIKU_MODEL})" >&2
       ;;
     kimi)
       if [ -z "${KIMI_API_KEY:-}" ]; then
