@@ -27,16 +27,44 @@ aou_resolve_provider() {
   if [ -n "${KIMI_API_KEY:-}" ]; then
     KIMI_API_KEY="$(printf '%s' "$KIMI_API_KEY" | tr -d '[:space:]')"; export KIMI_API_KEY
   fi
+  if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+    CLAUDE_CODE_OAUTH_TOKEN="$(printf '%s' "$CLAUDE_CODE_OAUTH_TOKEN" | tr -d '[:space:]')"; export CLAUDE_CODE_OAUTH_TOKEN
+  fi
+  # Common mistake: a subscription OAuth token (from `claude setup-token`, prefix
+  # sk-ant-oat…) pasted into ANTHROPIC_API_KEY.  That token is rejected by the
+  # Messages API (401) — it only works via CLAUDE_CODE_OAUTH_TOKEN.  Reroute it.
+  case "${ANTHROPIC_API_KEY:-}" in
+    sk-ant-oat*)
+      CLAUDE_CODE_OAUTH_TOKEN="${CLAUDE_CODE_OAUTH_TOKEN:-$ANTHROPIC_API_KEY}"; export CLAUDE_CODE_OAUTH_TOKEN
+      unset ANTHROPIC_API_KEY
+      echo "provider(anthropic): ANTHROPIC_API_KEY held an OAuth token (sk-ant-oat…) — rerouting to CLAUDE_CODE_OAUTH_TOKEN." >&2
+      ;;
+  esac
 
   AOU_PROVIDER="${AOU_MODEL_PROVIDER:-anthropic}"
   case "$AOU_PROVIDER" in
     anthropic)
-      if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-        echo "provider(anthropic): ANTHROPIC_API_KEY is not set — Claude Code cannot authenticate." >&2
-        echo "  Inject it at run time (docker run -e … / a Railway variable); never bake it into the image." >&2
+      # Two credential types are accepted, in Claude Code's own priority order:
+      #   ANTHROPIC_API_KEY        Console API key (sk-ant-api…), bills per token.
+      #   CLAUDE_CODE_OAUTH_TOKEN  subscription token (sk-ant-oat…, from
+      #                            `claude setup-token`), uses a Pro/Max/Team plan.
+      if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+        AOU_AUTH=apikey
+        echo "provider: anthropic (Console API key)" >&2
+      elif [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+        AOU_AUTH=oauth
+        # Drop anything that would outrank the OAuth token in Claude Code's auth
+        # order (an empty ANTHROPIC_API_KEY exported by CI, or an auth token).
+        unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN 2>/dev/null || true
+        echo "provider: anthropic (subscription OAuth token)" >&2
+      else
+        echo "provider(anthropic): no credential set — Claude Code cannot authenticate." >&2
+        echo "  Set ANTHROPIC_API_KEY (Console key, sk-ant-api…) OR CLAUDE_CODE_OAUTH_TOKEN" >&2
+        echo "  (subscription token from 'claude setup-token', sk-ant-oat…)." >&2
         echo "  (Or run on Kimi: AOU_MODEL_PROVIDER=kimi with KIMI_API_KEY.)" >&2
         return 3
       fi
+      export AOU_AUTH
       # Pin the "best set" of Anthropic models to the tier aliases the agents use,
       # so the selection is deterministic instead of drifting with the account
       # default.  Override any with ANTHROPIC_{OPUS,SONNET,HAIKU}_MODEL (e.g. use
@@ -77,6 +105,7 @@ aou_resolve_provider() {
       echo "     allegations. Do NOT enable kimi for proprietary/export-sensitive IP; verify" >&2
       echo "     Moonshot is not on the Entity List / SDN list first, and consult export counsel." >&2
       echo "     See docs/DOCKER.md → 'Compliance & IP risk'. Default is provider=anthropic." >&2
+      AOU_AUTH=kimi; export AOU_AUTH
       ;;
     *)
       echo "provider: unknown AOU_MODEL_PROVIDER='$AOU_PROVIDER' (want 'anthropic' or 'kimi')." >&2

@@ -49,10 +49,16 @@ aou_resolve_provider || exit $?
 fmt="${CLAUDE_OUTPUT_FORMAT:-text}"
 case "$fmt" in text|json|stream-json) ;; *) fmt="text" ;; esac
 
+# --bare skips OAuth/keychain credentials (it works only with a Console API key
+# via ANTHROPIC_API_KEY).  For the subscription OAuth token or Kimi, run NON-bare
+# so the token is actually honored.  aou_resolve_provider set AOU_AUTH.
+bare="--bare"
+[ "${AOU_AUTH:-apikey}" != "apikey" ] && bare=""
+
 # Fast path: metrics disabled -> original behavior, exact same output shape.
 if [ "${AOU_METRICS:-1}" = "0" ]; then
   exec claude -p "$task" \
-    --bare \
+    $bare \
     --permission-mode "${CLAUDE_PERMISSION_MODE:-dontAsk}" \
     --output-format "$fmt" \
     "$@"
@@ -64,7 +70,7 @@ metrics_json="${AOU_METRICS_JSON:-last-run-metrics.json}"
 start="$(date +%s)"
 set +e
 claude -p "$task" \
-  --bare \
+  $bare \
   --permission-mode "${CLAUDE_PERMISSION_MODE:-dontAsk}" \
   --output-format stream-json --verbose \
   "$@" \

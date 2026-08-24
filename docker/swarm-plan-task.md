@@ -21,6 +21,13 @@ Implement the plan in `docs/SWARM_PLAN.md` end-to-end.
    whose body summarizes what you implemented, how it maps to the plan, and the
    gate result. **A human reviews and merges.** Do NOT edit `docs/SWARM_PLAN.md`.
 
+**Checkpoint continuously.** This may be a long run on a metered/subscription
+budget. Branch early, commit + push incrementally, and open a **draft PR** as soon
+as you have a coherent partial — keep updating it. If you hit repeated
+rate-limit / 429 errors or are otherwise cut off, push what you have and mark the
+PR **"PARTIAL — resume needed"** with what's done/left, then stop. Never leave
+work only in the working tree.
+
 If the plan is ambiguous, underspecified, or would require a risky/irreversible
 change, **stop** and report the blocker (commit what is safe on a branch and open
 a draft PR describing what is unresolved) rather than guessing.

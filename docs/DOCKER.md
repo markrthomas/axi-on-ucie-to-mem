@@ -167,11 +167,20 @@ variable**, and `CI=true` is not Claude Code's setup/telemetry switch. The image
 instead sets the real umbrella **`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`**
 (turns off telemetry, error reporting, and update checks).
 
-**Authentication (required).** Claude Code needs **`ANTHROPIC_API_KEY`** (a
-[Console](https://platform.claude.com) key) — under `-p` the key is always used
-when present. **Inject it at run time** (`docker run -e …`, or a Railway service
-variable); **never bake a key into the image or commit it.** Amazon Bedrock /
-Google Vertex / Microsoft Foundry are supported via their own provider credentials.
+**Authentication (required).** Two ways to authenticate — inject at run time,
+**never bake a credential into the image or commit it:**
+
+- **Console API key** — set **`ANTHROPIC_API_KEY`** (`sk-ant-api…`, from the
+  [Console](https://platform.claude.com)). Bills **per token**.
+- **Subscription** — set **`CLAUDE_CODE_OAUTH_TOKEN`** (`sk-ant-oat…`, from
+  `claude setup-token`). Uses a **Pro/Max/Team** plan — no per-token API bill.
+
+> The OAuth token is **rejected by the Messages API** — it works *only* via
+> `CLAUDE_CODE_OAUTH_TOKEN`, so don't put it in `ANTHROPIC_API_KEY` (the runner
+> auto-reroutes an `sk-ant-oat…` value it finds there, but set the right variable).
+> On the OAuth path the runner drops `--bare` (bare mode ignores OAuth creds) and
+> unsets `ANTHROPIC_API_KEY` so the token isn't shadowed. Amazon Bedrock / Vertex
+> / Foundry use their own provider credentials.
 
 **Permission posture.** `docker/agent.sh` defaults to `--permission-mode dontAsk`
 (a locked-down CI posture: only read-only commands and explicit `allow` rules
@@ -460,6 +469,20 @@ turns 37 · API time 214.8s · wall 631s · est. cost $— *
 - **Cost is an estimate** — client-side, from a bundled Anthropic price table.
   Fine as a rough Claude figure; meaningless for Kimi (shown as `—`). Use each
   vendor's usage dashboard for authoritative billing.
+- **`tokens this run` + quota.** The footer also sums total tokens used
+  (in/out/cache). Subscription **remaining quota and reset time are NOT exposed by
+  Claude Code in headless mode** — they live only in API rate-limit headers and
+  the interactive `/usage` command — so the block points you there instead of
+  guessing a number.
+
+> **Long runs / metered budgets — the swarm checkpoints.** Because Claude Code
+> can't read remaining quota headless to stop *preemptively*, the safety net is
+> continuous checkpointing: the manager branches early, commits + pushes
+> incrementally, and opens a **draft PR** as soon as it has a coherent partial,
+> updating it as it goes. If it hits rate-limit/429 errors (a subscription quota
+> running low) or is cut off (timeout/kill), it pushes what it has and marks the
+> PR **"PARTIAL — resume needed."** An exhausted or timed-out run therefore never
+> loses more than the last increment.
 
 In GitHub Actions the **`DV swarm`** workflow uploads `last-run-metrics.json` as a
 build artifact and prints the same table to the job summary.
@@ -503,7 +526,8 @@ the runtime environment; nothing is baked in.
 
 | Variable | Mode | Required? | Notes |
 |----------|------|-----------|-------|
-| `ANTHROPIC_API_KEY` | agent, swarm | **required in `anthropic` mode** (default) | A key from the [Claude Console](https://platform.claude.com). Under `-p` this key is always used. |
+| `ANTHROPIC_API_KEY` | agent, swarm | one of these two in `anthropic` mode | Console API key (`sk-ant-api…`, [Claude Console](https://platform.claude.com)); bills per token. |
+| `CLAUDE_CODE_OAUTH_TOKEN` | agent, swarm | one of these two in `anthropic` mode | Subscription token (`sk-ant-oat…`, from `claude setup-token`); uses a Pro/Max/Team plan, no per-token bill. **Not** interchangeable with `ANTHROPIC_API_KEY` — the Messages API rejects it. |
 | `AOU_MODEL_PROVIDER` | agent, swarm | optional | `anthropic` (default) or `kimi` — selects which vendor the model aliases resolve to. |
 | `KIMI_API_KEY` | agent, swarm | **required in `kimi` mode** | A Moonshot key — create one at [platform.moonshot.ai](https://platform.moonshot.ai) (add ≥ $1 balance to activate); used as `ANTHROPIC_AUTH_TOKEN` against `https://api.moonshot.ai/anthropic`. Same secret discipline as `ANTHROPIC_API_KEY` — inject at run time, never bake. See [Getting a Kimi API key](#getting-a-kimi-api-key-no-host-to-stand-up). |
 | `GITHUB_TOKEN` | swarm | **required to open a PR** | A **fine-grained PAT** scoped to *this repo* with **Contents: write + Pull requests: write** (or a GitHub App token). Without it the swarm edits & tests but stops before pushing. |
