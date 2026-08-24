@@ -1,0 +1,52 @@
+# SymbiYosys formal flow for the AoU §8 interface activation FSM.
+#
+#   sby -f formal/aou_activation.sby            # all tasks
+#   sby -f formal/aou_activation.sby bmc        # safety only
+#
+# Tasks (same shape as formal/aou_credit.sby):
+#   bmc    — bounded safety: never ENABLED before the peer's CrdtGrant, no
+#            data-transfer enable outside ENABLED, only legal Table-24 state
+#            transitions, Option-2 teardown gating and ERROR recovery — for
+#            `depth` cycles from reset, against a completely adversarial peer
+#            (free 2000-bit RX flit every cycle) and free SW deact/err controls.
+#   cover  — reachability: bring-up reaches ENABLED, a CrdtGrant seeds credits,
+#            Option-2 quiescing happens, teardown runs ENABLED -> DEACTIVATE ->
+#            DISABLED, and the §8.3.3 ERROR state is entered and recovered.
+#   prove  — unbounded safety by k-induction (best-effort at this depth).
+#
+# NB: read with yosys-slang.  aou_activation uses the `module <name> import
+# aou_pkg::*;` header form and the properties are attached with `bind`; the stock
+# yosys Verilog frontend accepts neither.
+
+[tasks]
+bmc
+cover
+prove
+
+[options]
+bmc:   mode bmc
+cover: mode cover
+prove: mode prove
+depth 24
+# the teardown cover trace is the longest: bring-up (~5) + ENABLED ->
+# DeactivateReq/Ack exchange (~6) + return to DISABLED.
+cover: depth 40
+prove: depth 24
+
+[engines]
+bmc:   btor btormc
+cover: btor btormc
+prove: abc pdr
+
+[script]
+plugin -i slang
+read_slang --top aou_activation_fv \
+    aou_pkg.sv aou_activation.sv \
+    aou_activation_fv.sv
+prep -top aou_activation_fv
+opt -fast
+
+[files]
+rtl/aou_pkg.sv
+rtl/aou_activation.sv
+formal/aou_activation_fv.sv

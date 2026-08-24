@@ -105,7 +105,7 @@ help:
 	@echo "    make systemc           # SystemC TB (Verilator --sc model + sc_main)"
 	@echo "    make uvm               # SystemVerilog UVM TB (license-gated; skips if no VCS/Xcelium/Questa)"
 	@echo "    make coverage          # Verilator --coverage -> sim/coverage.info (floor COV_MIN=$(COV_MIN)%)"
-	@echo "    make formal            # SymbiYosys proofs: axi_lite_mem + §4.3 flit header + §6 credits"
+	@echo "    make formal            # SymbiYosys proofs: axi_lite_mem + §4.3 flit + §6 credits + §8 activation"
 	@echo "                           #   (bmc+cover gate, prove best-effort; TASK=bmc|cover|prove;"
 	@echo "                           #    SBY=<path> for an out-of-PATH sby, e.g. SBY=\$$OSS/bin/sby)"
 	@echo ""
@@ -270,12 +270,18 @@ coverage:
 #       a fully adversarial peer: counters never exceed their ceiling (and, being
 #       unsigned, therefore never underflow), and every presented message is
 #       funded by its own message type's credit.
+#   formal/aou_activation.sby — §8 interface activation FSM against a fully
+#       adversarial peer and free SW deactivate / ERROR-clear controls: never
+#       ENABLED before the peer's CrdtGrant, no data-transfer enable outside
+#       ENABLED, only legal Table-24 transitions (teardown gated on data_idle),
+#       and ERROR always recovers to a re-armed DISABLED.
 #
 # `bmc` (bounded safety) and `cover` (required covers reachable) GATE; `prove`
 # (unbounded k-induction) is run best-effort and only warns if it does not
 # converge, since convergence depends on the solver/depth.
 # TASK=<bmc|cover|prove> runs just that one task, gating.
-FORMAL_SBY := formal/axi_lite_mem.sby formal/aou_flit.sby formal/aou_credit.sby
+FORMAL_SBY := formal/axi_lite_mem.sby formal/aou_flit.sby formal/aou_credit.sby \
+              formal/aou_activation.sby
 
 formal:
 	@set -e; \
