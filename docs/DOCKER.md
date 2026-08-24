@@ -491,10 +491,13 @@ Deploy / trigger the service. Watch the deploy logs:
 - **agent** → prints Claude's result.
 - **swarm** → prints the manager's report and the PR URL.
 
-To run the **gate** on a schedule, set `cronSchedule` (UTC) in `railway.toml`
-(e.g. `cronSchedule = "0 6 * * *"`). Railway starts a fresh container per tick;
-it must exit before the next, which the gate does. (Cron-scheduling the *swarm*
-is possible but means autonomous unattended PRs — do so deliberately.)
+The gate is scheduled in `railway.toml` via `cronSchedule` (UTC). It is currently
+**`"0 9 * * *"` = 09:00 UTC = 2:00 AM MST** (Mountain Standard, UTC−7). Railway
+starts a fresh container per tick and it must exit before the next, which the gate
+does. Note Railway cron is fixed UTC and does **not** follow US daylight saving,
+so during MDT (mid-Mar–early-Nov, UTC−6) 09:00 UTC is 3:00 AM local — use
+`"0 8 * * *"` if you want 2:00 AM *local* through the summer. (Cron-scheduling the
+*swarm* is possible but means autonomous unattended PRs — do so deliberately.)
 
 ### Critical notes
 
