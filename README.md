@@ -94,7 +94,8 @@ out-of-order-by-ID completion).
 - `dv/systemc/` — SystemC testbench (`verilator --sc` model + `sc_main`)
 - `uvm/` — SystemVerilog UVM TB (multi-file + single-file), license-gated
 - `sim/` — Verilator C++ coverage harness
-- `formal/` — SymbiYosys proof of `axi_lite_mem` (`.sby` + property wrapper)
+- `formal/` — SymbiYosys proofs (`.sby` + property wrappers): `axi_lite_mem`, the
+  §4.3 flit protocol header, and §6 credit flow control on the real bridges
 - `Dockerfile` / `docker/` / `railway.toml` — containerized DV gate (see [`docs/DOCKER.md`](docs/DOCKER.md))
 - `Makefile` — standard DV gate targets; `docs/PLAN.md` — the design plan
 
@@ -161,9 +162,9 @@ Everything runs from the repo root and degrades gracefully if a tool is absent.
 | Waves | `make waves` / `make wave` | dump / open GTKWave |
 | Lint | `make lint` | `iverilog -Wall` + Verilator RTL lint |
 | Coverage | `make coverage` | Verilator `--coverage` → `sim/coverage.info` (floor `COV_MIN`, default 85%; ~90–94% achieved) |
-| Formal | `make formal` | SymbiYosys proof of `axi_lite_mem` (bmc + cover + unbounded `prove`); skips cleanly if `sby` absent |
+| Formal | `make formal` | SymbiYosys proofs of `axi_lite_mem`, the §4.3 flit header and §6 credit flow (`bmc` + `cover` gate, unbounded `prove` best-effort); `SBY=<path>` for an out-of-PATH prover, skips cleanly if `sby` absent |
 | Gate | `make check` | lint + cocotb + SV(both sims) + pack + act + reorder + SystemC |
-| CI | `make ci` | `check` + coverage as one pass/fail gate |
+| CI | `make ci` | `check` + coverage + formal as one pass/fail gate |
 | Container | `docker run --rm aou-dv` | the whole `make ci` gate in a reproducible image ([`docs/DOCKER.md`](docs/DOCKER.md)) |
 | Trace | `make <target> VERBOSE=1` | per-beat AXI transaction traces in each env's log |
 
@@ -277,15 +278,31 @@ simulators): paste `uvm/axi_ucie_tb_single.sv` into `testbench.sv`, and the
 simulator, and add `+UVM_TESTNAME=axi_write_read_test` (or `axi_random_test` /
 `axi_walking_test`) to the run options.
 
-### 7. Formal proof of the memory target
+### 7. Formal proofs (gating)
 
 ```bash
-make formal              # bmc + cover + unbounded prove
-make formal TASK=bmc     # just one task (bmc | cover | prove)
+make formal                        # every proof: bmc + cover (gating) + prove
+make formal SBY="$OSS/bin/sby"     # prover kept off PATH — pass it by absolute path
+make formal TASK=bmc               # just one task (bmc | cover | prove), gating
 ```
 
-[SymbiYosys](https://github.com/YosysHQ/sby) proves the AXI4-Lite memory
-`axi_lite_mem` (`formal/axi_lite_mem_fv.sv` wraps it with assume/assert/cover):
+[SymbiYosys](https://github.com/YosysHQ/sby) is a **first-class, gating** DV tier:
+`make regress` (and therefore `make ci` and the container) runs it, and a failed
+assertion or an unreachable required cover fails the build. `bmc` (bounded
+safety) and `cover` (reachability) gate; `prove` (unbounded k-induction, `abc
+pdr`) is run best-effort and only warns if it does not converge — today all three
+tasks pass on all three proofs, in about 50 s total.
+
+`sby` ships inside the oss-cad-suite the image and CI already install for
+Verilator, but that suite is deliberately kept **off `PATH`** (its bundled
+`iverilog` would shadow the apt one the cocotb VPI links against), so the prover
+is passed by absolute path via the `SBY` make variable — exactly like
+`VERILATOR`/`VERILATOR_ROOT`. Left at its bare `sby` default the target skips
+gracefully when SymbiYosys is not installed; given an explicit `SBY=<path>` that
+is not an executable prover it is a hard error, so a gate can never silently skip.
+
+**`formal/axi_lite_mem.sby`** — the AXI4-Lite memory target
+(`formal/axi_lite_mem_fv.sv` wraps it with assume/assert/cover):
 
 - **channel legality** — `VALID` held until `READY`, request/response payloads
   stable while stalled, `BRESP`/`RRESP` always `OKAY`;
@@ -296,15 +313,64 @@ make formal TASK=bmc     # just one task (bmc | cover | prove)
 - **cover** — a write completes, a read completes, and a read returns written
   (non-zero) data, so the properties are provably non-vacuous.
 
-`bmc` and `cover` are bounded (depth 24 / 32); **`prove` (abc pdr) is an
-_unbounded_ proof** — the properties hold for all time, not just the bound.
+**`formal/aou_flit.sby`** — the §4.3 flit protocol header and §5.8 packing
+(`formal/aou_flit_fv.sv`), for *arbitrary* field values:
 
-Notes: the proof targets `axi_lite_mem` in isolation with a deliberately small
-address width (`.sby` reads with `-defer`; otherwise the 64 KiB array bit-blasts
-and never elaborates). The full AoU chain is **not** formally verified — the
-open-source Yosys frontend cannot elaborate the wide pack/unpack functions and
-2000-bit flit datapath in tractable time; that stays with the simulation
-environments above.
+- **byte-exact §4.3 map** — the ten header bytes `flit_get_byte()` exposes equal
+  an **independent transcription of the Figure-5 byte map** written out byte by
+  byte in the wrapper (deliberately *not* via `msgstart_g()`, so the package's
+  loop-based scatter is checked against the spec figure, not against itself);
+- **reserved bits are zero** at every reserved header position;
+- **payload alignment** — all 240 payload bytes follow byte-aligned from PLP
+  byte 10;
+- **pack → unpack round-trip** — `flit_fdid` / `flit_msgstart` / `flit_credit` /
+  `flit_payload` recover exactly what `flit_assemble_cr()` packed;
+- **§6 MsgCredit** — the Table-16 sub-fields round-trip through `mk_msgcredit()`
+  / `mc_*()`, and the Table-17 encoder is monotone
+  (`cred_decode(cred_encode_ge(n)) ≥ n`), which is what makes the receiver's
+  saturating replenish sound;
+- **§5.8 placement** — `payload_get(payload_put(…))` round-trips a message at
+  granule 0 and `payload_msgtype()` sees its `MSGTYPE`.
+
+**`formal/aou_credit.sby`** — §6 credit flow control on the **real bridges**
+(`formal/aou_credit_fv.sv` instantiates `aou_axi_initiator_bridge` and
+`aou_axi_target_bridge` with *every* input free, so the peer is fully
+adversarial: any `MsgCredit`, any `CrdtGrant` bucket, at any time, in any §8
+activation phase):
+
+- **never overflow** — every held credit counter stays at or below its
+  configured ceiling, i.e. the §6.4 saturating replenish never inflates a
+  counter past the advertised buffer depth;
+- **never go negative** — the counters are unsigned 8-bit, so an unfunded
+  decrement would wrap to ≥ 248, far above every ceiling (3 / 3 / 128 / 128 / 1);
+  the bound proof therefore also proves no underflow;
+- **gating (§6.1)** — whenever a bridge presents a data flit, the counter for
+  *the message type actually encoded in that flit* holds at least that message's
+  granule count. This is strictly stronger than the RTL's `dtx_valid` gate: it
+  also proves the FSM state and the flit its packer built agree, so no message
+  can be sent against another type's credit;
+- **cover** — credits really are granted, a funded send completes, and the
+  saturating replenish reaches a full-burst ceiling (128 granules).
+
+These are the same properties and ceilings that `dv/sva/aou_credit_sva.sv` +
+`dv/sva/bind_sva.sv` carry in simulation, restated as immediate assertions
+because `yosys-slang` rejects concurrent SVA — the *wrapper* is adjusted, the
+property is not weakened.
+
+Notes: the `axi_lite_mem` proof targets that module in isolation with a
+deliberately small address width (`.sby` reads with `-defer`; otherwise the
+64 KiB array bit-blasts and never elaborates). The two AoU proofs are read with
+the **`yosys-slang`** frontend bundled in oss-cad-suite (`plugin -i slang;
+read_slang`): the stock Yosys Verilog frontend cannot parse the
+`module <name> import aou_pkg::*;` header form the RTL uses, nor `bind`. Both
+new proofs were mutation-tested — swapping the FDId header bits, lowering a
+credit ceiling by one, and funding WriteData from the wrong counter each make
+`bmc` FAIL — so they are known to be non-vacuous.
+
+The end-to-end AoU *datapath* (address/data flowing all the way through the
+2000-bit flit path into memory and back) is still verified by simulation, not
+formally; the proofs above cover the memory target, the packing map, and the
+flow-control protocol.
 
 ### 8. Containerized gate (Docker / Railway)
 
@@ -366,8 +432,10 @@ AXI is accepted until the interface is `ENABLED`; transmit credits reset to zero
   out-of-order-by-ID completion. (INCR/WRAP/FIXED bursts and multiple-outstanding
   transactions with in-order completion are **implemented**; genuine OOO has no
   natural source in the single-link / single-in-order-memory topology.)
-- **Whole-chain formal** — the current proof covers `axi_lite_mem`; proving the
-  bridges/flit path needs a Verific-based front end (or hand-abstracted flits).
+- **Whole-chain formal** — the proofs cover `axi_lite_mem`, the §4.3 flit header
+  map and §6 credit flow control on the real bridges; an end-to-end
+  *datapath* proof (an AXI write reappearing in memory through the 2000-bit
+  flit path) is still simulation-only.
 
 ## Specs
 

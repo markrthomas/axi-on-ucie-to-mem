@@ -37,7 +37,7 @@ docker run --rm -it --entrypoint bash aou-dv
 A green run ends with:
 
 ```
-[REGRESS] lint + cocotb + SV(Icarus+Verilator) + pack + act + reorder + SystemC + coverage PASSED
+[REGRESS] lint + cocotb + SV(Icarus+Verilator) + pack + act + reorder + SystemC + coverage + formal PASSED
 ```
 
 and exit status `0`. Any failing environment stops the gate and returns non-zero.
@@ -62,11 +62,15 @@ Ubuntu 24.04 base, chosen because it ships the exact tool versions CI validates:
 | Node.js | NodeSource | 20 LTS | Runtime for the Claude Code CLI (Claude Code needs Node ≥ 18). |
 | Claude Code CLI | npm (`@anthropic-ai/claude-code`) | latest | Headless agent mode (see below); does not affect the DV gate. |
 
-The build ends with a healthcheck that fails the image build if any of
-`iverilog`, the pinned `verilator`, or `import cocotb, pyuvm` is missing.
+| **SymbiYosys + Yosys + solvers** | **oss-cad-suite, same pinned tag** | **sby 0.64 / yosys 0.64** | The formal tier (`make formal`) — `sby`, `yosys`, the `yosys-slang` SV frontend, `btormc` and `abc` all ship in the suite already installed for Verilator, so formal costs the image nothing extra. |
 
-The UVM flow (`make uvm`) and formal (`make formal`) are **not** in the image:
-they need a licensed simulator / SymbiYosys and would only skip.
+The build ends with a healthcheck that fails the image build if any of
+`iverilog`, the pinned `verilator`, `sby`, or `import cocotb, pyuvm` is missing.
+
+The formal tier **is** in the image and **does** run: `sby` is bundled in
+oss-cad-suite, so `make regress` / `make ci` in the container run the SymbiYosys
+proofs and fail on a broken one. Only the UVM flow (`make uvm`) is absent — it
+needs a licensed simulator (VCS/Xcelium/Questa) and would only skip.
 
 ---
 
@@ -74,12 +78,13 @@ they need a licensed simulator / SymbiYosys and would only skip.
 
 The default command is `make ci`, but it is **not** run directly. The image sets
 `ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]`, which wraps every `make`
-invocation with three variables:
+invocation with the pinned-tool arguments:
 
 ```
 VERILATOR=$OSS/bin/verilator
 VERILATOR_ROOT=$OSS/share/verilator
 VERILATOR_COV=$OSS/bin/verilator_coverage
+SBY=$OSS/bin/sby
 ```
 
 **Why a wrapper instead of environment variables?** The root `Makefile` computes
@@ -93,14 +98,29 @@ overridden by an environment variable — only by a make **command-line** argume
 The pinned oss-cad-suite Verilator is deliberately kept off `PATH` (so its
 bundled `iverilog` can't shadow the apt one the cocotb VPI links against), so
 `command -v verilator` would otherwise find nothing. The entrypoint therefore
-appends the triplet as make args. CI does the exact same thing.
+appends them as make args. CI does the exact same thing.
+
+**The `SBY` knob.** The formal target uses `SBY ?= sby`. `?=` is likewise **not**
+overridden by an environment variable once a value is on the command line, and —
+more importantly — oss-cad-suite is off `PATH` for the same `iverilog`-shadowing
+reason, so a bare `sby` would not be found. The entrypoint therefore passes
+`SBY=$OSS/bin/sby` by absolute path, exactly like the Verilator triplet. Left at
+its bare default the `formal` target skips gracefully (useful on a host with no
+SymbiYosys); given an explicit `SBY=<path>` that is not an executable prover it
+is a **hard error**, so the gate can never silently skip in the image or in CI.
+Run just the proofs with:
+
+```bash
+docker run --rm aou-dv make formal              # bmc + cover (gating) + prove
+docker run --rm aou-dv make formal TASK=bmc     # one task
+```
 
 Entrypoint dispatch:
 
 | You run | It executes |
 |---------|-------------|
-| `docker run --rm aou-dv` | `make ci  <verilator args>` |
-| `docker run --rm aou-dv make reorder` | `make reorder  <verilator args>` |
+| `docker run --rm aou-dv` | `make ci  <pinned-tool args>` |
+| `docker run --rm aou-dv make reorder` | `make reorder  <pinned-tool args>` |
 | `docker run --rm aou-dv <anything else>` | `<anything else>` verbatim (e.g. `bash`) |
 
 ---
