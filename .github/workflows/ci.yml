@@ -62,6 +62,7 @@ jobs:
         run: |
           iverilog -V | head -1
           "$OSS/bin/verilator" --version
+          "$OSS/bin/sby" --version | head -1
           python -c "import cocotb, pyuvm; print('cocotb', cocotb.__version__, 'pyuvm', pyuvm.__version__)"
 
       # lint + PyUVM/cocotb regression + SV directed TB (Icarus & Verilator, with
@@ -77,7 +78,8 @@ jobs:
           make ci \
             VERILATOR="$OSS/bin/verilator" \
             VERILATOR_ROOT="$OSS/share/verilator" \
-            VERILATOR_COV="$OSS/bin/verilator_coverage"
+            VERILATOR_COV="$OSS/bin/verilator_coverage" \
+            SBY="$OSS/bin/sby"
         env:
           # cocotb runs under the setup-python interpreter; iverilog+vvp are the
           # apt pair, so ICARUS_BIN_DIR points at the system bin.
