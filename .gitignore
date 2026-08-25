@@ -9,6 +9,7 @@ dv/cocotb/sim_build/
 __pycache__/
 *.pyc
 results.xml
+dv/cocotb/fcov.json
 *.fst
 *.vcd
 obj_dir/

@@ -64,6 +64,17 @@ COV_DIR := sim/obj_dir_cov
 # differs slightly between versions (e.g. 89.8% on 5.020 vs 93.5% on 5.047).
 COV_MIN ?= 85
 
+# Functional-coverage floor for the PyUVM model (dv/cocotb/axi_coverage.py),
+# in percent of that model's own goal bins.  100 by default: every goal bin is
+# reachable with the stimulus in dv/cocotb/axi_seq.py, so anything less is a
+# coverage regression.  The last cocotb test of `make test-all` gates on it and
+# prints the `[COV-FUNC] PASS/FAIL` banner.
+FCOV_MIN ?= 100
+export FCOV_MIN
+# Merge database the per-test simulations of one `make test*` run accumulate into
+# (each test runs in its own sim, so no single process sees the whole run).
+FCOV_DB := $(TB_DIR)/fcov.json
+
 # Transaction tracing (opt-in, off by default).  `make <target> VERBOSE=1`
 # exports AOU_VERBOSE to every sub-make, turning on per-beat AXI traces in each
 # environment's log: the SV directed TB and the SystemC TB print [SV-TB][T] /
@@ -77,7 +88,7 @@ endif
 
 .PHONY: default help \
 	test test-all test-write-read test-random test-walking test-burst \
-	test-outstanding \
+	test-outstanding test-coverage fcov-reset \
 	sv vlt pack act reorder systemc uvm coverage formal waves wave check regress ci \
 	lint _lint_iverilog _lint_verilator clean
 
@@ -87,12 +98,13 @@ help:
 	@echo "axi-on-ucie-to-mem — common targets"
 	@echo ""
 	@echo "  Tests (PyUVM / cocotb):"
-	@echo "    make test              # all five cocotb tests"
+	@echo "    make test              # all six cocotb tests (ends with the [COV-FUNC] gate)"
 	@echo "    make test-write-read   # write-then-read-back sequence"
 	@echo "    make test-random       # constrained-random read/write mix"
 	@echo "    make test-walking      # directed address/data edge cases"
 	@echo "    make test-burst        # INCR/WRAP/FIXED burst read-back"
 	@echo "    make test-outstanding  # multiple-outstanding reads (fills initiator queue)"
+	@echo "    make test-coverage     # functional-coverage closure + [COV-FUNC] floor (FCOV_MIN=$(FCOV_MIN)%)"
 	@echo "    make waves             # dump $(FST) (TEST=<name> for one test)"
 	@echo "    make wave              # open the dump in GTKWave"
 	@echo ""
@@ -136,33 +148,46 @@ endef
 
 test: test-all
 
-test-all:
+# The per-test simulations of one run merge their functional-coverage bins
+# through $(FCOV_DB); drop any stale database so a report always describes
+# exactly this invocation.
+fcov-reset:
+	@rm -f $(FCOV_DB)
+
+# coverage_test runs LAST: it closes the functional coverage model and gates the
+# merged result against FCOV_MIN, printing [COV-FUNC] PASS/FAIL.
+test-all: fcov-reset
 	$(call run_one_test,write_read_test)
 	$(call run_one_test,random_test)
 	$(call run_one_test,walking_test)
 	$(call run_one_test,burst_test)
 	$(call run_one_test,multi_outstanding_test)
-	@echo "[TEST] all five PyUVM tests passed"
+	$(call run_one_test,coverage_test)
+	@echo "[TEST] all six PyUVM tests passed"
 
-test-write-read:
+test-write-read: fcov-reset
 	$(call run_one_test,write_read_test)
 
-test-random:
+test-random: fcov-reset
 	$(call run_one_test,random_test)
 
-test-walking:
+test-walking: fcov-reset
 	$(call run_one_test,walking_test)
 
-test-burst:
+test-burst: fcov-reset
 	$(call run_one_test,burst_test)
 
-test-outstanding:
+test-outstanding: fcov-reset
 	$(call run_one_test,multi_outstanding_test)
+
+test-coverage: fcov-reset
+	$(call run_one_test,coverage_test)
 
 # Waveform dump.  All three tests share one sim by default; TEST=<name> dumps
 # just one.  cocotb's Icarus dump module is only compiled into a FRESH
 # sim_build, so wipe it first.
-WAVE_TESTS := write_read_test random_test walking_test burst_test multi_outstanding_test
+WAVE_TESTS := write_read_test random_test walking_test burst_test \
+              multi_outstanding_test coverage_test
 
 waves:
 	@if [ -n "$(TEST)" ] && ! echo " $(WAVE_TESTS) " | grep -q " $(TEST) "; then \
@@ -330,6 +355,7 @@ clean:
 	$(MAKE) -C $(REORDER_DIR) clean 2>/dev/null || true
 	$(MAKE) -C $(SC_DIR) clean 2>/dev/null || true
 	$(MAKE) -C $(UVM_DIR) clean 2>/dev/null || true
+	rm -f $(FCOV_DB)
 	rm -rf $(TB_DIR)/sim_build $(TB_DIR)/__pycache__ __pycache__ \
 		results.xml dump.fst dump.vcd obj_dir \
 		$(COV_DIR) sim/coverage.info sim/coverage.dat sim/annotated

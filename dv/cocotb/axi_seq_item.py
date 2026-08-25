@@ -59,6 +59,7 @@ class AxiSeqItem(uvm_sequence_item):
         self.rdata = 0                               # captured read data (RDATA)
         self.rbeats = []                             # captured per-beat RDATA
         self.resp = 0                                # BRESP / RRESP
+        self.outstanding = 1                         # open transfers (monitor)
 
     def __eq__(self, other):
         if not isinstance(other, AxiSeqItem):
