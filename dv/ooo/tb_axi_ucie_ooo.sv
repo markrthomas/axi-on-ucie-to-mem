@@ -41,7 +41,7 @@ module tb_axi_ucie_ooo;
   localparam int NIDS       = 1 << IW;
 
   localparam int NW = 12;                         // write transactions
-  localparam int NR = 12;                         // read  transactions
+  localparam int NR = 16;                         // read  transactions
 
   logic             ACLK;
   logic             ARESETn;
@@ -266,20 +266,30 @@ module tb_axi_ucie_ooo;
 
     write_phase();
 
-    // Interleaved multi-ID reads over what was just written.  Transactions 8..11
-    // are 2-beat INCR bursts, which the OOO source forwards whole (it only ever
-    // holds a single-flit response) — they exercise the initiator's read
-    // reorder-slot beat accumulator alongside the single-beat traffic.
+    // Interleaved multi-ID reads over what was just written.
+    //   txn 0..7   single-beat
+    //   txn 8..11  2-beat INCR bursts   — exercise the initiator's read
+    //              reorder-slot beat accumulator alongside single-beat traffic.
+    //              (The OOO source forwards multi-flit responses whole; it only
+    //              ever holds a single-flit response, so a burst is never split.)
+    //   txn 12..15 16-beat INCR bursts  — 4 x 16 beats = 512 ReadData granules,
+    //              FOUR TIMES the 128-granule §6 ReadData credit ceiling this bridge
+    //              granted the target.  Since the initiator only returns
+    //              ReadData credits piggybacked on its next request flit, an
+    //              unthrottled OOO issue path deadlocks here: once all four are
+    //              in flight there is no further request to carry the returns
+    //              and the target stalls at zero credits.  The issue-side
+    //              granule gate (rd_out/rd_fits in the g_ooo branch) is what
+    //              keeps this live, so this section is its regression test.
+    // Beats past the first of each burst read never-written words, which the
+    // reference memory holds at 0 — the first beat still carries that
+    // transaction's own distinct data, so cross-ID leakage is still caught.
     for (i = 0; i < NR; i++) begin
       r_id[i]   = 4'((i % 3) + 1);
-      r_addr[i] = w_addr[i];
-      r_len[i]  = (i >= 8) ? 8'd1 : 8'd0;
+      r_addr[i] = w_addr[i % NW];
+      r_len[i]  = (i >= 12) ? 8'd15 : ((i >= 8) ? 8'd1 : 8'd0);
       r_done[i] = 1'b0;
     end
-    // The 2-beat bursts read [addr, addr+4]; seed the second word so the
-    // reference model has a defined value there.
-    for (i = 8; i < NR; i++)
-      ref_mem[(r_addr[i][MEM_ADDR_W-1:2]) + 1] = 32'h0;
 
     read_phase();
 

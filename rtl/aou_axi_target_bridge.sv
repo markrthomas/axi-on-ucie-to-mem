@@ -132,7 +132,7 @@ module aou_axi_target_bridge
   localparam logic [2:0] GR_RREQ  = OOO_EN ? 3'b100 : 3'b010;  // 16 : 4 granules
   localparam logic [2:0] GR_WDATA = 3'b111;   // 128 granules (16 WriteData beats)
   // A held WriteResp plus one overtaking it needs more than a single credit.
-  localparam int         LCR_WRESP = OOO_EN ? 4 : CR_WRESP;
+  localparam int         LCR_WRESP = OOO_EN ? 8 : CR_WRESP;
 
   logic [PLP_BITS-1:0]   dtx_data, drx_data;
   logic                  dtx_valid, dtx_ready, drx_valid, drx_ready;

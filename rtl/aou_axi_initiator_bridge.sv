@@ -185,7 +185,7 @@ module aou_axi_initiator_bridge
   // B (the message types B transmits).  ReadData is sized for a full read burst;
   // in OOO mode WriteResp needs room for a held response plus one overtaking it.
   localparam logic [2:0] GR_RDATA = 3'b111;                  // 128 granules
-  localparam logic [1:0] GR_WRESP = OOO_EN ? 2'b10 : 2'b01;  // 4 : 1 granule(s)
+  localparam logic [1:0] GR_WRESP = OOO_EN ? 2'b11 : 2'b01;  // 8 : 1 granule(s)
 
   logic                  act_enabled, act_disabled;
   logic [PLP_BITS-1:0]   dtx_data, drx_data;
@@ -490,8 +490,25 @@ module aou_axi_initiator_bridge
     );
 
     // ---- issue -----------------------------------------------------------
+    // §6 anti-starvation.  This bridge returns ReadData/WriteResp credits only
+    // by piggybacking them on the NEXT request flit it sends.  With several
+    // reads in flight and no further request to send, the target could
+    // therefore exhaust its ReadData credits mid-flight and stall with no way
+    // to get more.  Bound it at issue: never let more ReadData granules be
+    // outstanding than the ceiling this bridge granted the target
+    // (GR_RDATA = 128 granules = 16 beats).  A lone transaction is always let
+    // through, so the worst case degenerates to exactly the in-order path,
+    // whose burst length that same ceiling already caps.
+    // (WriteResp needs no equivalent gate: at most OOO_DEPTH writes are
+    //  outstanding and GR_WRESP grants 8 >= OOO_DEPTH granules.)
+    localparam int RD_CEIL = 128;
+    logic [15:0] rd_out;                       // ReadData granules in flight
+    wire  [15:0] rd_need = 16'((32'(q_len[q_head]) + 1) * READDATA_GRAN);
+    wire         rd_fits = (rd_out == '0) ||
+                           ((32'(rd_out) + 32'(rd_need)) <= RD_CEIL);
+
     wire q_is_wr    = q_wr[q_head];
-    wire rob_ready  = q_is_wr ? w_iss_ready : r_iss_ready;
+    wire rob_ready  = q_is_wr ? w_iss_ready : (r_iss_ready && rd_fits);
     assign do_pop      = (ostate == O_IDLE) && !q_empty && rob_ready;
     assign r_iss_valid = do_pop && !q_is_wr;
     assign w_iss_valid = do_pop &&  q_is_wr;
@@ -600,7 +617,8 @@ module aou_axi_initiator_bridge
     // send and a replenish can land in the same cycle: fold both into one
     // next-value so neither is dropped.
     logic [CREDIT_W-1:0] rmc;
-    logic [7:0] n_wreq, n_rreq, n_wdata, n_ret_rdata, n_ret_wresp;
+    logic [7:0]  n_wreq, n_rreq, n_wdata, n_ret_rdata, n_ret_wresp;
+    logic [15:0] n_rd_out;
     assign rmc = flit_credit(drx_data);
 
     // return-credit accumulator, capped at the largest Table-17 bucket
@@ -630,6 +648,10 @@ module aou_axi_initiator_bridge
       n_ret_wresp = req_fire ? 8'd0 : ret_wresp;
       if (rsp_rd) n_ret_rdata = ret_inc(n_ret_rdata, READDATA_GRAN);
       if (rsp_wr) n_ret_wresp = ret_inc(n_ret_wresp, WRITERESP_GRAN);
+      // ReadData granules in flight: charged at issue, released per beat.
+      n_rd_out = rd_out;
+      if (do_pop && !q_is_wr) n_rd_out = n_rd_out + rd_need;
+      if (rsp_rd)             n_rd_out = n_rd_out - 16'(READDATA_GRAN);
     end
 
     // ---- sequential --------------------------------------------------------
@@ -640,7 +662,7 @@ module aou_axi_initiator_bridge
         burst_q  <= '0; prot_q <= '0; tag_q  <= '0;
         wdata_q  <= '0; wstrb_q <= '0; wbeat_valid <= 1'b0; wlast_q <= 1'b0;
         cr_wreq  <= '0; cr_rreq <= '0; cr_wdata <= '0;
-        ret_rdata <= '0; ret_wresp <= '0;
+        ret_rdata <= '0; ret_wresp <= '0; rd_out <= '0;
         cmpr_pend <= 1'b0; cmpr_tag <= '0;
         cmpw_pend <= 1'b0; cmpw_tag <= '0; cmpw_resp <= '0;
         r_id_q <= '0; r_vec_q <= '0; r_len_q <= '0; r_beat <= '0; r_busy <= 1'b0;
@@ -663,6 +685,7 @@ module aou_axi_initiator_bridge
         end
         ret_rdata <= n_ret_rdata;
         ret_wresp <= n_ret_wresp;
+        rd_out    <= n_rd_out;
 
         // ---- response collection (concurrent with issue) -------------------
         cmpr_pend <= 1'b0;
