@@ -12,98 +12,93 @@ status: ready
 
 ## Goal
 
-**PyUVM coverage closure.** The cocotb/PyUVM env (`dv/cocotb/`) is the golden
-reference, but it has **no functional coverage** — the only coverage in the repo
-today is Verilator *line* coverage (`make coverage`, `COV_MIN=85`). Add a
-**functional coverage model** to the PyUVM env, sample it from the monitored
-transaction stream, print a coverage report, and enforce a **functional-coverage
-floor** so `make test` / `make ci` fail on a coverage regression. Then **close
-the holes**: add the directed/constrained stimulus needed to hit every defined
-bin, so the model reports 100% of its own goal.
+**F2 — full-datapath out-of-order (OOO) integration** (`docs/PLAN.md`). The per-ID
+reorder buffer `rtl/aou_reorder.sv` is proven standalone in `dv/reorder`, but it is
+**not wired into the full chain**, because today's topology (single serialized flit
+link + single in-order `axi_lite_mem`) never completes out of order — there is no
+OOO source. This item makes the whole datapath exercise real OOO-by-ID completion:
+introduce an **optional OOO source** at the target, **wire `aou_reorder` into the
+initiator response path** to restore AXI-legal ordering, and prove **end-to-end**
+that same-ID responses stay in issue order while different-ID responses may overtake.
 
-This is **additive DV only** — do NOT change RTL behavior. If reaching a bin
-requires an RTL change, or a bin is genuinely unreachable, **STOP and report it**
-in the PR rather than deleting the bin or weakening the goal.
+**Hard invariant — the default chain must stay byte-identical.** With the OOO source
+disabled (the default), `axi_ucie_mem_top` must behave EXACTLY as today: every
+existing DV env (cocotb, sv, pack, act, reorder, systemc) stays green with identical
+banners/read-counts, and `make coverage` still meets `COV_MIN`. OOO is an opt-in mode.
+
+## Approach (sound, additive, default-off)
+
+1. **OOO source at the target (opt-in).** Add a way for responses of *different IDs*
+   to complete out of request order — the smallest sound mechanism, chosen by the
+   swarm and justified in the PR. Preferred: a **variable-latency / interleaving
+   target** wrapper (parameter `OOO_EN`, default `0`) in front of / inside
+   `aou_axi_target_bridge` that may hold a completed different-ID response and let a
+   later different-ID response pass, tagging each response with its transaction tag
+   over the link. When `OOO_EN=0` it is a pass-through and the datapath is unchanged.
+   Do **not** reorder within an ID, ever. Do **not** modify `axi_lite_mem.sv`
+   behavior; if extra state is needed, add it in the bridge/wrapper, not the memory.
+
+2. **Carry the transaction tag end-to-end.** The response flit must carry enough tag
+   for the initiator to match a completion to its outstanding slot. Reuse the
+   existing ID/flit fields where possible; if a tag field must be added to the
+   response message, keep it within the already-defined message layout (§5/§4.3) and
+   assert the default path is byte-identical when `OOO_EN=0`.
+
+3. **Wire `aou_reorder` into `aou_axi_initiator_bridge`.** On issue (AW/AR accepted),
+   allocate a reorder slot (`iss_*`) keyed by AXI ID; on a response flit arriving
+   from the link, drive `cmp_*` by tag (completions may arrive in any order); present
+   the reorder buffer's `out_*` (oldest-of-its-ID) onto the AXI R/B channels. Keep the
+   existing `REQ_QD` in-order queue as the `OOO_EN=0` path (or prove the reorder path
+   degenerates to identical in-order behavior when completions arrive in order — then
+   a single path is fine). Respect `out_ready`/backpressure and the §6 credit gating.
+
+4. **Bound it.** `DEPTH` = the existing outstanding capacity (power of two); no new
+   unbounded state. Same-ID ordering and no-cross-ID-leakage must hold under credit
+   backpressure and teardown/quiescing.
 
 ## Scope & files
 
-1. **New `dv/cocotb/axi_coverage.py`** — a self-contained functional coverage
-   model. **Prefer NO new pip dependency**: implement a small covergroup helper
-   (dict-of-bins with `sample()` and a `report()` that prints hit/total per
-   group and an overall %). Only if it is clearly cleaner may you use
-   `cocotb_coverage`; if you do, you MUST also add it to the `pip install` line
-   in **both** `.github/workflows/plan-swarm.yml` and `.github/workflows/swarm.yml`
-   and to the `Dockerfile` cocotb install, and pin the version. Cover at least:
-   - **Transaction direction:** read, write.
-   - **Address region:** low / mid / high partitions of the AXI-Lite memory map
-     (derive from the memory depth in the RTL/params — do not hardcode a stale
-     size), plus first-word and last-word boundary bins.
-   - **Data pattern:** zero, all-ones, walking-1, walking-0, random (buckets the
-     existing `AxiWalkingSeq` / `AxiRandomSeq` already generate).
-   - **Response codes:** every `RRESP`/`BRESP` value the DUT can legally return
-     (OKAY, and any error/exclusive codes the RTL actually drives) — sample from
-     the monitor, not the sequence.
-   - **Burst / multi-outstanding:** burst length buckets (1, small, max) and
-     outstanding-depth buckets (1, >1) exercised by `AxiBurstSeq` /
-     `AxiMultiReadSeq`.
-   - **Cross:** direction × address-region (the meaningful cross; keep the cross
-     space small so it is closeable).
-   Add AoU-protocol bins **only where the PyUVM monitor can already observe the
-   signal** (e.g. message-type / credit / activation state if surfaced at the
-   monitored interface). If a state is not observable at this env's interface,
-   note it in the PR as covered by the SV/act/reorder envs instead of inventing a
-   probe — do not reach into RTL internals from Python.
-
-2. **Sample it** — in `dv/cocotb/axi_components.py`, add a coverage subscriber
-   (a `uvm_subscriber`/analysis export off the existing monitor, mirroring how
-   the scoreboard/monitor are wired) that calls `cov.sample(item)` on every
-   transaction. Do NOT sample from the driver/sequence — sample observed traffic
-   only. Construct one shared coverage model in the env and `report()` it in the
-   env's `report_phase` (or `final`), printing a banner in the repo's
-   `[COV-FUNC] …` style consistent with the other DV banners.
-
-3. **Enforce a floor** — add a functional-coverage floor (e.g. `FCOV_MIN`,
-   default 100 for this model since every bin is meant to be reachable; if you
-   justify a lower floor, say why in the PR). On the final test's `report_phase`,
-   fail (non-zero → cocotb test failure) if achieved functional coverage is below
-   the floor. Wire a short **`[COV-FUNC] PASS/FAIL`** line so `make test` surfaces
-   it. Keep the existing per-test PASS banners and the read-count checks intact.
-
-4. **Close the holes** — run it, see which bins are unhit, and add the minimal
-   directed/constrained stimulus (extend an existing sequence in `dv/cocotb/axi_seq.py`,
-   or add one small new sequence + test entry in `axi_test.py`) to hit them.
-   Boundary addresses, both error responses if reachable, walking patterns, and
-   the burst/outstanding buckets are the likely gaps. Aim for the model reporting
-   **100% of its defined goal**.
-
-5. **Docs** — `docs/PLAN.md`: note functional coverage is now part of the PyUVM
-   env (line coverage via Verilator + functional coverage via the PyUVM model),
-   and tick the PyUVM coverage-closure item. `README.md` verification section and
-   `docs/DOCKER.md`: mention the `[COV-FUNC]` functional-coverage report + floor.
+- `rtl/aou_axi_initiator_bridge.sv` — instantiate `aou_reorder`, drive issue/
+  completion/output, keep AXI R/B ordering compliant. Default path unchanged.
+- `rtl/aou_axi_target_bridge.sv` (+ optional small wrapper) — the `OOO_EN` OOO
+  source; pass-through when disabled.
+- `rtl/aou_pkg.sv` — only if a response tag field is genuinely required; keep the
+  `OOO_EN=0` byte map identical (prove it in `dv/pack`).
+- `rtl/axi_ucie_mem_top.sv` — thread the `OOO_EN` parameter (default 0).
+- **DV (the proof):**
+  - Extend `dv/reorder` or add a top-level cocotb/SV test that, with `OOO_EN=1`,
+    issues **interleaved multi-ID** read/write traffic and checks: (a) per-ID
+    responses arrive in issue order, (b) different-ID responses actually overtake
+    (observe a real reorder, not just tolerate it), (c) no cross-ID data/credit
+    leakage, (d) every response is eventually delivered (no leak/loss).
+  - A **default-off regression**: the full chain with `OOO_EN=0` reproduces today's
+    exact banners/read-counts in cocotb + sv + systemc.
+  - Update SVA if any concurrent property needs to bind on the new wiring; never
+    weaken an existing property.
 
 ## Acceptance
 
-- `make test` runs the PyUVM tests and prints a **`[COV-FUNC]` report**; the final
-  test enforces the functional-coverage floor and the run is **green** with the
-  model at its goal (100% unless a justified lower floor is documented).
-- No existing DV env regresses: `make check` (cocotb + sv + vlt + pack + act +
-  reorder + systemc) stays green, and `make coverage` still meets `COV_MIN`.
-- `make regress` ends `[REGRESS] … PASSED` (check + coverage + formal), coverage
-  floors met, formal still 4 proofs green.
-- If any bin is unreachable without an RTL change, it is **reported in the PR**,
-  not silently dropped.
+- With `OOO_EN=1`: an end-to-end test demonstrates a **real different-ID overtake**
+  AND same-ID in-order delivery, no cross-ID leakage, all responses delivered.
+- With `OOO_EN=0` (default): **every** existing env is byte-identical green
+  (`make check` unchanged banners), `make coverage` ≥ `COV_MIN`, `dv/pack` byte-map
+  unchanged, formal still 4 proofs green.
+- `make regress` ends `[REGRESS] … PASSED`.
+- `docs/PLAN.md` F2: move "full-datapath OOO integration" from REMAINING to DONE,
+  describing the `OOO_EN` source + the initiator reorder wiring. `README.md` +
+  `docs/DOCKER.md` updated.
 
-## Notes / constraints
+## Notes / constraints — READ
 
-- **Additive DV only** — no RTL behavior change. Sample observed transactions from
-  the monitor; never from the stimulus side, and never by peeking RTL internals
-  from Python.
-- Keep the coverage model **deterministic and dependency-light** so it runs
-  identically in CI and the container. If you add `cocotb_coverage`, update every
-  install site (both workflows + Dockerfile) and pin it — a missing dep must not
-  silently skip coverage.
-- Follow repo conventions: banners in the existing `[..]` style, pinned-tool
-  paths, one clean commit, the `Co-Authored-By` trailer. Never commit on `main`;
-  branch and open a PR.
-- Checkpoint continuously (branch early, push incrementally, draft PR, mark
-  "PARTIAL — resume needed" on cutoff) per the standing swarm task.
+- **STOP-and-report over faking.** If real OOO integration cannot be done without
+  changing the default chain's behavior, or a genuine AXI-ordering counterexample
+  appears, **do NOT** weaken the invariant or hack the memory to force green — open
+  the PR as **"PARTIAL — design blocker"** describing exactly what breaks and the
+  options. A faithful partial with a clear blocker beats a green that fakes OOO.
+- The OOO source must be a *legal* AXI/AoU behavior (only different-ID reordering),
+  not random corruption. Same-ID order is inviolable.
+- Additive/opt-in: `OOO_EN=0` is the shipping default and must be byte-identical.
+- Follow repo conventions (pinned-tool absolute paths, banners in the `[..]` style,
+  one clean commit per logical step, the `Co-Authored-By` trailer). Never commit on
+  `main`; branch and open a PR. Checkpoint continuously (branch early, push
+  incrementally, draft PR, mark "PARTIAL — resume needed" on cutoff).
