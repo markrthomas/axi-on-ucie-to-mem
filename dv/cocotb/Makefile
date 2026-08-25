@@ -11,6 +11,8 @@ VERILOG_SOURCES = \
     $(RTL_DIR)/ucie_stream_link.sv \
     $(RTL_DIR)/aou_activation.sv \
     $(RTL_DIR)/axi_lite_mem.sv \
+    $(RTL_DIR)/aou_reorder.sv \
+    $(RTL_DIR)/aou_ooo_resp_src.sv \
     $(RTL_DIR)/aou_axi_initiator_bridge.sv \
     $(RTL_DIR)/aou_axi_target_bridge.sv \
     $(RTL_DIR)/axi_ucie_mem_top.sv

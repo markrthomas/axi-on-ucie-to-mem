@@ -22,11 +22,12 @@ The image is defined by four files at the repo root:
 # build the image (downloads ~677 MB oss-cad-suite once; cached thereafter)
 docker build -t aou-dv .
 
-# run the full CI gate (lint + cocotb + SV + pack + act + reorder + SystemC + coverage)
+# run the full CI gate (lint + cocotb + SV + pack + act + reorder + ooo + SystemC + coverage)
 docker run --rm aou-dv
 
 # run just one environment
 docker run --rm aou-dv make reorder
+docker run --rm aou-dv make ooo        # end-to-end OOO_EN=1 chain
 docker run --rm aou-dv make check      # the gate without coverage
 
 # open an interactive shell in the toolchain (tmux is available for long-running
@@ -37,7 +38,7 @@ docker run --rm -it --entrypoint bash aou-dv
 A green run ends with:
 
 ```
-[REGRESS] lint + cocotb + SV(Icarus+Verilator) + pack + act + reorder + SystemC + coverage + formal PASSED
+[REGRESS] lint + cocotb + SV(Icarus+Verilator) + pack + act + reorder + ooo + SystemC + coverage + formal PASSED
 ```
 
 and exit status `0`. Any failing environment stops the gate and returns non-zero.
@@ -140,6 +141,7 @@ Entrypoint dispatch:
 |---------|-------------|
 | `docker run --rm aou-dv` | `make ci  <pinned-tool args>` |
 | `docker run --rm aou-dv make reorder` | `make reorder  <pinned-tool args>` |
+| `docker run --rm aou-dv make ooo` | `make ooo  <pinned-tool args>` |
 | `docker run --rm aou-dv <anything else>` | `<anything else>` verbatim (e.g. `bash`) |
 
 ---
@@ -158,7 +160,7 @@ g++: fatal error: Killed signal terminated program cc1plus
 ```
 
 The job count is the make variable **`VL_JOBS`** across every Verilator DV
-Makefile (`dv/sv`, `dv/pack`, `dv/act`, `dv/reorder`, `dv/systemc`):
+Makefile (`dv/sv`, `dv/pack`, `dv/act`, `dv/reorder`, `dv/ooo`, `dv/systemc`):
 
 - **`VL_JOBS ?= 0`** is the default — one job per core, fast on dev machines and
   CI (unchanged behavior).
@@ -251,7 +253,7 @@ is defined by three agents in `.claude/agents/` (baked into the image) plus
 
 ```
 swarm-manager (opus → claude-opus-5)        # the manager — the top-level session
- ├─ dv-env-tester (haiku → claude-haiku-4-5)  × cocotb, sv, pack, act, reorder, systemc  (parallel)
+ ├─ dv-env-tester (haiku → claude-haiku-4-5)  × cocotb, sv, pack, act, reorder, ooo, systemc  (parallel)
  └─ infra-agent   (sonnet → claude-sonnet-5)  # Dockerfile / entrypoint / railway.toml / CI
 ```
 
@@ -289,7 +291,7 @@ Runtime inputs:
 | `SWARM_PERMISSION_MODE` | tuning | default `acceptEdits`. |
 | `SWARM_ALLOWED_TOOLS` | tuning | default `Bash,Read,Edit,Write,Grep,Glob,Task,Agent`. |
 
-**Compute guard.** Running all six DV environments at once means up to six
+**Compute guard.** Running all seven DV environments at once means up to seven
 concurrent Verilator/g++ compiles — on a small host that OOM-kills `cc1plus`
 (the same failure the `VL_JOBS` cap fixes for a single build). `swarm.sh`
 therefore reads `MemAvailable` and dispatches testers in **batches** of
@@ -640,5 +642,6 @@ the **same tools the same way** and run the **same `make ci` gate**. CI does not
 build the Dockerfile — it's a parallel, equivalent recipe. Keep the two in sync:
 if you bump a tool version or add an apt/pip dependency in one, mirror it in the
 other. Both are validated by the same green gate (cocotb 6/6 with functional
-coverage 26/26 bins, SV 134 reads, pack 63, act 30, reorder 76, SystemC 145,
+coverage 26/26 bins, SV 134 reads, pack 63, act 30, reorder 76, ooo 80 beats /
+10 different-ID overtakes, SystemC 145,
 line coverage 92.9%).

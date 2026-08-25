@@ -10,6 +10,14 @@
 // request (burst type in FLEX[1:0]); the {AW,AR}ID tag is echoed into {B,R}ID.
 //
 // Single-outstanding (one burst in flight), matching the initiator bridge.
+//
+// OOO_EN (docs/PLAN.md F2, default 0 = off): when set, the response flit stream
+// leaving this bridge is routed through aou_ooo_resp_src, which may let a later
+// response of a DIFFERENT ID overtake an earlier held one (never same-ID, never
+// splitting a burst).  That is the "OOO source" the initiator's aou_reorder
+// buffer is there to absorb.  With OOO_EN=0 the response path is a plain wire
+// and the module is not elaborated, so the datapath is bit- and cycle-identical
+// to the in-order build.
 // -----------------------------------------------------------------------------
 `ifndef AOU_AXI_TARGET_BRIDGE_SV
 `define AOU_AXI_TARGET_BRIDGE_SV
@@ -25,7 +33,10 @@ module aou_axi_target_bridge
     // response message type (granted by chiplet A).  ReadData is sized for a
     // full read burst (128 granules = 16 beats).
     parameter int CR_RDATA = 128,               // ReadData  credits (16 beats)
-    parameter int CR_WRESP = WRITERESP_GRAN     // WriteResp credits (1 granule)
+    parameter int CR_WRESP = WRITERESP_GRAN,    // WriteResp credits (1 granule)
+    // Optional out-of-order response source (default OFF -> pass-through).
+    parameter bit OOO_EN       = 1'b0,
+    parameter int OOO_HOLD_CYC = 48
 ) (
     input  logic                    clk,
     input  logic                    rstn,
@@ -70,6 +81,9 @@ module aou_axi_target_bridge
   logic [7:0]            len_q, beat_q;    // AxLEN, current beat index
   logic [2:0]            size_q;
   logic [1:0]            burst_q;
+  // AoU transaction tag echoed back to the initiator in FLEX[15:12].  Always 0
+  // in the default (in-order) build, so the response byte map is unchanged.
+  logic [FLEX_TAG_W-1:0] tag_q;
   // write-beat buffer + mem-write handshake
   logic [AXI_DATA_W-1:0] wdata_q;
   logic [AXI_STRB_W-1:0] wstrb_q;
@@ -111,12 +125,20 @@ module aou_axi_target_bridge
   wire last_beat = (beat_q == len_q);
 
   // === §8 activation + §6.4.3 reset credit exchange ========================
-  localparam logic [2:0] GR_WREQ  = 3'b010;   // >= WRITEREQ_GRAN  (3)
-  localparam logic [2:0] GR_RREQ  = 3'b010;   // >= READREQ_GRAN   (3)
+  // In OOO mode the initiator keeps several requests in flight before any of
+  // their responses come back, so it must be granted room for more than one
+  // WriteReq/ReadReq message; the default build grants exactly today's values.
+  localparam logic [2:0] GR_WREQ  = OOO_EN ? 3'b100 : 3'b010;  // 16 : 4 granules
+  localparam logic [2:0] GR_RREQ  = OOO_EN ? 3'b100 : 3'b010;  // 16 : 4 granules
   localparam logic [2:0] GR_WDATA = 3'b111;   // 128 granules (16 WriteData beats)
+  // A held WriteResp plus one overtaking it needs more than a single credit.
+  localparam int         LCR_WRESP = OOO_EN ? 8 : CR_WRESP;
 
   logic [PLP_BITS-1:0]   dtx_data, drx_data;
   logic                  dtx_valid, dtx_ready, drx_valid, drx_ready;
+  // Response path as the FSM sees it (may be reordered on the way to dtx_*).
+  logic [PLP_BITS-1:0]   rsp_data;
+  logic                  rsp_valid, rsp_ready;
   logic                  seed_valid, act_disabled;
   logic [2:0]            seed_rdata;
   logic [1:0]            seed_wresp;
@@ -142,6 +164,21 @@ module aou_axi_target_bridge
     .seed_wdata(seed_wdata), .seed_rdata(seed_rdata), .seed_wresp(seed_wresp)
   );
 
+  // --- optional out-of-order response source (docs/PLAN.md F2) --------------
+  generate
+    if (OOO_EN) begin : g_ooo_src
+      aou_ooo_resp_src #(.AXI_ID_W(AXI_ID_W), .HOLD_CYC(OOO_HOLD_CYC)) u_ooo (
+        .clk(clk), .rstn(rstn),
+        .in_data(rsp_data),  .in_valid(rsp_valid),  .in_ready(rsp_ready),
+        .out_data(dtx_data), .out_valid(dtx_valid), .out_ready(dtx_ready)
+      );
+    end else begin : g_inorder_src
+      assign dtx_data  = rsp_data;
+      assign dtx_valid = rsp_valid;
+      assign rsp_ready = dtx_ready;
+    end
+  endgenerate
+
   // MsgCredit this bridge advertises to A (grants WriteReq/ReadReq/WriteData).
   function automatic logic [CREDIT_W-1:0] return_credit();
     return_credit = mk_msgcredit(2'b00,
@@ -155,7 +192,8 @@ module aou_axi_target_bridge
   function automatic flit_t build_wresp_flit();
     msg_t m; payload_t pl;
     begin
-      m  = mk_writeresp(2'b00, '0, {{(AOU_ID_W-AXI_ID_W){1'b0}}, id_q}, bresp_q);
+      m  = mk_writeresp(2'b00, mk_flex_tag(tag_q),
+                        {{(AOU_ID_W-AXI_ID_W){1'b0}}, id_q}, bresp_q);
       pl = payload_put('0, 0, WRITERESP_GRAN, m);
       build_wresp_flit = flit_assemble_cr('0, msgstart_t'(1), return_credit(), pl);
     end
@@ -164,7 +202,8 @@ module aou_axi_target_bridge
   function automatic flit_t build_rdata_flit();
     msg_t m; payload_t pl;
     begin
-      m  = mk_readdata256(2'b00, '0, {{(AOU_ID_W-AXI_ID_W){1'b0}}, id_q},
+      m  = mk_readdata256(2'b00, mk_flex_tag(tag_q),
+                          {{(AOU_ID_W-AXI_ID_W){1'b0}}, id_q},
                           rresp_q, last_beat,
                           {{(AOU_DATA_W-AXI_DATA_W){1'b0}}, rdata_q});
       pl = payload_put('0, 0, READDATA_GRAN, m);
@@ -188,6 +227,8 @@ module aou_axi_target_bridge
   assign in_addr  = (in_mt == MT_WRITEREQ) ? wr_addr(in_msg) : rr_addr(in_msg);
   assign in_id    = (in_mt == MT_WRITEREQ) ? wr_id(in_msg)   : rr_id(in_msg);
   assign in_wdata = wd_data(in_msg);
+  // WriteReq and ReadReq share the FLEX offset, so one getter covers both.
+  wire [FLEX_TAG_W-1:0] in_tag = flex_tag(msg_flex(in_msg));
   assign in_wstrb = wd_strb(in_msg);
 
   // --- combinational outputs ------------------------------------------------
@@ -206,12 +247,12 @@ module aou_axi_target_bridge
   assign m_arvalid = (state == S_RBEAT) && !rpending && !ar_done;
   assign m_rready  = (state == S_RBEAT) && !rpending;
   // response send gated by credit (§6.1)
-  assign dtx_valid = ((state == S_WRESP) && (cr_wresp >= WRITERESP_GRAN[7:0])) ||
+  assign rsp_valid = ((state == S_WRESP) && (cr_wresp >= WRITERESP_GRAN[7:0])) ||
                      ((state == S_RBEAT) && rpending && (cr_rdata >= READDATA_GRAN[7:0]));
 
   always_comb begin
-    if (state == S_WRESP) dtx_data = build_wresp_flit();
-    else                  dtx_data = build_rdata_flit();
+    if (state == S_WRESP) rsp_data = build_wresp_flit();
+    else                  rsp_data = build_rdata_flit();
   end
 
   // --- FSM ------------------------------------------------------------------
@@ -220,6 +261,7 @@ module aou_axi_target_bridge
       state    <= S_IDLE;
       id_q     <= '0; base_q <= '0; addr_q <= '0;
       len_q    <= '0; beat_q <= '0; size_q <= '0; burst_q <= '0;
+      tag_q    <= '0;
       wdata_q  <= '0; wstrb_q <= '0; wpending <= 1'b0;
       aw_done  <= 1'b0; w_done <= 1'b0; bresp_q <= '0;
       rdata_q  <= '0; rresp_q <= '0; rpending <= 1'b0; ar_done <= 1'b0;
@@ -231,18 +273,19 @@ module aou_axi_target_bridge
         cr_rdata <= '0; cr_wresp <= '0;
       end else if (seed_valid) begin
         cr_rdata <= sat_add(cr_rdata, cred_decode(seed_rdata),         CR_RDATA);
-        cr_wresp <= sat_add(cr_wresp, cred_decode({1'b0, seed_wresp}), CR_WRESP);
+        cr_wresp <= sat_add(cr_wresp, cred_decode({1'b0, seed_wresp}), LCR_WRESP);
       end
       unique case (state)
         S_IDLE: if (drx_valid) begin : s_idle_blk
           logic [CREDIT_W-1:0] mc;
           mc = flit_credit(drx_data);
           cr_rdata <= sat_add(cr_rdata, cred_decode(mc_rdata(mc)),          CR_RDATA);
-          cr_wresp <= sat_add(cr_wresp, cred_decode({1'b0, mc_wresp(mc)}), CR_WRESP);
+          cr_wresp <= sat_add(cr_wresp, cred_decode({1'b0, mc_wresp(mc)}), LCR_WRESP);
           id_q    <= in_id[AXI_ID_W-1:0];
           base_q  <= in_addr[AXI_ADDR_W-1:0];
           addr_q  <= in_addr[AXI_ADDR_W-1:0];
           beat_q  <= '0;
+          tag_q   <= in_tag;
           if (in_mt == MT_WRITEREQ) begin
             len_q   <= wr_len(in_msg);
             size_q  <= wr_size(in_msg);
@@ -278,7 +321,7 @@ module aou_axi_target_bridge
             if (last_beat) state <= S_WRESP;
           end
         end
-        S_WRESP: if (dtx_valid && dtx_ready) begin
+        S_WRESP: if (rsp_valid && rsp_ready) begin
           cr_wresp  <= cr_wresp - WRITERESP_GRAN[7:0];
           ret_wreq  <= '0; ret_rreq <= '0; ret_wdata <= '0;
           state     <= S_IDLE;
@@ -292,7 +335,7 @@ module aou_axi_target_bridge
             rpending <= 1'b1;
           end
           // send the buffered beat as a ReadData flit
-          if (dtx_valid && dtx_ready) begin
+          if (rsp_valid && rsp_ready) begin
             cr_rdata <= cr_rdata - READDATA_GRAN[7:0];
             rpending <= 1'b0; ar_done <= 1'b0;
             addr_q   <= next_addr();

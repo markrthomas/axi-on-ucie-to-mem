@@ -1,6 +1,6 @@
 ---
 name: dv-env-tester
-description: Runs ONE named AoU DV environment via the repo-root Makefile and reports pass/fail with the real banner, plus a focused review of the code it exercised (or the fault, on failure). Invoked once per environment (cocotb, sv, pack, act, reorder, systemc) by the swarm-manager. Read-only — it tests and reports, it does not edit.
+description: Runs ONE named AoU DV environment via the repo-root Makefile and reports pass/fail with the real banner, plus a focused review of the code it exercised (or the fault, on failure). Invoked once per environment (cocotb, sv, pack, act, reorder, ooo, systemc) by the swarm-manager. Read-only — it tests and reports, it does not edit.
 tools: ["Bash", "Read", "Grep", "Glob"]
 model: haiku
 ---

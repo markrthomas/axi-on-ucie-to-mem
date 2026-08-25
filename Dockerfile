@@ -4,7 +4,7 @@
 #
 # Mirrors .github/workflows/ci.yml exactly so `docker run` reproduces the CI
 # gate (lint + cocotb/PyUVM + SV directed on Icarus & Verilator + pack + act +
-# reorder + SystemC + Verilator coverage + SymbiYosys formal):
+# reorder + ooo + SystemC + Verilator coverage + SymbiYosys formal):
 #   * Ubuntu 24.04 ships SystemC 2.3.3 (libsystemc-dev) and the apt Icarus that
 #     the cocotb VPI is built against.
 #   * Verilator is PINNED to the oss-cad-suite build used for local dev + CI

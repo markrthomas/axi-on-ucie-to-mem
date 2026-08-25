@@ -23,7 +23,7 @@ Run from the repo root. Key targets:
 - `make reorder`   — per-ID response reorder buffer / out-of-order-by-ID (Icarus+Verilator)
 - `make systemc`   — SystemC TB (Verilator --sc + sc_main)
 - `make coverage`  — Verilator --coverage; fails below floor COV_MIN (default 85%)
-- `make check`     — lint + cocotb + sv + vlt + pack + act + reorder + systemc (the gate)
+- `make check`     — lint + cocotb + sv + vlt + pack + act + reorder + ooo + systemc (the gate)
 - `make regress`   — check + coverage (CI-style)
 
 `make uvm` is license-gated (skips cleanly without VCS/Xcelium/Questa) — run it but

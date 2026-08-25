@@ -34,6 +34,8 @@ RTL := \
     $(RTL_DIR)/ucie_stream_link.sv \
     $(RTL_DIR)/aou_activation.sv \
     $(RTL_DIR)/axi_lite_mem.sv \
+    $(RTL_DIR)/aou_reorder.sv \
+    $(RTL_DIR)/aou_ooo_resp_src.sv \
     $(RTL_DIR)/aou_axi_initiator_bridge.sv \
     $(RTL_DIR)/aou_axi_target_bridge.sv \
     $(RTL_DIR)/axi_ucie_mem_top.sv
@@ -44,6 +46,7 @@ SV_DIR     := dv/sv
 PACK_DIR   := dv/pack
 ACT_DIR    := dv/act
 REORDER_DIR := dv/reorder
+OOO_DIR     := dv/ooo
 SC_DIR     := dv/systemc
 UVM_DIR    := uvm
 TB_RESULTS := $(TB_DIR)/results.xml
@@ -89,7 +92,7 @@ endif
 .PHONY: default help \
 	test test-all test-write-read test-random test-walking test-burst \
 	test-outstanding test-coverage fcov-reset \
-	sv vlt pack act reorder systemc uvm coverage formal waves wave check regress ci \
+	sv vlt pack act reorder ooo systemc uvm coverage formal waves wave check regress ci \
 	lint _lint_iverilog _lint_verilator clean
 
 default: help
@@ -114,6 +117,7 @@ help:
 	@echo "    make pack              # §4.3/§5.8 byte-exact packing conformance (Icarus+Verilator)"
 	@echo "    make act               # §8 activation FSM unit test: deactivate/re-activate/ERROR (Icarus+Verilator)"
 	@echo "    make reorder           # per-ID response reorder buffer: out-of-order-by-ID completion (Icarus+Verilator)"
+	@echo "    make ooo               # END-TO-END out-of-order-by-ID chain (OOO_EN=1): real different-ID overtake (Icarus+Verilator)"
 	@echo "    make systemc           # SystemC TB (Verilator --sc model + sc_main)"
 	@echo "    make uvm               # SystemVerilog UVM TB (license-gated; skips if no VCS/Xcelium/Questa)"
 	@echo "    make coverage          # Verilator --coverage -> sim/coverage.info (floor COV_MIN=$(COV_MIN)%)"
@@ -123,7 +127,7 @@ help:
 	@echo ""
 	@echo "  Gates:"
 	@echo "    make lint              # iverilog -Wall + Verilator RTL lint"
-	@echo "    make check             # lint + cocotb + SV(Icarus+Verilator) + pack + act + SystemC"
+	@echo "    make check             # lint + cocotb + SV(Icarus+Verilator) + pack + act + reorder + ooo + SystemC"
 	@echo "    make regress           # check + coverage + formal (CI-style pass/fail)"
 	@echo "    make ci                # regress"
 	@echo ""
@@ -246,6 +250,14 @@ reorder:
 	$(MAKE) -C $(REORDER_DIR) icarus
 	$(MAKE) -C $(REORDER_DIR) verilator
 
+# End-to-end OOO datapath proof: axi_ucie_mem_top with OOO_EN=1 driven by
+# interleaved multi-ID traffic.  Checks same-ID in-order delivery, a REAL
+# different-ID overtake (fails if none is observed), no cross-ID leakage and
+# that every response is delivered.  See docs/PLAN.md F2.
+ooo:
+	$(MAKE) -C $(OOO_DIR) icarus
+	$(MAKE) -C $(OOO_DIR) verilator
+
 # SystemC TB: Verilator --sc model of the DUT + hand-written sc_main driver.
 # Degrades gracefully (skip, exit 0) if Verilator or SystemC is absent.
 systemc:
@@ -335,13 +347,13 @@ formal:
 	echo "[FORMAL] PASS: $(words $(FORMAL_SBY)) proofs, gating tasks: $$gating"
 
 # --- gates -------------------------------------------------------------------
-check: lint test-all sv vlt pack act reorder systemc
+check: lint test-all sv vlt pack act reorder ooo systemc
 
 # regress is the single signoff gate: everything `check` runs, plus the coverage
 # floor and the formal tier.  `formal` is kept OUT of the lighter `check` so the
 # quick loop stays quick; only regress/ci pay the prover time.
 regress: check coverage formal
-	@echo "[REGRESS] lint + cocotb + SV(Icarus+Verilator) + pack + act + reorder + SystemC + coverage + formal PASSED"
+	@echo "[REGRESS] lint + cocotb + SV(Icarus+Verilator) + pack + act + reorder + ooo + SystemC + coverage + formal PASSED"
 
 ci: regress
 	@echo "[CI] full regression PASSED"
@@ -353,6 +365,7 @@ clean:
 	$(MAKE) -C $(PACK_DIR) clean 2>/dev/null || true
 	$(MAKE) -C $(ACT_DIR) clean 2>/dev/null || true
 	$(MAKE) -C $(REORDER_DIR) clean 2>/dev/null || true
+	$(MAKE) -C $(OOO_DIR) clean 2>/dev/null || true
 	$(MAKE) -C $(SC_DIR) clean 2>/dev/null || true
 	$(MAKE) -C $(UVM_DIR) clean 2>/dev/null || true
 	rm -f $(FCOV_DB)

@@ -36,7 +36,7 @@ prove: abc pdr
 [script]
 plugin -i slang
 read_slang --top aou_credit_fv \
-    aou_pkg.sv aou_activation.sv \
+    aou_pkg.sv aou_activation.sv aou_reorder.sv aou_ooo_resp_src.sv \
     aou_axi_initiator_bridge.sv aou_axi_target_bridge.sv \
     aou_credit_fv.sv
 prep -top aou_credit_fv
@@ -48,6 +48,8 @@ opt -fast
 [files]
 rtl/aou_pkg.sv
 rtl/aou_activation.sv
+rtl/aou_reorder.sv
+rtl/aou_ooo_resp_src.sv
 rtl/aou_axi_initiator_bridge.sv
 rtl/aou_axi_target_bridge.sv
 formal/aou_credit_fv.sv

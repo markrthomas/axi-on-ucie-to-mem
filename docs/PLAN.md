@@ -178,10 +178,10 @@ control, byte-exact §4.3/§5.8 packing, the full §8 activation FSM — bring-u
 in FLEX[1:0], per-beat target expansion, `{B,R}ID` echo), and
 **multiple-outstanding transactions with in-order completion** (initiator request
 queue), **Deactivate quiescing Option 2** (§8.3.2 hardware-managed), **wide data
-(512/1024b)**, the **out-of-order-by-ID reorder block**, and a **formal-verification
-tier** (yosys-slang; flit + credit proofs, activation in progress) have all since
-been implemented.  Only F1 (multiple resource planes) and the full-datapath OOO
-integration part of F2 remain.)
+(512/1024b)**, the **out-of-order-by-ID reorder block** *and its opt-in
+full-datapath integration* (`OOO_EN`), and a **formal-verification tier**
+(yosys-slang; flit + credit proofs, activation in progress) have all since been
+implemented.  Only F1 (multiple resource planes) remains.)
 
 ## Remaining follow-ons (actionable backlog)
 
@@ -213,7 +213,7 @@ in-order completion** (initiator request queue) already in place.
   credit/response leakage; SVA bounds hold per plane.
 - **Effort:** large (data-path + arbitration + DV). Biggest single item.
 
-### F2 — Full AXI4 (bursts ✅, multiple-outstanding ✅, wide data ✅, OOO-by-ID block ✅)
+### F2 — Full AXI4 (bursts ✅, multiple-outstanding ✅, wide data ✅, OOO-by-ID ✅ end-to-end) — DONE
 - **Spec:** AoU §5 message formats for `WriteData512/1024` and multi-beat
   Read/Write data; AXI4 (`AxLEN>0`, `AxSIZE`, burst types, ID-based reordering).
 - **DONE (sub-stages b + in-order c + wide data + OOO-by-ID reorder block):**
@@ -233,23 +233,69 @@ in-order completion** (initiator request queue) already in place.
     off the 32-bit AXI end-to-end path (kept out of coverage line accounting) and
     are byte-exactly conformance-tested in `dv/pack` (DLENGTH byte-map, data-field
     byte offset, full field round-trip; 63 checks, Icarus + Verilator).
-  - **Out-of-order-by-ID completion** — the current topology (single serialized
-    flit link + single in-order memory) gives OOO **no natural source**, so it is
-    delivered as the deliberate per-ID reorder buffer the initiator would need:
-    `rtl/aou_reorder.sv` allocates a slot per transaction in issue order, accepts
-    completions addressed by tag in ANY order, and releases each response as the
-    oldest un-released of its ID — so a younger different-ID response overtakes an
-    older uncompleted one while same-ID responses stay in issue order (the AXI
-    rule).  It is a self-contained, synthesizable block (not wired into the
-    in-order full chain, which never reorders), verified in `dv/reorder`
-    (cross-ID overtake, same-ID ordering, capacity/reclaim, and a scrambled-
-    completion per-ID reference-FIFO drain; 76 checks, Icarus + Verilator).  Full
-    datapath integration (variable-latency / interleaved target) is future work.
+  - **Out-of-order-by-ID reorder block** — `rtl/aou_reorder.sv` allocates a slot
+    per transaction in issue order, accepts completions addressed by tag in ANY
+    order, and releases each response as the oldest un-released of its ID — so a
+    younger different-ID response overtakes an older uncompleted one while
+    same-ID responses stay in issue order (the AXI rule).  Verified standalone in
+    `dv/reorder` (cross-ID overtake, same-ID ordering, capacity/reclaim, and a
+    scrambled-completion per-ID reference-FIFO drain; 76 checks, Icarus +
+    Verilator).
+  - **Full-datapath OOO integration (`OOO_EN`, opt-in, default 0)** — the
+    in-order topology (single serialized flit link + single in-order memory) has
+    **no natural OOO source**, so one was added, and the reorder buffer was wired
+    into the response path behind it:
+    * **OOO source (target).** `rtl/aou_ooo_resp_src.sv` sits on the target
+      bridge's response flit path.  It may HOLD one completed single-flit
+      response (a `WriteResp`, or a single-beat `ReadData`) and forward a later
+      response of a **different ID** past it, so that response really does
+      overtake on the link.  The held one is released as soon as one whole
+      transaction has passed it, or a **same-ID** response arrives (same-ID order
+      is inviolable), or a bounded hold timer expires (liveness when there is
+      nothing to overtake).  Multi-flit read bursts are always forwarded whole
+      and are never held, so a transaction's flits are never split or
+      interleaved.  Bounded state: one flit register, one ID, one down-counter.
+    * **Transaction tag.** No new message field: the tag rides in `FLEX[15:12]`,
+      a slice of an existing §5.2 FLEX field (`FLEX[1:0]` already carries
+      `AxBURST`).  The initiator stamps the reorder-slot index on the
+      `WriteReq`/`ReadReq`; the target echoes it into the `WriteResp`/`ReadData`.
+      At `OOO_EN=0` the initiator stamps 0 and the target echoes 0, so the §4.3 /
+      §5.8 byte map is unchanged (`dv/pack` 63 checks unchanged).
+    * **Reorder wiring (initiator).** At `OOO_EN=1` the initiator FSM issues a
+      request and returns to idle instead of blocking on its response, so up to
+      `OOO_DEPTH` transactions are in flight.  Two `aou_reorder` instances —
+      reads → R, writes → B, so neither channel head-of-line blocks the other —
+      allocate a slot per issue keyed by AXI ID, take `cmp_*` by tag as
+      completions arrive in any order, and present `out_*` (oldest-of-its-ID)
+      onto the AXI R/B channels through registered output stages (the buffer's
+      `out_*` select is combinational and can re-point, so it is latched before a
+      burst is streamed).  `DEPTH = REQ_QD` (power of two); no new unbounded
+      state.  §6 credit accounting is folded into a single next-value so a send
+      and a replenish landing in the same cycle cannot drop a credit, and the
+      request-message credit grants scale with the outstanding capacity **only**
+      in OOO mode.  Issue is additionally throttled by the §6 ReadData credit
+      ceiling: because this bridge only returns response credits piggybacked on
+      its next request flit, an unthrottled OOO issue path can leave the target
+      stalled at zero credits with no further request behind it to carry the
+      returns — so each read is charged its `(AxLEN+1)*READDATA_GRAN` granules at
+      issue and released per beat, and a read that would push the in-flight total
+      past the granted ceiling waits.  A lone transaction is always let through,
+      so the worst case degenerates to the in-order path.
+    * **Default-off invariant.** All of the above lives in `generate` branches /
+      a separate module that are **not elaborated** at `OOO_EN=0`, so the
+      shipping default chain is bit- and cycle-identical to the in-order build
+      (`dv/sv` reaches `$finish` on the same cycle, 18920, as before).
 - **Verify:** per-beat burst scoreboards in cocotb/SV/SystemC; multiple-
   outstanding tests fill the queue and check in-order completion; `dv/pack` for
-  wide data; `dv/reorder` for out-of-order-by-ID release.
-- **Effort:** full-datapath OOO integration (interleaved target) remains, sized
-  independently.
+  wide data; `dv/reorder` for the standalone reorder block; and `dv/ooo`
+  (`make ooo`, Icarus + Verilator) for the end-to-end OOO chain — interleaved
+  multi-ID traffic against `axi_ucie_mem_top #(.OOO_EN(1))`, checking same-ID
+  in-order delivery against a per-ID reference FIFO, **a real different-ID
+  overtake** (counted; the test FAILS at zero), no cross-ID leakage, and that
+  every response is delivered:
+  `[OOO-TB] PASS: 80 read beats checked, 4 R + 6 B different-ID overtakes, 0 errors`.
+  Negative control: the same TB at `OOO_EN=0` observes `0 R + 0 B` overtakes and
+  fails, so the check observes reordering rather than merely tolerating it.
 
 ### F3 — Deactivate quiescing Option 2 (hardware-managed quiescing) — DONE
 - **Spec:** §8.3.2 (Option 2 is OPTIONAL; Option 1 already implemented).
