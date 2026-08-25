@@ -109,6 +109,11 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.SWARM_GITHUB_TOKEN || github.token }}
+          # Author the swarm's commits as the triggering user (the repo owner) via
+          # a GitHub noreply address, so GitHub doesn't hold the branch's CI as
+          # `action_required` (which it does for a non-collaborator bot identity).
+          GIT_AUTHOR_NAME: ${{ github.actor }}
+          GIT_AUTHOR_EMAIL: ${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com
           SWARM_MAX_PARALLEL: ${{ inputs.max_parallel }}
           AOU_METRICS_JSON: ${{ github.workspace }}/last-run-metrics.json
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
