@@ -46,7 +46,14 @@
 // flits (CrdtGrant is the peer's last bring-up message).  So a data flit never
 // reaches a still-activating receiver.
 //
-// Scope: CrdtGrant covers resource plane RP0.
+// Scope: one instance manages ONE resource plane's chain.  `RP_ID` (default 0)
+// names that plane: every bring-up/teardown flit this module emits carries
+// FDId = RP_ID (§4.3), its CrdtGrant puts the granted Table-17 codes in the
+// plane's OWN Table-18 slot, its ActivateReq fills the plane's own Table-25
+// Profile slot, and the peer's CrdtGrant is decoded from that same slot — so a
+// credit advertised for another plane can never seed this plane's counters.
+// With RP_ID = 0 (the single-plane default) every emitted flit is byte-identical
+// to the RP0-only build.
 // -----------------------------------------------------------------------------
 `ifndef AOU_ACTIVATION_SV
 `define AOU_ACTIVATION_SV
@@ -61,7 +68,10 @@ module aou_activation
     parameter logic [2:0] GRANT_RREQ  = 3'b000,
     parameter logic [2:0] GRANT_WDATA = 3'b000,
     parameter logic [2:0] GRANT_RDATA = 3'b000,
-    parameter logic [1:0] GRANT_WRESP = 2'b00
+    parameter logic [1:0] GRANT_WRESP = 2'b00,
+    // Resource plane this chain belongs to (§3).  Selects the FDId stamped on
+    // every bring-up flit and the CrdtGrant / ActivateReq per-plane slot used.
+    parameter logic [aou_pkg::RP_W-1:0] RP_ID = 2'b00
 ) (
     input  logic                clk,
     input  logic                rstn,
@@ -133,19 +143,20 @@ module aou_activation
     act_tx_flit  = '0;
     act_tx_valid = 1'b0;
     if (send_areq) begin
-      m  = mk_activate_req(5'b0, 5'b0, 16'b0);
+      m  = mk_activate_req_rp(RP_ID, 5'b0, 5'b0, 16'b0);
       pl = payload_put('0, 0, ACTIVATEREQ_GRAN, m);
-      act_tx_flit  = flit_assemble('0, msgstart_t'(1), pl);
+      act_tx_flit  = flit_assemble(RP_ID, msgstart_t'(1), pl);
       act_tx_valid = 1'b1;
     end else if (send_aack) begin
       m  = mk_activation_other(ACTOP_ACTIVATE_ACK);
       pl = payload_put('0, 0, MISC_GRAN, m);
-      act_tx_flit  = flit_assemble('0, msgstart_t'(1), pl);
+      act_tx_flit  = flit_assemble(RP_ID, msgstart_t'(1), pl);
       act_tx_valid = 1'b1;
     end else if (send_crdt) begin
-      m  = mk_crdtgrant(GRANT_WREQ, GRANT_RREQ, GRANT_WDATA, GRANT_RDATA, GRANT_WRESP);
+      m  = mk_crdtgrant_rp(RP_ID, GRANT_WREQ, GRANT_RREQ, GRANT_WDATA,
+                           GRANT_RDATA, GRANT_WRESP);
       pl = payload_put('0, 0, CRDTGRANT_GRAN, m);
-      act_tx_flit  = flit_assemble('0, msgstart_t'(1), pl);
+      act_tx_flit  = flit_assemble(RP_ID, msgstart_t'(1), pl);
       act_tx_valid = 1'b1;
     // teardown TX is exercised by dv/act, not the full-chain coverage harness
     // (which ties deact_trig/err_clear low) — see the coverage note at the FSM.
@@ -153,12 +164,12 @@ module aou_activation
     end else if (send_dreq) begin
       m  = mk_activation_other(ACTOP_DEACTIVATE_REQ);
       pl = payload_put('0, 0, MISC_GRAN, m);
-      act_tx_flit  = flit_assemble('0, msgstart_t'(1), pl);
+      act_tx_flit  = flit_assemble(RP_ID, msgstart_t'(1), pl);
       act_tx_valid = 1'b1;
     end else if (send_dack) begin
       m  = mk_activation_other(ACTOP_DEACTIVATE_ACK);
       pl = payload_put('0, 0, MISC_GRAN, m);
-      act_tx_flit  = flit_assemble('0, msgstart_t'(1), pl);
+      act_tx_flit  = flit_assemble(RP_ID, msgstart_t'(1), pl);
       act_tx_valid = 1'b1;
     end
     // verilator coverage_on
@@ -188,13 +199,15 @@ module aou_activation
       (rx_is_areq && ((state == ACT_ENABLED)  || (state == ACT_DEACTIVATE))) ||
       (rx_is_dreq && ((state == ACT_DISABLED) || (state == ACT_ACTIVATE))));
 
-  // credit seed (decoded RP0 grant fields) — pulsed as the CrdtGrant is consumed
+  // credit seed — pulsed as the CrdtGrant is consumed.  The grant fields are
+  // read from THIS plane's Table-18 slot, so a grant addressed to another plane
+  // seeds nothing here (its own slot is 0).
   assign seed_valid = rx_valid && !enabled && (state != ACT_ERROR) && rx_is_crdt;
-  assign seed_wreq  = cg_wreq0(rm);
-  assign seed_rreq  = cg_rreq0(rm);
-  assign seed_wdata = cg_wdata0(rm);
-  assign seed_rdata = cg_rdata0(rm);
-  assign seed_wresp = cg_wresp0(rm);
+  assign seed_wreq  = cg_wreq (rm, RP_ID);
+  assign seed_rreq  = cg_rreq (rm, RP_ID);
+  assign seed_wdata = cg_wdata(rm, RP_ID);
+  assign seed_rdata = cg_rdata(rm, RP_ID);
+  assign seed_wresp = cg_wresp(rm, RP_ID);
 
   // --- link / data-path mux -------------------------------------------------
   // ERROR transmits nothing (act_tx_valid is already 0 there); every non-ENABLED

@@ -48,6 +48,12 @@ module aou_axi_initiator_bridge
     parameter int AXI_DATA_W = 32,
     parameter int AXI_STRB_W = AXI_DATA_W/8,
     parameter int AXI_ID_W   = 4,
+    // Resource plane (§3) this bridge chain serves.  Stamped into the FDId of
+    // every flit it sends, into the §5.8 RP field of every message it builds and
+    // into the MsgCredit RP subfield (Table 16) of every credit it returns; its
+    // §8 activation instance uses the matching per-plane CrdtGrant slot.  The
+    // default (RP0) build is byte-identical to the single-plane design.
+    parameter logic [aou_pkg::RP_W-1:0] RP_ID = 2'b00,
     // Multiple-outstanding request-queue depth (AXI AW/AR accepted ahead of the
     // FSM).  Depth 1 reduces to the original single-outstanding behaviour.
     parameter int REQ_QD     = 4,
@@ -200,7 +206,7 @@ module aou_axi_initiator_bridge
   // verilator lint_on UNUSEDSIGNAL
 
   aou_activation #(
-    .GRANT_RDATA(GR_RDATA), .GRANT_WRESP(GR_WRESP)
+    .GRANT_RDATA(GR_RDATA), .GRANT_WRESP(GR_WRESP), .RP_ID(RP_ID)
   ) u_act (
     .clk(clk), .rstn(rstn), .enabled(act_enabled),
     .act_disabled(act_disabled), .error(act_error),
@@ -217,7 +223,7 @@ module aou_axi_initiator_bridge
 
   // MsgCredit this bridge advertises to B (grants ReadData/WriteResp).
   function automatic logic [CREDIT_W-1:0] return_credit();
-    return_credit = mk_msgcredit(2'b00, 3'b000, 3'b000, 3'b000,
+    return_credit = mk_msgcredit(RP_ID, 3'b000, 3'b000, 3'b000,
                                  cred_encode_ge(ret_rdata),
                                  cred_encode_ge2(ret_wresp));
   endfunction
@@ -226,35 +232,35 @@ module aou_axi_initiator_bridge
   function automatic flit_t build_wreq_flit();
     msg_t m; payload_t pl;
     begin
-      m  = mk_writereq(2'b00, 1'b0, req_flex,
+      m  = mk_writereq(RP_ID, 1'b0, req_flex,
                        {{(AOU_ID_W-AXI_ID_W){1'b0}}, id_q}, size_q, prot_q,
                        len_q, '0, '0,
                        {{(AOU_ADDR_W-AXI_ADDR_W){1'b0}}, addr_q});
       pl = payload_put('0, 0, WRITEREQ_GRAN, m);
-      build_wreq_flit = flit_assemble_cr('0, msgstart_t'(1), return_credit(), pl);
+      build_wreq_flit = flit_assemble_cr(RP_ID, msgstart_t'(1), return_credit(), pl);
     end
   endfunction
 
   function automatic flit_t build_wdata_flit();
     msg_t m; payload_t pl;
     begin
-      m  = mk_writedata256(2'b00, '0,
+      m  = mk_writedata256(RP_ID, '0,
                        {{(AOU_DATA_W-AXI_DATA_W){1'b0}}, wdata_q},
                        {{(AOU_STRB_W-AXI_STRB_W){1'b0}}, wstrb_q});
       pl = payload_put('0, 0, WRITEDATA_GRAN, m);
-      build_wdata_flit = flit_assemble_cr('0, msgstart_t'(1), return_credit(), pl);
+      build_wdata_flit = flit_assemble_cr(RP_ID, msgstart_t'(1), return_credit(), pl);
     end
   endfunction
 
   function automatic flit_t build_rreq_flit();
     msg_t m; payload_t pl;
     begin
-      m  = mk_readreq(2'b00, 1'b0, req_flex,
+      m  = mk_readreq(RP_ID, 1'b0, req_flex,
                       {{(AOU_ID_W-AXI_ID_W){1'b0}}, id_q}, size_q, prot_q,
                       len_q, '0, '0,
                       {{(AOU_ADDR_W-AXI_ADDR_W){1'b0}}, addr_q});
       pl = payload_put('0, 0, READREQ_GRAN, m);
-      build_rreq_flit = flit_assemble_cr('0, msgstart_t'(1), return_credit(), pl);
+      build_rreq_flit = flit_assemble_cr(RP_ID, msgstart_t'(1), return_credit(), pl);
     end
   endfunction
 
