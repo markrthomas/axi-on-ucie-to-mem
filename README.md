@@ -241,7 +241,7 @@ buffers (reads → R, writes → B) that re-establish AXI ordering. `make ooo` p
 it end-to-end:
 
 ```
-[OOO-TB] PASS: 16 read beats checked, 4 R + 6 B different-ID overtakes, 0 errors
+[OOO-TB] PASS: 80 read beats checked, 4 R + 6 B different-ID overtakes, 0 errors
 ```
 
 The overtake counters are *checked*, not just reported: the test fails if it sees

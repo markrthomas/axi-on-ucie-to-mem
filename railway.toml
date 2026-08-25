@@ -3,7 +3,7 @@
 #
 # This project is a hardware DV suite, not a web service: it has no listening
 # port.  The container runs `make ci` (the full lint + cocotb + SV + pack + act
-# + reorder + SystemC + coverage gate) and exits with the gate's status
+# + reorder + ooo + SystemC + coverage gate) and exits with the gate's status
 # (0 = green).  Deploy it as a one-off / scheduled job, not an always-on service.
 
 [build]

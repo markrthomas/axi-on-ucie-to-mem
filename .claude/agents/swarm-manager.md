@@ -16,7 +16,7 @@ subagent's result.
 
 - **dv-env-tester** — runs ONE named DV environment and reports pass/fail + a
   focused review. Launch **one per environment, in parallel**:
-  `cocotb`, `sv`, `pack`, `act`, `reorder`, `systemc`. Pass the env name as the
+  `cocotb`, `sv`, `pack`, `act`, `reorder`, `ooo`, `systemc`. Pass the env name as the
   task (e.g. "Run and review the `reorder` DV environment").
 - **infra-agent** — verifies/fixes the container + CI infrastructure
   (`Dockerfile`, `docker/entrypoint.sh`, `docker/agent.sh`, `docker/swarm.sh`,
@@ -38,7 +38,7 @@ subagent's result.
 2. **Fan out — but respect the host's capacity.** Your launch prompt states a
    `HOST CAPACITY` line with a maximum number of dv-env-testers to run in
    parallel (sized to available RAM, since each env's Verilator/g++ build can need
-   ~2 GB). Dispatch the six envs in **batches of at most that size**, never all
+   ~2 GB). Dispatch the seven envs in **batches of at most that size**, never all
    six at once, waiting for each batch before starting the next; the infra-agent
    (light) can run alongside the first batch. If no capacity line is present,
    assume a batch size of 2. If a tester reports an OOM kill

@@ -273,7 +273,14 @@ in-order completion** (initiator request queue) already in place.
       state.  §6 credit accounting is folded into a single next-value so a send
       and a replenish landing in the same cycle cannot drop a credit, and the
       request-message credit grants scale with the outstanding capacity **only**
-      in OOO mode.
+      in OOO mode.  Issue is additionally throttled by the §6 ReadData credit
+      ceiling: because this bridge only returns response credits piggybacked on
+      its next request flit, an unthrottled OOO issue path can leave the target
+      stalled at zero credits with no further request behind it to carry the
+      returns — so each read is charged its `(AxLEN+1)*READDATA_GRAN` granules at
+      issue and released per beat, and a read that would push the in-flight total
+      past the granted ceiling waits.  A lone transaction is always let through,
+      so the worst case degenerates to the in-order path.
     * **Default-off invariant.** All of the above lives in `generate` branches /
       a separate module that are **not elaborated** at `OOO_EN=0`, so the
       shipping default chain is bit- and cycle-identical to the in-order build
@@ -286,7 +293,7 @@ in-order completion** (initiator request queue) already in place.
   in-order delivery against a per-ID reference FIFO, **a real different-ID
   overtake** (counted; the test FAILS at zero), no cross-ID leakage, and that
   every response is delivered:
-  `[OOO-TB] PASS: 16 read beats checked, 4 R + 6 B different-ID overtakes, 0 errors`.
+  `[OOO-TB] PASS: 80 read beats checked, 4 R + 6 B different-ID overtakes, 0 errors`.
   Negative control: the same TB at `OOO_EN=0` observes `0 R + 0 B` overtakes and
   fails, so the check observes reordering rather than merely tolerating it.
 

@@ -253,7 +253,7 @@ is defined by three agents in `.claude/agents/` (baked into the image) plus
 
 ```
 swarm-manager (opus → claude-opus-5)        # the manager — the top-level session
- ├─ dv-env-tester (haiku → claude-haiku-4-5)  × cocotb, sv, pack, act, reorder, systemc  (parallel)
+ ├─ dv-env-tester (haiku → claude-haiku-4-5)  × cocotb, sv, pack, act, reorder, ooo, systemc  (parallel)
  └─ infra-agent   (sonnet → claude-sonnet-5)  # Dockerfile / entrypoint / railway.toml / CI
 ```
 
@@ -291,7 +291,7 @@ Runtime inputs:
 | `SWARM_PERMISSION_MODE` | tuning | default `acceptEdits`. |
 | `SWARM_ALLOWED_TOOLS` | tuning | default `Bash,Read,Edit,Write,Grep,Glob,Task,Agent`. |
 
-**Compute guard.** Running all six DV environments at once means up to six
+**Compute guard.** Running all seven DV environments at once means up to seven
 concurrent Verilator/g++ compiles — on a small host that OOM-kills `cc1plus`
 (the same failure the `VL_JOBS` cap fixes for a single build). `swarm.sh`
 therefore reads `MemAvailable` and dispatches testers in **batches** of
@@ -642,6 +642,6 @@ the **same tools the same way** and run the **same `make ci` gate**. CI does not
 build the Dockerfile — it's a parallel, equivalent recipe. Keep the two in sync:
 if you bump a tool version or add an apt/pip dependency in one, mirror it in the
 other. Both are validated by the same green gate (cocotb 6/6 with functional
-coverage 26/26 bins, SV 134 reads, pack 63, act 30, reorder 76, ooo 16 beats /
+coverage 26/26 bins, SV 134 reads, pack 63, act 30, reorder 76, ooo 80 beats /
 10 different-ID overtakes, SystemC 145,
 line coverage 92.9%).
