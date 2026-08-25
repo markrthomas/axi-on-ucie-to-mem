@@ -146,6 +146,75 @@ module tb_aou_pack
     check(cg_wresp0(mg) == 2'b01,  "crdt wresp0");
     check(cred_decode(cg_wdata0(mg)) == 8, "crdt wdata0 Table-17 decode");
 
+    // --- multiple resource planes (docs/PLAN.md F1) -------------------------
+    // (i) The RP0 wrapper must be BYTE-IDENTICAL to the per-plane builder at
+    //     rp=0 — this is the "NUM_RP=1 stays byte-identical" invariant, checked
+    //     on the actual bits rather than asserted in prose.
+    check(mk_crdtgrant(3'b010, 3'b010, 3'b011, 3'b011, 2'b01) ==
+          mk_crdtgrant_rp(2'b00, 3'b010, 3'b010, 3'b011, 3'b011, 2'b01),
+          "crdtgrant RP0 wrapper == mk_crdtgrant_rp(0) (byte-identical)");
+    check(mk_activate_req(5'h5, 5'h3, 16'hF00D) ==
+          mk_activate_req_rp(2'b00, 5'h5, 5'h3, 16'hF00D),
+          "activatereq RP0 wrapper == mk_activate_req_rp(0) (byte-identical)");
+
+    // (ii) Every plane's CrdtGrant slot round-trips independently: codes written
+    //      for plane p read back only at plane p, every other plane reads 0.
+    //      A credit therefore names the plane it belongs to, which is what stops
+    //      the receiving bridge applying it to another plane's counters.
+    for (int rp = 0; rp < MAX_RP; rp++) begin
+      mg = mk_crdtgrant_rp(rp[RP_W-1:0], 3'b001, 3'b010, 3'b011, 3'b100, 2'b11);
+      check(get_msgtype(mg) == MT_MISC,           $sformatf("crdt rp%0d msgtype", rp));
+      check(misc_op(mg)     == MISCOP_CRDTGRANT,  $sformatf("crdt rp%0d miscop", rp));
+      for (int q = 0; q < MAX_RP; q++) begin
+        check(cg_wreq (mg, q[RP_W-1:0]) == ((q == rp) ? 3'b001 : 3'b000),
+              $sformatf("crdt rp%0d wreq slot %0d", rp, q));
+        check(cg_rreq (mg, q[RP_W-1:0]) == ((q == rp) ? 3'b010 : 3'b000),
+              $sformatf("crdt rp%0d rreq slot %0d", rp, q));
+        check(cg_wdata(mg, q[RP_W-1:0]) == ((q == rp) ? 3'b011 : 3'b000),
+              $sformatf("crdt rp%0d wdata slot %0d", rp, q));
+        check(cg_rdata(mg, q[RP_W-1:0]) == ((q == rp) ? 3'b100 : 3'b000),
+              $sformatf("crdt rp%0d rdata slot %0d", rp, q));
+        check(cg_wresp(mg, q[RP_W-1:0]) == ((q == rp) ? 2'b11  : 2'b00),
+              $sformatf("crdt rp%0d wresp slot %0d", rp, q));
+      end
+    end
+
+    // (iii) ActivateReq Table-25 per-plane Profile slots, same discipline.
+    for (int rp = 0; rp < MAX_RP; rp++) begin
+      mg = mk_activate_req_rp(rp[RP_W-1:0], 5'h1F, 5'h0A, 16'hBEEF);
+      check(misc_activationop(mg) == ACTOP_ACTIVATE_REQ,
+            $sformatf("actreq rp%0d activationop", rp));
+      for (int q = 0; q < MAX_RP; q++) begin
+        check(ar_prof_id (mg, q[RP_W-1:0]) == ((q == rp) ? 5'h1F  : 5'h0),
+              $sformatf("actreq rp%0d profile-id slot %0d", rp, q));
+        check(ar_prof_rev(mg, q[RP_W-1:0]) == ((q == rp) ? 5'h0A  : 5'h0),
+              $sformatf("actreq rp%0d profile-rev slot %0d", rp, q));
+        check(ar_prof_opt(mg, q[RP_W-1:0]) == ((q == rp) ? 16'hBEEF : 16'h0),
+              $sformatf("actreq rp%0d profile-opt slot %0d", rp, q));
+      end
+    end
+
+    // (iv) §4.3 FDId + §5.8 RP + Table-16 MsgCredit RP all carry the plane id,
+    //      and a flit built for plane p decodes back as plane p.  (The FDId
+    //      header field already existed and always decoded 0; this is the
+    //      end-to-end plane-id round trip the datapath now relies on.)
+    for (int rp = 0; rp < MAX_RP; rp++) begin
+      mc = mk_msgcredit(rp[RP_W-1:0], 3'b001, 3'b010, 3'b011, 3'b100, 2'b01);
+      check(mc_rp(mc) == rp[RP_W-1:0], $sformatf("msgcredit rp%0d subfield", rp));
+      mg = mk_readdata256(rp[RP_W-1:0], 16'h0, 10'h2AB, 2'b00, 1'b1,
+                          {{(AOU_DATA_W-32){1'b0}}, 32'hCAFEF00D});
+      pl = payload_put('0, 0, READDATA_GRAN, mg);
+      f  = flit_assemble_cr(rp[FDID_W-1:0], msgstart_t'(1), mc, pl);
+      check(flit_fdid(f)   == rp[FDID_W-1:0], $sformatf("flit rp%0d FDId round-trip", rp));
+      check(flit_credit(f) == mc,             $sformatf("flit rp%0d MsgCredit round-trip", rp));
+      byte10 = flit_get_byte(f, 10);
+      // granule-0 byte 0 is {MSGTYPE(4), RP(2), DLENGTH(2)} — the RP field of the
+      // §5.8 message, read straight out of the byte map.
+      check(byte10[7:4] == MT_READDATA,     $sformatf("flit rp%0d MSGTYPE nibble", rp));
+      check(byte10[3:2] == rp[RP_W-1:0],    $sformatf("flit rp%0d §5.8 RP byte-map", rp));
+      check(byte10[1:0] == DLEN_256,        $sformatf("flit rp%0d DLENGTH byte-map", rp));
+    end
+
     // --- wide data messages (§5.4 Tables 5/6/11/12): byte-exact conformance --
     // Field order matches the 256b variants with wider WDATA/RDATA+WSTRB.  The
     // granule-0 first byte is {MSGTYPE(4),RP(2),DLENGTH(2)}, so DLENGTH is

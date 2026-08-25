@@ -6,7 +6,10 @@
 //   * every transmitted flit starts a message at granule 0 (this design's
 //     packer always places the first message there, so MsgStart[0] must be set);
 //   * the first message's MSGTYPE is a supported Basic-Profile type;
-//   * FDId is RP0's destination (0) in this single-plane build.
+//   * FDId names an ACTIVE resource plane (< NUM_RP) — at the NUM_RP=1 default
+//     that is exactly "FDId == 0", the historical RP0-only property; a
+//     multi-plane bind passes its NUM_RP so the bound tightens to that build's
+//     active plane count (dv/sva/bind_mrp_sva.sv).
 //
 // Carried by the Verilator (--assert) and UVM flows (see axi_lite_sva header).
 // -----------------------------------------------------------------------------
@@ -15,7 +18,10 @@
 
 module aou_flit_sva
   import aou_pkg::*;
-(
+#(
+    // Active resource planes in the build under check (docs/PLAN.md F1).
+    parameter int NUM_RP = 1
+) (
     input logic                clk,
     input logic                rstn,
     input logic [PLP_BITS-1:0] flit,
@@ -44,18 +50,20 @@ module aou_flit_sva
   // --- well-formedness -------------------------------------------------------
   a_msgstart0: assert property (@(posedge clk) disable iff (!rstn)
     valid |-> msgstart[0]);
-  a_fdid_rp0: assert property (@(posedge clk) disable iff (!rstn)
-    valid |-> (fdid == '0));
+  a_fdid_range: assert property (@(posedge clk) disable iff (!rstn)
+    valid |-> (32'(fdid) < NUM_RP));
   a_mt0_known: assert property (@(posedge clk) disable iff (!rstn)
     valid |-> (mt0 == MT_WRITEREQ || mt0 == MT_READREQ ||
                mt0 == MT_WRITEDATA ||  // bursts: WriteData travels in its own flit
                mt0 == MT_READDATA || mt0 == MT_WRITERESP ||
                mt0 == MT_MISC));       // §8 activation / §6.4.2 CrdtGrant flits
 
-  // §6 credits are advertised only for resource plane RP0 in this single-plane
-  // build, so the MsgCredit RP subfield [15:14] must be 0.
-  a_credit_rp0: assert property (@(posedge clk) disable iff (!rstn)
-    valid |-> (mc_rp(msgcred) == '0));
+  // §6 credits are advertised per resource plane, so the MsgCredit RP subfield
+  // (Table 16, [15:14]) must name an active plane.  At NUM_RP=1 this is exactly
+  // the historical "mc_rp == 0"; at NUM_RP=2 a credit word may only be tagged
+  // RP0 or RP1, never a plane this build does not implement.
+  a_credit_rp_range: assert property (@(posedge clk) disable iff (!rstn)
+    valid |-> (32'(mc_rp(msgcred)) < NUM_RP));
 
 endmodule
 `endif

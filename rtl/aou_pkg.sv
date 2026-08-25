@@ -50,6 +50,11 @@ package aou_pkg;
 
   localparam int FDID_W  = 2;                           // Flit Destination ID
   localparam int CREDIT_W = 16;                          // MsgCredit field
+  // Number of resource planes the §4.3/§5.6 message formats reserve slots for
+  // (FDId is 2 bits; CrdtGrant Table 18 and ActivateReq Table 25 both carry four
+  // per-plane slots).  A build's ACTIVE plane count is the NUM_RP parameter of
+  // axi_ucie_mem_top (default 1 = RP0 only); MAX_RP is the format ceiling.
+  localparam int MAX_RP  = 4;
   localparam int HDR_RSVD_W = PLP_HDR_BITS - FDID_W - NUM_GRAN - CREDIT_W; // 14
 
   typedef logic [PLP_BITS-1:0]         flit_t;           // 250B PLP == link word
@@ -675,36 +680,84 @@ package aou_pkg;
   // ActivateReq (Table 25): as ActivationOthers but ACTIVATIONOP=ActivateReq
   //   plus RsvdZero(3) and RP0..RP3 Profile{ID(5),Rev(5),Opt(16)} => 160b.  The
   //   Basic Profile leaves the profile fields at 0 (Chapter 11 defines them).
-  function automatic msg_t mk_activate_req(
-      input logic [4:0]  rp0_id,  input logic [4:0]  rp0_rev, input logic [15:0] rp0_opt);
+  //
+  // Bit layout, by transmission offset g within the 160b message (g=0 is the
+  // MSB): MSGTYPE g=0(4), MISCOP g=4(3), ACTIVATIONOP g=7(4), RsvdZero g=11(3),
+  // then one 26-bit Profile{ID(5),Rev(5),Opt(16)} per plane on a 40-bit stride
+  // (26 profile bits + 14 RsvdZero), i.e. plane p's profile starts at
+  // g = AR_PROF_G0 + p*AR_PROF_STRIDE.  RP3 has no trailing RsvdZero.
+  localparam int AR_PROF_G0     = 14;
+  localparam int AR_PROF_STRIDE = 40;
+
+  // Per-plane ActivateReq: places one plane's Profile in ITS OWN Table-25 slot
+  // and leaves the other three at 0.  mk_activate_req() below is the rp=0 case
+  // and is byte-identical to the single-plane build.
+  function automatic msg_t mk_activate_req_rp(
+      input logic [RP_W-1:0] rp,
+      input logic [4:0]      prof_id,
+      input logic [4:0]      prof_rev,
+      input logic [15:0]     prof_opt);
     logic [159:0] v;
+    int           g;
     begin
-      v = {MT_MISC, MISCOP_ACTIVATION, ACTOP_ACTIVATE_REQ, 3'b0,
-           rp0_id, rp0_rev, rp0_opt, 14'b0,   // RP0
-           5'b0,   5'b0,    16'b0,   14'b0,   // RP1 (not present)
-           5'b0,   5'b0,    16'b0,   14'b0,   // RP2 (not present)
-           5'b0,   5'b0,    16'b0};           // RP3 (not present)
-      mk_activate_req = {v, {(MSG_MAX_BITS-160){1'b0}}};
+      v = '0;
+      v[159 -: MSGTYPE_W]                    = MT_MISC;
+      v[159-MSGTYPE_W -: MISCOP_W]           = MISCOP_ACTIVATION;
+      v[159-7 -: ACTIVATIONOP_W]             = ACTOP_ACTIVATE_REQ;
+      g = AR_PROF_G0 + AR_PROF_STRIDE * int'(rp);
+      v[159-g       -: 5]  = prof_id;
+      v[159-(g+5)   -: 5]  = prof_rev;
+      v[159-(g+10)  -: 16] = prof_opt;
+      mk_activate_req_rp = {v, {(MSG_MAX_BITS-160){1'b0}}};
     end
   endfunction
 
-  // CrdtGrant (Table 18): bulk credit advertisement.  Only RP0 is populated in
-  // this single-plane build; RP1..RP3 fields are 0.  Inputs are Table-17 codes.
+  function automatic msg_t mk_activate_req(
+      input logic [4:0]  rp0_id,  input logic [4:0]  rp0_rev, input logic [15:0] rp0_opt);
+    mk_activate_req = mk_activate_req_rp(2'b00, rp0_id, rp0_rev, rp0_opt);
+  endfunction
+
+  // CrdtGrant (Table 18): bulk credit advertisement, four per-plane slots per
+  // message type.  Field offsets by transmission position g within the 80b
+  // message: WREQCRED0..3 at g=7+3p, RREQCRED0..3 at g=19+3p, WDATACRED0..3 at
+  // g=31+3p, RDATACRED0..3 at g=43+3p, WRESPCRED0..3 at g=55+2p, then 17 Rsvd.
+  localparam int CG_WREQ_G0  = 7;
+  localparam int CG_RREQ_G0  = 19;
+  localparam int CG_WDATA_G0 = 31;
+  localparam int CG_RDATA_G0 = 43;
+  localparam int CG_WRESP_G0 = 55;
+
+  // Per-plane CrdtGrant: the Table-17 bucket codes land in plane `rp`'s slots;
+  // every other plane's slot stays 0 (that plane is granted nothing).  A credit
+  // therefore names the plane it belongs to, which is what keeps the receiving
+  // bridge from applying it to another plane's counters.
+  function automatic msg_t mk_crdtgrant_rp(
+      input logic [RP_W-1:0] rp,
+      input logic [2:0]      wreq,  input logic [2:0] rreq,
+      input logic [2:0]      wdata, input logic [2:0] rdata,
+      input logic [1:0]      wresp);
+    logic [79:0] v;
+    int          p;
+    begin
+      v = '0;
+      v[79 -: MSGTYPE_W]          = MT_MISC;
+      v[79-MSGTYPE_W -: MISCOP_W] = MISCOP_CRDTGRANT;
+      p = int'(rp);
+      v[79-(CG_WREQ_G0  + 3*p) -: 3] = wreq;
+      v[79-(CG_RREQ_G0  + 3*p) -: 3] = rreq;
+      v[79-(CG_WDATA_G0 + 3*p) -: 3] = wdata;
+      v[79-(CG_RDATA_G0 + 3*p) -: 3] = rdata;
+      v[79-(CG_WRESP_G0 + 2*p) -: 2] = wresp;
+      mk_crdtgrant_rp = {v, {(MSG_MAX_BITS-80){1'b0}}};
+    end
+  endfunction
+
+  // RP0 convenience wrapper — byte-identical to the single-plane build.
   function automatic msg_t mk_crdtgrant(
       input logic [2:0] wreq0,  input logic [2:0] rreq0,
       input logic [2:0] wdata0, input logic [2:0] rdata0,
       input logic [1:0] wresp0);
-    logic [79:0] v;
-    begin
-      v = {MT_MISC, MISCOP_CRDTGRANT,
-           wreq0,  3'b0, 3'b0, 3'b0,          // WREQCRED0..3
-           rreq0,  3'b0, 3'b0, 3'b0,          // RREQCRED0..3
-           wdata0, 3'b0, 3'b0, 3'b0,          // WDATACRED0..3
-           rdata0, 3'b0, 3'b0, 3'b0,          // RDATACRED0..3
-           wresp0, 2'b0, 2'b0, 2'b0,          // WRESPCRED0..3
-           17'b0};
-      mk_crdtgrant = {v, {(MSG_MAX_BITS-80){1'b0}}};
-    end
+    mk_crdtgrant = mk_crdtgrant_rp(2'b00, wreq0, rreq0, wdata0, rdata0, wresp0);
   endfunction
 
   // --- getters (MSGTYPE is get_msgtype(); these read the Misc sub-fields) ---
@@ -715,12 +768,40 @@ package aou_pkg;
     misc_activationop = m[MSG_MAX_BITS-1-7 -: ACTIVATIONOP_W];    // after 4+3
   endfunction
 
+  // ActivateReq per-plane Profile getters (Table 25).
+  function automatic logic [4:0] ar_prof_id(input msg_t m, input logic [RP_W-1:0] rp);
+    ar_prof_id = m[MSG_MAX_BITS-1-(AR_PROF_G0 + AR_PROF_STRIDE*int'(rp)) -: 5];
+  endfunction
+  function automatic logic [4:0] ar_prof_rev(input msg_t m, input logic [RP_W-1:0] rp);
+    ar_prof_rev = m[MSG_MAX_BITS-1-(AR_PROF_G0 + AR_PROF_STRIDE*int'(rp) + 5) -: 5];
+  endfunction
+  function automatic logic [15:0] ar_prof_opt(input msg_t m, input logic [RP_W-1:0] rp);
+    ar_prof_opt = m[MSG_MAX_BITS-1-(AR_PROF_G0 + AR_PROF_STRIDE*int'(rp) + 10) -: 16];
+  endfunction
+
+  // CrdtGrant per-plane credit-code getters (Table 18).
+  function automatic logic [2:0] cg_wreq (input msg_t m, input logic [RP_W-1:0] rp);
+    cg_wreq  = m[MSG_MAX_BITS-1-(CG_WREQ_G0  + 3*int'(rp)) -: 3];
+  endfunction
+  function automatic logic [2:0] cg_rreq (input msg_t m, input logic [RP_W-1:0] rp);
+    cg_rreq  = m[MSG_MAX_BITS-1-(CG_RREQ_G0  + 3*int'(rp)) -: 3];
+  endfunction
+  function automatic logic [2:0] cg_wdata(input msg_t m, input logic [RP_W-1:0] rp);
+    cg_wdata = m[MSG_MAX_BITS-1-(CG_WDATA_G0 + 3*int'(rp)) -: 3];
+  endfunction
+  function automatic logic [2:0] cg_rdata(input msg_t m, input logic [RP_W-1:0] rp);
+    cg_rdata = m[MSG_MAX_BITS-1-(CG_RDATA_G0 + 3*int'(rp)) -: 3];
+  endfunction
+  function automatic logic [1:0] cg_wresp(input msg_t m, input logic [RP_W-1:0] rp);
+    cg_wresp = m[MSG_MAX_BITS-1-(CG_WRESP_G0 + 2*int'(rp)) -: 2];
+  endfunction
+
   // CrdtGrant RP0 credit-code getters (offsets after MSGTYPE(4)+MISCOP(3)=7).
-  function automatic logic [2:0] cg_wreq0 (input msg_t m); cg_wreq0  = m[MSG_MAX_BITS-1-7  -: 3]; endfunction
-  function automatic logic [2:0] cg_rreq0 (input msg_t m); cg_rreq0  = m[MSG_MAX_BITS-1-19 -: 3]; endfunction
-  function automatic logic [2:0] cg_wdata0(input msg_t m); cg_wdata0 = m[MSG_MAX_BITS-1-31 -: 3]; endfunction
-  function automatic logic [2:0] cg_rdata0(input msg_t m); cg_rdata0 = m[MSG_MAX_BITS-1-43 -: 3]; endfunction
-  function automatic logic [1:0] cg_wresp0(input msg_t m); cg_wresp0 = m[MSG_MAX_BITS-1-55 -: 2]; endfunction
+  function automatic logic [2:0] cg_wreq0 (input msg_t m); cg_wreq0  = cg_wreq (m, 2'b00); endfunction
+  function automatic logic [2:0] cg_rreq0 (input msg_t m); cg_rreq0  = cg_rreq (m, 2'b00); endfunction
+  function automatic logic [2:0] cg_wdata0(input msg_t m); cg_wdata0 = cg_wdata(m, 2'b00); endfunction
+  function automatic logic [2:0] cg_rdata0(input msg_t m); cg_rdata0 = cg_rdata(m, 2'b00); endfunction
+  function automatic logic [1:0] cg_wresp0(input msg_t m); cg_wresp0 = cg_wresp(m, 2'b00); endfunction
 
 endpackage : aou_pkg
 // verilator lint_on UNUSEDSIGNAL

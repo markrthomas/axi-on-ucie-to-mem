@@ -48,3 +48,6 @@ uvm/verdi*
 # Headless run metrics (per-model token/time summary)
 last-run-metrics.json
 docker/last-run-metrics.json
+
+# Pinned OSS CAD Suite unpacked in-tree by the container image (never committed)
+oss-cad-suite/

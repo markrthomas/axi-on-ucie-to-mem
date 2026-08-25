@@ -29,6 +29,11 @@ module aou_axi_target_bridge
     parameter int AXI_DATA_W = 32,
     parameter int AXI_STRB_W = AXI_DATA_W/8,
     parameter int AXI_ID_W   = 4,
+    // Resource plane (§3) this bridge chain serves — see the initiator bridge.
+    // Responses are built with this plane's RP field / FDId, and the credits it
+    // returns carry this plane's MsgCredit RP subfield, so a response and its
+    // credits can only ever reach the plane that made the request.
+    parameter logic [aou_pkg::RP_W-1:0] RP_ID = 2'b00,
     // §6 flow control — granule credits this (target) bridge holds to send each
     // response message type (granted by chiplet A).  ReadData is sized for a
     // full read burst (128 granules = 16 beats).
@@ -149,7 +154,8 @@ module aou_axi_target_bridge
   // verilator lint_on UNUSEDSIGNAL
 
   aou_activation #(
-    .GRANT_WREQ(GR_WREQ), .GRANT_RREQ(GR_RREQ), .GRANT_WDATA(GR_WDATA)
+    .GRANT_WREQ(GR_WREQ), .GRANT_RREQ(GR_RREQ), .GRANT_WDATA(GR_WDATA),
+    .RP_ID(RP_ID)
   ) u_act (
     .clk(clk), .rstn(rstn), .enabled(act_enabled),
     .act_disabled(act_disabled), .error(act_error),
@@ -181,7 +187,7 @@ module aou_axi_target_bridge
 
   // MsgCredit this bridge advertises to A (grants WriteReq/ReadReq/WriteData).
   function automatic logic [CREDIT_W-1:0] return_credit();
-    return_credit = mk_msgcredit(2'b00,
+    return_credit = mk_msgcredit(RP_ID,
                                  cred_encode_ge(ret_wreq),
                                  cred_encode_ge(ret_rreq),
                                  cred_encode_ge(ret_wdata),
@@ -192,22 +198,22 @@ module aou_axi_target_bridge
   function automatic flit_t build_wresp_flit();
     msg_t m; payload_t pl;
     begin
-      m  = mk_writeresp(2'b00, mk_flex_tag(tag_q),
+      m  = mk_writeresp(RP_ID, mk_flex_tag(tag_q),
                         {{(AOU_ID_W-AXI_ID_W){1'b0}}, id_q}, bresp_q);
       pl = payload_put('0, 0, WRITERESP_GRAN, m);
-      build_wresp_flit = flit_assemble_cr('0, msgstart_t'(1), return_credit(), pl);
+      build_wresp_flit = flit_assemble_cr(RP_ID, msgstart_t'(1), return_credit(), pl);
     end
   endfunction
 
   function automatic flit_t build_rdata_flit();
     msg_t m; payload_t pl;
     begin
-      m  = mk_readdata256(2'b00, mk_flex_tag(tag_q),
+      m  = mk_readdata256(RP_ID, mk_flex_tag(tag_q),
                           {{(AOU_ID_W-AXI_ID_W){1'b0}}, id_q},
                           rresp_q, last_beat,
                           {{(AOU_DATA_W-AXI_DATA_W){1'b0}}, rdata_q});
       pl = payload_put('0, 0, READDATA_GRAN, m);
-      build_rdata_flit = flit_assemble_cr('0, msgstart_t'(1), return_credit(), pl);
+      build_rdata_flit = flit_assemble_cr(RP_ID, msgstart_t'(1), return_credit(), pl);
     end
   endfunction
 
