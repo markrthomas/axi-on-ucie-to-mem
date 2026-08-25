@@ -120,7 +120,10 @@ claude -p "$prompt" \
   | python3 "$SELF_DIR/render-metrics.py" \
       --emit text --provider "$AOU_PROVIDER" \
       --json-out "$metrics_json" --wall-start "$start"
-rc_claude=${PIPESTATUS[0]}; rc_render=${PIPESTATUS[1]}
+# Snapshot the whole PIPESTATUS array in one shot: a plain assignment resets
+# PIPESTATUS, so reading [0] then [1] on separate commands loses [1] (and under
+# `set -u` that read is an "unbound variable" fatal error).
+rc=( "${PIPESTATUS[@]}" ); rc_claude=${rc[0]}; rc_render=${rc[1]}
 set -e
 [ "$rc_claude" -ne 0 ] && exit "$rc_claude"
 exit "$rc_render"

@@ -77,7 +77,9 @@ claude -p "$task" \
   | python3 "$SELF_DIR/render-metrics.py" \
       --emit "$fmt" --provider "$AOU_PROVIDER" \
       --json-out "$metrics_json" --wall-start "$start"
-rc_claude=${PIPESTATUS[0]}; rc_render=${PIPESTATUS[1]}
+# Snapshot PIPESTATUS in one shot — a plain assignment resets it, so reading
+# [0] then [1] separately loses [1] (fatal under `set -u`).
+rc=( "${PIPESTATUS[@]}" ); rc_claude=${rc[0]}; rc_render=${rc[1]}
 set -e
 [ "$rc_claude" -ne 0 ] && exit "$rc_claude"
 exit "$rc_render"
