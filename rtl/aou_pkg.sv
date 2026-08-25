@@ -319,6 +319,37 @@ package aou_pkg;
   localparam logic [1:0] AXBURST_INCR  = 2'b01;
   localparam logic [1:0] AXBURST_WRAP  = 2'b10;
 
+  // --- FLEX usage map (§5.2: FLEX carries "additional information/extensions")
+  // No new message field is introduced anywhere: the whole AoU byte map of
+  // §4.3/§5.8 is untouched.  Two disjoint slices of the existing 16-bit FLEX
+  // field are used:
+  //   FLEX[1:0]   AxBURST for requests (above).
+  //   FLEX[15:12] AoU transaction tag, used ONLY by the optional out-of-order
+  //               mode (docs/PLAN.md F2): the initiator stamps the reorder-buffer
+  //               slot it allocated onto a WriteReq/ReadReq, and the target
+  //               echoes those bits back in the WriteResp/ReadData so a
+  //               completion can be matched to its slot when responses arrive
+  //               out of order.  With OOO_EN=0 (the shipping default) the
+  //               initiator stamps 0 and the target echoes 0, so every flit is
+  //               byte-identical to the in-order build.
+  localparam int FLEX_TAG_LSB = 12;
+  localparam int FLEX_TAG_W   = 4;
+
+  function automatic logic [FLEX_TAG_W-1:0] flex_tag(input logic [FLEX_W-1:0] f);
+    flex_tag = f[FLEX_TAG_LSB +: FLEX_TAG_W];
+  endfunction
+
+  function automatic logic [FLEX_W-1:0] mk_flex_tag(input logic [FLEX_TAG_W-1:0] tag);
+    mk_flex_tag = {tag, {FLEX_TAG_LSB{1'b0}}};
+  endfunction
+
+  // FLEX sits at the same offset in every §5.8 message that carries it — after
+  // MSGTYPE(4)+RP(2)+2 bits of DLENGTH/AWLOCK/RsvdZero — so one getter serves
+  // WriteReq/ReadReq/WriteData/ReadData/WriteResp alike.
+  function automatic logic [FLEX_W-1:0] msg_flex(input msg_t m);
+    msg_flex = m[MSG_MAX_BITS-1-8 -: FLEX_W];
+  endfunction
+
   // Next-beat address for an AXI burst (FIXED/INCR/WRAP), per the AXI4 spec.
   //   addr = current beat address, base = burst start address,
   //   size = log2(bytes/beat), len = AxLEN (beats-1).

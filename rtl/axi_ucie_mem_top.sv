@@ -11,6 +11,13 @@
 // Flat AXI-Lite ports on the boundary (no SystemVerilog interface) so the same
 // DUT is drivable from cocotb, a portable SV TB, a Verilator SystemC harness,
 // and UVM without wrapper shims.
+//
+// OOO_EN (docs/PLAN.md F2) is the opt-in out-of-order-by-ID mode and defaults to
+// 0.  At 0 the chain is exactly the in-order datapath described above.  At 1 the
+// target bridge gains aou_ooo_resp_src (an OOO response source that may let a
+// later DIFFERENT-ID response overtake an earlier one) and the initiator bridge
+// gains two aou_reorder buffers that restore AXI ordering on R/B.  See
+// dv/ooo/tb_axi_ucie_ooo.sv for the end-to-end proof.
 // -----------------------------------------------------------------------------
 `ifndef AXI_UCIE_MEM_TOP_SV
 `define AXI_UCIE_MEM_TOP_SV
@@ -22,7 +29,9 @@ module axi_ucie_mem_top
     parameter int AXI_DATA_W = 32,
     parameter int AXI_STRB_W = AXI_DATA_W/8,
     parameter int AXI_ID_W   = 4,
-    parameter int MEM_ADDR_W = 16          // memory byte-address width (64 KiB)
+    parameter int MEM_ADDR_W = 16,         // memory byte-address width (64 KiB)
+    // Opt-in out-of-order-by-ID datapath (0 = today's in-order chain).
+    parameter bit OOO_EN     = 1'b0
 ) (
     input  logic                  ACLK,
     input  logic                  ARESETn,
@@ -83,7 +92,7 @@ module axi_ucie_mem_top
   // === Chiplet A: initiator bridge =========================================
   aou_axi_initiator_bridge #(
     .AXI_ADDR_W(AXI_ADDR_W), .AXI_DATA_W(AXI_DATA_W), .AXI_STRB_W(AXI_STRB_W),
-    .AXI_ID_W(AXI_ID_W)
+    .AXI_ID_W(AXI_ID_W), .OOO_EN(OOO_EN)
   ) u_init (
     .clk(ACLK), .rstn(ARESETn),
     .s_awid(AWID), .s_awaddr(AWADDR), .s_awlen(AWLEN), .s_awsize(AWSIZE),
@@ -121,7 +130,7 @@ module axi_ucie_mem_top
   // === Chiplet B: target bridge ============================================
   aou_axi_target_bridge #(
     .AXI_ADDR_W(AXI_ADDR_W), .AXI_DATA_W(AXI_DATA_W), .AXI_STRB_W(AXI_STRB_W),
-    .AXI_ID_W(AXI_ID_W)
+    .AXI_ID_W(AXI_ID_W), .OOO_EN(OOO_EN)
   ) u_tgt (
     .clk(ACLK), .rstn(ARESETn),
     .rx_data(tgt_rx_data), .rx_valid(tgt_rx_valid), .rx_ready(tgt_rx_ready),
