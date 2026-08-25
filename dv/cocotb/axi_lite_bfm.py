@@ -196,7 +196,12 @@ class AxiLiteBfm(metaclass=utility_classes.Singleton):
         read (in-order completion), so overlapping bursts are reported at their
         own addresses.  Burst addresses are sequenced with the same AXI rule the
         DUT applies; write beats are buffered and flushed on B, reads reported
-        live."""
+        live.
+
+        Each report is (kind, addr, payload, resp, length, outstanding), where
+        `length` is the observed AxLEN of the owning transfer and `outstanding`
+        is how many transfers were open on the bus when the beat completed — both
+        read off the monitored interface for the functional coverage model."""
         d = self.dut
         aw_base = aw_len = aw_size = aw_burst = 0
         w_cur = 0
@@ -218,7 +223,7 @@ class AxiLiteBfm(metaclass=utility_classes.Singleton):
             if d.BVALID.value == 1 and d.BREADY.value == 1:
                 resp = int(d.BRESP.value)
                 for a, wd in w_pending:
-                    await self.monitor_queue.put(("W", a, wd, resp))
+                    await self.monitor_queue.put(("W", a, wd, resp, aw_len, 1))
                 w_pending = []
             if d.ARVALID.value == 1 and d.ARREADY.value == 1:
                 base = int(d.ARADDR.value)
@@ -228,7 +233,8 @@ class AxiLiteBfm(metaclass=utility_classes.Singleton):
             if d.RVALID.value == 1 and d.RREADY.value == 1 and ar_q:
                 ctx = ar_q[0]
                 await self.monitor_queue.put(
-                    ("R", ctx[0], int(d.RDATA.value), int(d.RRESP.value)))
+                    ("R", ctx[0], int(d.RDATA.value), int(d.RRESP.value),
+                     ctx[2], len(ar_q)))
                 ctx[0] = next_addr(ctx[0], ctx[1], ctx[4], ctx[3], ctx[2])
                 ctx[5] -= 1
                 if ctx[5] == 0:

@@ -8,6 +8,7 @@ from axi_lite_bfm import AxiLiteBfm
 from axi_components import AxiEnv
 from axi_seq import (
     AxiBurstSeq,
+    AxiCoverageCloseSeq,
     AxiMultiReadSeq,
     AxiRandomSeq,
     AxiWalkingSeq,
@@ -19,9 +20,13 @@ class BaseTest(uvm_test):
     """Builds the env and handles clock + reset via the BFM."""
 
     seq_cls = AxiWriteReadSeq
+    # Only the test that runs LAST in `make test-all` gates on the merged
+    # functional-coverage database; the others just contribute their bins.
+    enforce_fcov = False
 
     def build_phase(self):
         self.env = AxiEnv("env", self)
+        self.env.enforce_fcov = self.enforce_fcov
 
     async def run_phase(self):
         self.raise_objection()
@@ -55,6 +60,17 @@ class MultiOutstandingTest(BaseTest):
     seq_cls = AxiMultiReadSeq
 
 
+class CoverageTest(BaseTest):
+    """Functional-coverage closure test.
+
+    Its sequence alone hits every goal bin, so it passes standalone; run last by
+    `make test-all` it also gates the merged `[COV-FUNC]` result of the whole
+    PyUVM run against the FCOV_MIN floor."""
+
+    seq_cls = AxiCoverageCloseSeq
+    enforce_fcov = True
+
+
 # -- cocotb entry points ------------------------------------------------------
 # TESTCASE (from the Makefile) selects which one runs; default runs all.
 
@@ -81,3 +97,8 @@ async def burst_test(_dut):
 @cocotb.test()
 async def multi_outstanding_test(_dut):
     await uvm_root().run_test("MultiOutstandingTest")
+
+
+@cocotb.test()
+async def coverage_test(_dut):
+    await uvm_root().run_test("CoverageTest")

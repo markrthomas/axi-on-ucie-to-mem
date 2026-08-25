@@ -4,6 +4,7 @@ import random
 
 from pyuvm import uvm_sequence
 
+from axi_coverage import ADDR_REGIONS, ALT_5, LAST_WORD, region_sample_addr
 from axi_seq_item import (
     AxiSeqItem,
     BURST_FIXED,
@@ -130,12 +131,16 @@ class AxiMultiReadSeq(uvm_sequence):
 
 class AxiWalkingSeq(uvm_sequence):
     """Directed edge cases: first/last address and all-0 / all-1 / patterned
-    payloads."""
+    payloads.  The payload list covers every data-pattern bin of the functional
+    coverage model: zero, all-ones, walking-1 (one bit set, at both ends of the
+    word), walking-0 (one bit clear, at both ends) and the alternating
+    0x5.../0xA... pair."""
 
     async def body(self):
         from axi_seq_item import ADDR_LIMIT
         edge_addrs = [0x0, 0x4, ADDR_LIMIT - 8, ADDR_LIMIT - 4]
-        edge_data = [0x00000000, 0x00000001, 0x55555555,
+        edge_data = [0x00000000, 0x00000001, 0x80000000,
+                     0xFFFFFFFE, 0x7FFFFFFF, 0x55555555,
                      0xAAAAAAAA, 0xFFFFFFFF, 0xDEADBEEF]
         for addr in edge_addrs:
             for data in edge_data:
@@ -145,3 +150,65 @@ class AxiWalkingSeq(uvm_sequence):
                 rd = AxiSeqItem("rd", addr=addr, write=False)
                 await self.start_item(rd)
                 await self.finish_item(rd)
+
+
+class AxiCoverageCloseSeq(uvm_sequence):
+    """Directed closure stimulus for the functional coverage model.
+
+    Deterministically drives every goal bin in `axi_coverage.py` — both
+    directions in every address partition (the direction x region cross), the
+    first/last-word boundaries, all payload patterns, all three burst-length
+    buckets and both outstanding-depth buckets — so the model closes without
+    depending on a random seed.  Address partitions are imported from the
+    coverage model, so the stimulus follows the map if the memory depth
+    changes."""
+
+    # zero / all-ones / walking-1 / walking-0 / alternating / random-like
+    PATTERNS = (0x00000000, DATA_MASK, 0x00000001, DATA_MASK - 1,
+                ALT_5, 0xDEADBEEF)
+
+    async def body(self):
+        # 1. direction x address region, boundaries, and every data pattern.
+        addrs = [region_sample_addr(name) for name, _, _ in ADDR_REGIONS]
+        addrs += [0x0, LAST_WORD]            # first-word / last-word boundaries
+        for addr in addrs:
+            for data in self.PATTERNS:
+                wr = AxiSeqItem("wr", addr=addr, data=data, write=True)
+                await self.start_item(wr)
+                await self.finish_item(wr)
+                rd = AxiSeqItem("rd", addr=addr, write=False)
+                await self.start_item(rd)
+                await self.finish_item(rd)
+
+        # 2. burst-length buckets: 1 beat (above), 2..8 beats, and the 16-beat
+        #    maximum, each written then read back through the scoreboard.
+        for base, length in ((region_sample_addr("low") + 0x40, 3),
+                             (region_sample_addr("mid") + 0x80, 15)):
+            beats = [(0x51000000 + (length << 16) + k * 0x0101) & DATA_MASK
+                     for k in range(length + 1)]
+            wr = AxiSeqItem("wr", addr=base, write=True, length=length,
+                            burst=BURST_INCR, beats=beats)
+            await self.start_item(wr)
+            await self.finish_item(wr)
+            rd = AxiSeqItem("rd", addr=base, write=False, length=length,
+                            burst=BURST_INCR)
+            await self.start_item(rd)
+            await self.finish_item(rd)
+
+        # 3. outstanding-depth bucket ">1": preload, then fire several ARs
+        #    before draining any R beat so the requests overlap on the bus.
+        from axi_lite_bfm import AxiLiteBfm
+        base = region_sample_addr("high") & ~0xFF
+        reqs = [{"addr": base + 0x00, "length": 0, "id": 1},
+                {"addr": base + 0x40, "length": 3, "id": 2},
+                {"addr": base + 0x80, "length": 1, "id": 3}]
+        for i, r in enumerate(reqs):
+            r["burst"] = BURST_INCR
+            r["size"] = SIZE_4B
+            beats = [(0x5C000000 + (i << 8) + k * 0x17) & DATA_MASK
+                     for k in range(r["length"] + 1)]
+            wr = AxiSeqItem("wr", addr=r["addr"], write=True, length=r["length"],
+                            burst=BURST_INCR, beats=beats)
+            await self.start_item(wr)
+            await self.finish_item(wr)
+        await AxiLiteBfm().read_multi(reqs)
