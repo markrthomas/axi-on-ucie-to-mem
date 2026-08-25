@@ -482,7 +482,7 @@ module tb_axi_ucie_mrp
         t_data[p][i] = 32'hB0000000 + DW'(p << 20) + DW'(i << 4);
         t_id  [p][i] = 4'((p*2 + i) % 8);
         for (int b = 0; b <= BLEN; b++)
-          ref_mem[p][(t_addr[p][i][MEM_ADDR_W-1:2]) + b] = t_data[p][i] + DW'(b);
+          ref_mem[p][32'(t_addr[p][i][MEM_ADDR_W-1:2]) + b] = t_data[p][i] + DW'(b);
       end
     write_phase(NB, BLEN);
     read_phase(NB, BLEN);

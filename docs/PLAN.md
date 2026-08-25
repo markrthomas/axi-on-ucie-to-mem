@@ -179,9 +179,11 @@ in FLEX[1:0], per-beat target expansion, `{B,R}ID` echo), and
 **multiple-outstanding transactions with in-order completion** (initiator request
 queue), **Deactivate quiescing Option 2** (§8.3.2 hardware-managed), **wide data
 (512/1024b)**, the **out-of-order-by-ID reorder block** *and its opt-in
-full-datapath integration* (`OOO_EN`), and a **formal-verification tier**
+full-datapath integration* (`OOO_EN`), **multiple resource planes** *and their
+opt-in full-datapath integration* (`NUM_RP`: per-plane credit banks, a
+round-robin plane arbiter and `FDId` routing), and a **formal-verification tier**
 (yosys-slang; flit + credit proofs, activation in progress) have all since been
-implemented.  Only F1 (multiple resource planes) remains.)
+implemented.)
 
 ## Remaining follow-ons (actionable backlog)
 
@@ -192,26 +194,75 @@ RP0-only, 32-bit, with the full §8 activation FSM (bring-up + teardown + ERROR)
 **AXI4 INCR/WRAP/FIXED bursts**, and **multiple-outstanding transactions with
 in-order completion** (initiator request queue) already in place.
 
-### F1 — Multiple resource planes (RP0..RP3) + multi-outstanding
+### F1 — Multiple resource planes (RP0..RP3) — DONE (2 planes proven, generalises to 4)
 - **Spec:** §3 (resource planes / FDId routing), §4.3 (FDId header field), §6
   (per-plane credits), Table 16 (`MsgCredit` RP subfield `[15:14]`), §8.3.4
-  Table 25 (per-RP Profile fields in `ActivateReq`).
-- **Touch:** `rtl/aou_pkg.sv` — the `FDID_W=2` header field and `flit_fdid`
-  decode already exist (always 0 today); the `mk_crdtgrant` / `mk_activate_req`
-  message formats already reserve zero-filled RP1..RP3 slots, so add per-plane
-  inputs to populate them and thread a plane id through `flit_assemble`. Both
-  bridges (per-plane credit banks `cr_*[RP]`, per-plane outstanding tracking +
-  arbitration). `dv/sva/aou_flit_sva.sv` + `aou_credit_sva.sv` currently assert
-  RP0-only (`a_fdid_rp0`, `a_credit_rp0` = `mc_rp==0`) — relax to per-plane
-  bounds; `dv/sva/bind_sva.sv`.
-- **Approach:** parameterize `NUM_RP` (start with 2). Replicate the credit
-  counters and the initiator request queue per plane; add a small
-  round-robin/priority arbiter selecting which plane's message packs into the
-  next flit. Keep one plane == today's behavior so the RP0 path is unchanged.
-- **Verify:** extend `dv/pack` with multi-RP round-trips; add a cocotb/SV test
-  issuing interleaved traffic on two planes and checking no cross-plane
-  credit/response leakage; SVA bounds hold per plane.
-- **Effort:** large (data-path + arbitration + DV). Biggest single item.
+  Table 25 (per-RP Profile fields in `ActivateReq`), Table 18 (per-RP
+  `CrdtGrant` slots).
+- **DONE — opt-in `NUM_RP` (default 1), `NUM_RP=1` byte-identical:**
+  - **Plane id end-to-end.** `aou_pkg` gained per-plane `CrdtGrant` (Table 18)
+    and `ActivateReq` (Table 25) slot builders/getters — `mk_crdtgrant_rp`,
+    `mk_activate_req_rp`, `cg_{wreq,rreq,wdata,rdata,wresp}(m,rp)`,
+    `ar_prof_{id,rev,opt}(m,rp)` — with the old RP0 entry points kept as `rp=0`
+    wrappers, proven **byte-identical** in `dv/pack`. Both bridges and
+    `aou_activation` take an `RP_ID` parameter (default 0) that is stamped into
+    the §4.3 `FDId` (`flit_assemble`'s existing `fdid` input), the §5.8 `RP`
+    field of every message, and the Table-16 `MsgCredit` RP subfield; the peer's
+    `CrdtGrant` is decoded from **that plane's own slot**, so a grant addressed
+    to another plane seeds nothing.
+  - **Per-plane credit banks + outstanding tracking.** Realised by replicating
+    the whole chain per plane: at `NUM_RP>1` each plane owns an initiator
+    bridge, a target bridge, its §8 activation FSM, its `cr_*` counters, its
+    request queue and its memory image. That is stronger isolation than an
+    indexed bank inside a shared bridge (there is no shared state to leak
+    through) and it leaves the `NUM_RP==1` generate branch elaborating the
+    existing single-plane logic **verbatim** — the F2 pattern.
+  - **Plane arbiter + FDId routing** — new `rtl/aou_rp_mux.sv`. `aou_rp_arb` is
+    a round-robin N→1 egress arbiter (a ready plane waits at most `NUM_RP-1`
+    grants; the grant is locked while the link stalls so the presented flit
+    stays stable for the §4.3 flit SVA). `aou_rp_route` is the 1→N ingress: it
+    routes each arriving flit by its `FDId` into that plane's **own** receive
+    queue. §6.1 says a credit guarantees the receiver has room, so the queue is
+    sized to the largest grant (128 granules / 8 = 16 flits) — owning that room
+    is what stops a stalled plane back-pressuring the SHARED link and turning
+    one plane's stall into every plane's stall (head-of-line blocking). An
+    unroutable `FDId` is consumed and dropped so it can never wedge the link;
+    `aou_rp_sva` proves that path is dead.
+  - **Top-level wiring.** `axi_ucie_mem_top` takes `NUM_RP` (default 1). Of the
+    plan's two options — replicate the AXI front end, or add a plane-select
+    side-band — the replication was chosen and the replicas were **flattened
+    into the existing boundary ports** (plane `p` owns bit slice `[p*W +: W]`).
+    That adds **no port at all**, so at `NUM_RP=1` every port keeps its
+    historical width (`[0:0]` control ports still map to `sc_in<bool>` for the
+    SystemC env) and no existing testbench changes; and it gives each plane its
+    own AXI request/response channels, so a response delivered to the wrong
+    plane is directly observable at the boundary rather than needing an internal
+    probe.
+  - **Activation.** Per-plane rather than per-chain: each plane runs the §8 FSM
+    over the shared link with its own `FDId`, so RP1 brings its own credits and
+    profile up through the existing (unchanged) Table-25/Table-18 machinery.
+  - **Verified.** New `dv/mrp` env (`make mrp`, Icarus + Verilator + bound SVA)
+    at `NUM_RP=2`: interleaved single-beat traffic then CONCURRENT multi-beat
+    bursts that saturate the shared link, checking (a) per-plane routing — both
+    planes write the SAME addresses with DIFFERENT data and each must read back
+    its own, plus a per-flit `FDId` / `MsgCredit`-RP delivery monitor; (b) no
+    cross-plane credit leakage — plane 1's five §6 counters must not move by a
+    single count while only plane 0 runs, and a deliberately jammed plane 0
+    (never accepts an R beat, so its ReadData credits run out) must not stop
+    plane 1 completing; (c) arbiter fairness measured only on **contended**
+    cycles; (d) every transaction completes. Mutation-tested: mis-tagging the
+    `MsgCredit` RP, routing every flit to plane 0, a fixed-priority arbiter and
+    an undersized per-plane receive queue each make the env fail.
+    `dv/pack` grew 63 → 229 checks (per-plane slot round-trips + the RP0
+    byte-identity proof); `dv/sva/aou_flit_sva.sv`'s `a_fdid_rp0` /
+    `a_credit_rp0` became the per-plane bounds `a_fdid_range` /
+    `a_credit_rp_range`, which at `NUM_RP=1` are exactly the old properties.
+- **Not done / follow-on:** only 2 planes are exercised (the format ceiling
+  `MAX_RP=4` is implemented and `dv/pack` round-trips all four slots, but no
+  4-plane end-to-end run is in the gate), and planes share the link but not a
+  memory — each plane has its own image, which is what makes cross-plane data
+  leakage observable. A shared target behind a per-plane AXI arbiter is the
+  natural next step.
 
 ### F2 — Full AXI4 (bursts ✅, multiple-outstanding ✅, wide data ✅, OOO-by-ID ✅ end-to-end) — DONE
 - **Spec:** AoU §5 message formats for `WriteData512/1024` and multi-beat

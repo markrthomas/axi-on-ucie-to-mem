@@ -61,7 +61,7 @@ granule counts (1 granule = 5 bytes = 40 bits; 48 granules per PLP payload):
 
 A write flit therefore carries **two messages** (`MsgStart` bits 0 and 3 set),
 exercising real multi-message packing; the unpacker is bitmap-driven. This build
-covers the Basic Profile, Resource Plane RP0, 32-bit AXI4 with **INCR/WRAP/FIXED
+covers the Basic Profile, 32-bit AXI4 with **INCR/WRAP/FIXED
 bursts** (`AxLEN` beats, `AxSIZE`, burst type carried in `FLEX[1:0]` since AoU has
 no `AxBURST`; the target expands each burst into single-beat AXI-Lite accesses,
 `DLENGTH=256b` per beat) and **multiple-outstanding transactions with in-order
@@ -69,13 +69,15 @@ completion** (a request queue in the initiator bridge lets several transactions 
 in flight at once). AXI data occupies the low 32 bits of the AoU data field and
 the AoU 10-bit ID carries a per-transaction tag echoed on `{B,R}ID`. Flit fields are packed **byte-exact** to the spec (§5.8 message
 layouts and the §4.3 Figure-5 protocol header), and **§6 per-message-type credit
-flow control** (RP0) runs on both bridges, carried in the header `MsgCredit`
-field. The interface follows the full §8 activation state machine — bring-up
+flow control** runs on both bridges, carried in the header `MsgCredit`
+field.  Resource plane **RP0 is the shipping default**, and **multiple resource
+planes (RP0..RP3) are an opt-in mode** — `NUM_RP` (see below) gives each plane its
+own credit banks, activation FSM and outstanding tracking over one shared link,
+arbitrated round-robin and routed by the §4.3 `FDId`. The interface follows the full §8 activation state machine — bring-up
 (with a §6.4.2 `CrdtGrant` / §6.4.3 reset credit exchange), teardown,
 re-activation, and `ERROR` recovery (no AXI accepted until `ENABLED`).
 See [`docs/PLAN.md`](docs/PLAN.md) for the full architecture and the remaining
-out-of-scope follow-ons (multiple resource planes; wide 512b/1024b data and true
-out-of-order-by-ID completion).
+follow-ons.
 
 ## Directory layout
 
@@ -85,6 +87,7 @@ out-of-order-by-ID completion).
   - `aou_axi_initiator_bridge.sv` / `aou_axi_target_bridge.sv` — the two bridges
   - `aou_reorder.sv` — per-ID response reorder buffer (wired in at `OOO_EN=1`)
   - `aou_ooo_resp_src.sv` — opt-in out-of-order response source at the target (`OOO_EN=1`)
+  - `aou_rp_mux.sv` — resource-plane arbiter / `FDId` router + per-plane receive queue (`NUM_RP>1`)
   - `axi_lite_mem.sv` — AXI4-Lite SRAM memory target
   - `axi_ucie_mem_top.sv` — the DUT top (wires the chain + return link)
 - `dv/cocotb/` — cocotb + PyUVM testbench (the golden runnable env)
@@ -94,6 +97,7 @@ out-of-order-by-ID completion).
 - `dv/act/` — §8 activation FSM unit test: deactivate / re-activate / `ERROR` (Icarus + Verilator)
 - `dv/reorder/` — per-ID response reorder buffer unit test: out-of-order-by-ID completion (Icarus + Verilator)
 - `dv/ooo/` — **end-to-end out-of-order-by-ID chain** (`OOO_EN=1`): interleaved multi-ID traffic, real different-ID overtake (Icarus + Verilator)
+- `dv/mrp/` — **end-to-end multiple resource planes** (`NUM_RP=2`): interleaved two-plane traffic, per-plane credit banks / routing, arbiter fairness (Icarus + Verilator)
 - `dv/systemc/` — SystemC testbench (`verilator --sc` model + `sc_main`)
 - `uvm/` — SystemVerilog UVM TB (multi-file + single-file), license-gated
 - `sim/` — Verilator C++ coverage harness
@@ -162,6 +166,7 @@ Everything runs from the repo root and degrades gracefully if a tool is absent.
 | Activation | `make act` | §8 activation FSM unit test: bring-up / deactivate (Opt-1 & Opt-2) / ERROR (Icarus + Verilator) |
 | Reorder | `make reorder` | per-ID response reorder buffer: out-of-order-by-ID completion (Icarus + Verilator) |
 | OOO chain | `make ooo` | end-to-end out-of-order-by-ID datapath (`OOO_EN=1`): real different-ID overtake, same-ID order, no cross-ID leakage (Icarus + Verilator) |
+| Resource planes | `make mrp` | end-to-end multi-plane datapath (`NUM_RP=2`): per-plane routing, no cross-plane credit leakage, arbiter fairness under contention (Icarus + Verilator) |
 | SystemC | `make systemc` | SystemC TB (Verilator `--sc` + `sc_main`) |
 | SV/UVM | `make uvm` | UVM TB (VCS/Xcelium/Questa); skips cleanly if unlicensed |
 | Waves | `make waves` / `make wave` | dump / open GTKWave |
@@ -169,7 +174,7 @@ Everything runs from the repo root and degrades gracefully if a tool is absent.
 | Line coverage | `make coverage` | Verilator `--coverage` → `sim/coverage.info` (floor `COV_MIN`, default 85%; ~90–94% achieved) |
 | Functional coverage | `make test` | PyUVM covergroup model (`dv/cocotb/axi_coverage.py`) sampled from the monitor → `[COV-FUNC]` report (floor `FCOV_MIN`, default 100%; 26/26 bins achieved) |
 | Formal | `make formal` | SymbiYosys proofs of `axi_lite_mem`, the §4.3 flit header, §6 credit flow and the §8 activation FSM (`bmc` + `cover` gate, unbounded `prove` best-effort); `SBY=<path>` for an out-of-PATH prover, skips cleanly if `sby` absent |
-| Gate | `make check` | lint + cocotb + SV(both sims) + pack + act + reorder + ooo + SystemC |
+| Gate | `make check` | lint + cocotb + SV(both sims) + pack + act + reorder + ooo + mrp + SystemC |
 | CI | `make ci` | `check` + coverage + formal as one pass/fail gate |
 | Container | `docker run --rm aou-dv` | the whole `make ci` gate in a reproducible image ([`docs/DOCKER.md`](docs/DOCKER.md)) |
 | Trace | `make <target> VERBOSE=1` | per-beat AXI transaction traces in each env's log |
@@ -227,6 +232,7 @@ make sv          # SV directed TB under Icarus       -> "[SV] Icarus PASSED"
 make vlt         # SV directed TB under Verilator + SVA -> "[SV] Verilator PASSED"
 make pack        # byte-exact packing conformance      -> "[PACK] Icarus/Verilator PASSED"
 make ooo         # end-to-end OOO_EN=1 chain           -> "[OOO] Icarus/Verilator PASSED"
+make mrp         # end-to-end NUM_RP=2 multi-plane chain -> "[MRP] Icarus/Verilator PASSED"
 make systemc     # SystemC TB                          -> "[SC] SystemC PASSED"
 ```
 
@@ -243,6 +249,44 @@ it end-to-end:
 ```
 [OOO-TB] PASS: 80 read beats checked, 4 R + 6 B different-ID overtakes, 0 errors
 ```
+
+**Multiple resource planes (`NUM_RP`, opt-in, default `1`).** `axi_ucie_mem_top`
+also takes a `NUM_RP` parameter (docs/PLAN.md **F1**). At the shipping default `1`
+the whole multi-plane path lives in an un-elaborated `generate` branch and the
+chain is the single-plane RP0 datapath, byte-for-byte — every AXI port keeps its
+historical width, every flit its historical byte map (`make pack` proves the RP0
+byte map is identical to the per-plane builders at `rp=0`).
+
+At `NUM_RP>1` the AXI front end is **replicated per plane** and the replicas are
+flattened into the *same* boundary ports (plane `p` owns bit slice `[p*W +: W]`),
+so no port is added and a response delivered to the wrong plane is observable at
+the boundary. Each plane gets its own initiator bridge, target bridge, §8
+activation FSM, §6 credit banks, outstanding tracking and memory image; the planes
+share **one** pair of UCIe links through `rtl/aou_rp_mux.sv`:
+
+- `aou_rp_arb` — round-robin egress, so every ready plane is served within
+  `NUM_RP` grants; the grant is locked while the link stalls so the presented
+  flit stays stable.
+- `aou_rp_route` — ingress routed by the §4.3 `FDId` into that plane's **own**
+  receive queue, sized to the largest §6 credit grant (16 flits). §6.1 says a
+  credit guarantees the receiver has room; owning that room is what stops one
+  plane back-pressuring the shared link and stalling the others.
+
+The plane id rides end-to-end as the §4.3 `FDId`, the §5.8 `RP` field and the
+Table-16 `MsgCredit` RP subfield, and `CrdtGrant`/`ActivateReq` use each plane's
+own Table-18 / Table-25 slot — so a credit granted to one plane can never release
+a message on another. `make mrp` proves it end-to-end:
+
+```
+[MRP-TB] PASS: 2 planes, 76 read beats checked, A->B flits rp0=70 rp1=69 (102 interleavings), 6 contended cycles won rp0=1 rp1=5, 0 errors
+```
+
+with both planes writing the **same addresses with different data** (per-plane
+routing), plane 1's credit bank required not to move by a single count while only
+plane 0 runs (no credit leakage), a deliberately **jammed** plane 0 that must not
+stall plane 1 (no cross-plane starvation), and arbiter fairness measured only on
+**contended** cycles. Two planes are proven; the design generalises to four
+(`MAX_RP`, the format ceiling of the `FDId`/`CrdtGrant`/`ActivateReq` slots).
 
 The overtake counters are *checked*, not just reported: the test fails if it sees
 zero, so it cannot pass by merely tolerating in-order completion.
@@ -533,7 +577,10 @@ AXI is accepted until the interface is `ENABLED`; transmit credits reset to zero
 - **Deactivate quiescing Option 2** (spec §8.3.2) — only Option 1 (System
   Software quiesces the link before setting the deactivate flag; MANDATORY) is
   modeled; hardware-managed quiescing (OPTIONAL) is not.
-- **Multiple resource planes** (RP0..RP3).
+- ~~**Multiple resource planes** (RP0..RP3)~~ — **implemented** as the opt-in
+  `NUM_RP` mode (per-plane credit banks + round-robin plane arbiter + `FDId`
+  routing); two planes are proven end-to-end by `make mrp`, and the design
+  generalises to four.
 - **Full AXI4, remaining parts** — 512b/1024b wide data and true
   out-of-order-by-ID completion. (INCR/WRAP/FIXED bursts and multiple-outstanding
   transactions with in-order completion are **implemented**; genuine OOO has no

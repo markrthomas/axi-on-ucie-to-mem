@@ -75,21 +75,21 @@ else
 fi
 
 # Auto-throttle tester concurrency to available RAM: each DV env's Verilator/g++
-# build can need ~2 GB, so running all seven in parallel OOMs a small host.  Pick
-# a safe batch size from MemAvailable (>= 1, <= 7 envs); override with
+# build can need ~2 GB, so running all eight in parallel OOMs a small host.  Pick
+# a safe batch size from MemAvailable (>= 1, <= 8 envs); override with
 # SWARM_MAX_PARALLEL.  VL_JOBS (image default 2) still caps each build's own
 # parallel cc1plus; on a very tight host also set VL_JOBS=1.
 avail_mb="$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 4096)"
 if [ -z "${SWARM_MAX_PARALLEL:-}" ]; then
   SWARM_MAX_PARALLEL=$(( avail_mb / 2048 ))
   [ "$SWARM_MAX_PARALLEL" -lt 1 ] && SWARM_MAX_PARALLEL=1
-  [ "$SWARM_MAX_PARALLEL" -gt 7 ] && SWARM_MAX_PARALLEL=7
+  [ "$SWARM_MAX_PARALLEL" -gt 8 ] && SWARM_MAX_PARALLEL=8
 fi
 echo "swarm: ~${avail_mb} MB available, VL_JOBS=${VL_JOBS:-2} -> at most ${SWARM_MAX_PARALLEL} dv-env-tester(s) in parallel." >&2
 
 prompt="You are the swarm manager. Use the swarm-manager subagent to carry out the task below, following its documented procedure, then print its final report verbatim.
 
-HOST CAPACITY: ~${avail_mb} MB memory available.  Dispatch AT MOST ${SWARM_MAX_PARALLEL} dv-env-tester subagent(s) in parallel — run the seven DV environments in batches of that size, never all seven at once.  If a Verilator/g++ compile is OOM-killed (\"Killed … cc1plus\"), re-run that environment with VL_JOBS=1.
+HOST CAPACITY: ~${avail_mb} MB memory available.  Dispatch AT MOST ${SWARM_MAX_PARALLEL} dv-env-tester subagent(s) in parallel — run the eight DV environments in batches of that size, never all eight at once.  If a Verilator/g++ compile is OOM-killed (\"Killed … cc1plus\"), re-run that environment with VL_JOBS=1.
 
 TASK:
 $task"
