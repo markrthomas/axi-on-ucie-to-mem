@@ -83,6 +83,8 @@ out-of-order-by-ID completion).
   - `aou_pkg.sv` — AoU message formats + flit pack/unpack helper functions
   - `ucie_stream_link.sv` — one-directional flit channel (FDI-boundary model)
   - `aou_axi_initiator_bridge.sv` / `aou_axi_target_bridge.sv` — the two bridges
+  - `aou_reorder.sv` — per-ID response reorder buffer (wired in at `OOO_EN=1`)
+  - `aou_ooo_resp_src.sv` — opt-in out-of-order response source at the target (`OOO_EN=1`)
   - `axi_lite_mem.sv` — AXI4-Lite SRAM memory target
   - `axi_ucie_mem_top.sv` — the DUT top (wires the chain + return link)
 - `dv/cocotb/` — cocotb + PyUVM testbench (the golden runnable env)
@@ -91,6 +93,7 @@ out-of-order-by-ID completion).
 - `dv/pack/` — §4.3/§5.8 byte-exact packing conformance TB (Icarus + Verilator)
 - `dv/act/` — §8 activation FSM unit test: deactivate / re-activate / `ERROR` (Icarus + Verilator)
 - `dv/reorder/` — per-ID response reorder buffer unit test: out-of-order-by-ID completion (Icarus + Verilator)
+- `dv/ooo/` — **end-to-end out-of-order-by-ID chain** (`OOO_EN=1`): interleaved multi-ID traffic, real different-ID overtake (Icarus + Verilator)
 - `dv/systemc/` — SystemC testbench (`verilator --sc` model + `sc_main`)
 - `uvm/` — SystemVerilog UVM TB (multi-file + single-file), license-gated
 - `sim/` — Verilator C++ coverage harness
@@ -158,6 +161,7 @@ Everything runs from the repo root and degrades gracefully if a tool is absent.
 | Packing | `make pack` | §4.3/§5.8 byte-exact packing conformance, incl. 512b/1024b data (Icarus + Verilator) |
 | Activation | `make act` | §8 activation FSM unit test: bring-up / deactivate (Opt-1 & Opt-2) / ERROR (Icarus + Verilator) |
 | Reorder | `make reorder` | per-ID response reorder buffer: out-of-order-by-ID completion (Icarus + Verilator) |
+| OOO chain | `make ooo` | end-to-end out-of-order-by-ID datapath (`OOO_EN=1`): real different-ID overtake, same-ID order, no cross-ID leakage (Icarus + Verilator) |
 | SystemC | `make systemc` | SystemC TB (Verilator `--sc` + `sc_main`) |
 | SV/UVM | `make uvm` | UVM TB (VCS/Xcelium/Questa); skips cleanly if unlicensed |
 | Waves | `make waves` / `make wave` | dump / open GTKWave |
@@ -165,7 +169,7 @@ Everything runs from the repo root and degrades gracefully if a tool is absent.
 | Line coverage | `make coverage` | Verilator `--coverage` → `sim/coverage.info` (floor `COV_MIN`, default 85%; ~90–94% achieved) |
 | Functional coverage | `make test` | PyUVM covergroup model (`dv/cocotb/axi_coverage.py`) sampled from the monitor → `[COV-FUNC]` report (floor `FCOV_MIN`, default 100%; 26/26 bins achieved) |
 | Formal | `make formal` | SymbiYosys proofs of `axi_lite_mem`, the §4.3 flit header, §6 credit flow and the §8 activation FSM (`bmc` + `cover` gate, unbounded `prove` best-effort); `SBY=<path>` for an out-of-PATH prover, skips cleanly if `sby` absent |
-| Gate | `make check` | lint + cocotb + SV(both sims) + pack + act + reorder + SystemC |
+| Gate | `make check` | lint + cocotb + SV(both sims) + pack + act + reorder + ooo + SystemC |
 | CI | `make ci` | `check` + coverage + formal as one pass/fail gate |
 | Container | `docker run --rm aou-dv` | the whole `make ci` gate in a reproducible image ([`docs/DOCKER.md`](docs/DOCKER.md)) |
 | Trace | `make <target> VERBOSE=1` | per-beat AXI transaction traces in each env's log |
@@ -222,8 +226,26 @@ result — see [Functional coverage](#functional-coverage) below.
 make sv          # SV directed TB under Icarus       -> "[SV] Icarus PASSED"
 make vlt         # SV directed TB under Verilator + SVA -> "[SV] Verilator PASSED"
 make pack        # byte-exact packing conformance      -> "[PACK] Icarus/Verilator PASSED"
+make ooo         # end-to-end OOO_EN=1 chain           -> "[OOO] Icarus/Verilator PASSED"
 make systemc     # SystemC TB                          -> "[SC] SystemC PASSED"
 ```
+
+**Out-of-order mode (`OOO_EN`, opt-in, default `0`).** `axi_ucie_mem_top` takes an
+`OOO_EN` parameter. At the shipping default `0` the chain is exactly the in-order
+datapath every other environment exercises — the out-of-order logic lives in
+`generate` branches that are not elaborated, so it is bit- and cycle-identical.
+At `OOO_EN=1` the target bridge gains `aou_ooo_resp_src`, which may let a later
+**different-ID** response overtake an earlier one on the link (never same-ID,
+never splitting a burst), and the initiator bridge gains two `aou_reorder`
+buffers (reads → R, writes → B) that re-establish AXI ordering. `make ooo` proves
+it end-to-end:
+
+```
+[OOO-TB] PASS: 16 read beats checked, 4 R + 6 B different-ID overtakes, 0 errors
+```
+
+The overtake counters are *checked*, not just reported: the test fails if it sees
+zero, so it cannot pass by merely tolerating in-order completion.
 
 Each self-checking TB prints a `... PASS: N reads checked, 0 errors` banner (the
 SV and SystemC read counts differ, as each walks single-beat, INCR/WRAP/FIXED
@@ -235,7 +257,7 @@ cross-check the identical DUT.
 ```bash
 make lint        # iverilog -Wall + Verilator lint
 make coverage    # Verilator --coverage -> sim/coverage.info (floor COV_MIN=85)
-make ci          # lint + cocotb + SV(both) + SystemC + coverage, one gate
+make ci          # lint + cocotb + SV(both) + pack + act + reorder + ooo + SystemC + coverage + formal
 ```
 
 Lower the coverage bar for a quick look with `make coverage COV_MIN=80`.
@@ -280,7 +302,7 @@ An unhit bin prints `MISSING: <bin>` on its group line and fails the cocotb test
 so `make test` / `make ci` fail on a functional-coverage regression. Override the
 floor with `make test FCOV_MIN=<pct>`. AoU-protocol state (message type, credit
 flow, activation) is not observable at this env's AXI interface and is covered
-instead by `make pack` / `make act` / `make reorder` and the formal tier.
+instead by `make pack` / `make act` / `make reorder` / `make ooo` and the formal tier.
 
 ### 5. Waveforms
 
@@ -463,7 +485,7 @@ Run the entire gate in a reproducible image — no local toolchain needed:
 ```bash
 docker build -t aou-dv .          # builds Icarus + pinned Verilator + SystemC + cocotb
 docker run --rm aou-dv            # runs `make ci`; exits 0 on green
-docker run --rm aou-dv make reorder   # or any single environment
+docker run --rm aou-dv make ooo       # or any single environment
 ```
 
 The image (Ubuntu 24.04) mirrors CI exactly: apt Icarus + SystemC 2.3.3, Verilator
