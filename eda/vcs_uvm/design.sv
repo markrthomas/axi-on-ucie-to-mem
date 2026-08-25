@@ -14,8 +14,11 @@
 //   Chapter 4 (Packing) and Chapter 5 (Message Structures).
 //
 // Scope of THIS package (see docs/PLAN.md):
-//   * Basic Profile messages: WriteReq, ReadReq, WriteData(256b),
-//     ReadData(256b), WriteResp.  (WriteDataFull / 512b / 1024b not built.)
+//   * Basic Profile messages: WriteReq, ReadReq, WriteData(256b/512b/1024b),
+//     ReadData(256b/512b/1024b), WriteResp.  The AXI-Lite front door is 32-bit,
+//     so the end-to-end path only builds 256b data messages; the 512b/1024b
+//     builders/getters model the §5.4 formats and are byte-exactly conformance-
+//     tested in dv/pack.  (WriteDataFull is not built.)
 //   * Resource Plane RP0 only; §6 per-message-type credit flow control (see the
 //     credit helpers below and the bridges); no activation FSM (§8).
 //   * AXI4-Lite front door, 32-bit data / 32-bit address, single beat
@@ -56,6 +59,11 @@ package aou_pkg;
 
   localparam int FDID_W  = 2;                           // Flit Destination ID
   localparam int CREDIT_W = 16;                          // MsgCredit field
+  // Number of resource planes the §4.3/§5.6 message formats reserve slots for
+  // (FDId is 2 bits; CrdtGrant Table 18 and ActivateReq Table 25 both carry four
+  // per-plane slots).  A build's ACTIVE plane count is the NUM_RP parameter of
+  // axi_ucie_mem_top (default 1 = RP0 only); MAX_RP is the format ceiling.
+  localparam int MAX_RP  = 4;
   localparam int HDR_RSVD_W = PLP_HDR_BITS - FDID_W - NUM_GRAN - CREDIT_W; // 14
 
   typedef logic [PLP_BITS-1:0]         flit_t;           // 250B PLP == link word
@@ -88,8 +96,12 @@ package aou_pkg;
   localparam int AOU_DATA_W  = 256;  // WriteData/ReadData(256b)
   localparam int AOU_STRB_W  = 32;
   localparam int AOU_RESP_W  = 2;    // RRESP/BRESP
+  // Wide data-message widths (§5.4 Tables 5/6/11/12).  End-to-end traffic is
+  // 256b (32-bit AXI-Lite); these back the 512b/1024b format models below.
+  localparam int AOU_DATA512_W  = 512;   localparam int AOU_STRB512_W  = 64;
+  localparam int AOU_DATA1024_W = 1024;  localparam int AOU_STRB1024_W = 128;
 
-  // DLENGTH encodings (spec §5.4).  This design uses 256b only.
+  // DLENGTH encodings (spec §5.4): 256b / 512b / 1024b data-message widths.
   localparam logic [DLENGTH_W-1:0] DLEN_256  = 2'b00;
   localparam logic [DLENGTH_W-1:0] DLEN_512  = 2'b01;
   localparam logic [DLENGTH_W-1:0] DLEN_1024 = 2'b10;
@@ -97,12 +109,19 @@ package aou_pkg;
   // --- Message bit-lengths and granule counts (spec §5.3-5.5) ---------------
   localparam int WRITEREQ_BITS  = 120; localparam int WRITEREQ_GRAN  = 3;
   localparam int READREQ_BITS   = 120; localparam int READREQ_GRAN   = 3;
-  localparam int WRITEDATA_BITS = 320; localparam int WRITEDATA_GRAN = 8;
-  localparam int READDATA_BITS  = 320; localparam int READDATA_GRAN  = 8;
+  localparam int WRITEDATA_BITS = 320; localparam int WRITEDATA_GRAN = 8;   // 256b
+  localparam int READDATA_BITS  = 320; localparam int READDATA_GRAN  = 8;   // 256b
   localparam int WRITERESP_BITS = 40;  localparam int WRITERESP_GRAN = 1;
+  // Wide data messages (Tables 5/6/11/12): totals include the trailing RsvdZero.
+  localparam int WRITEDATA512_BITS  = 600;  localparam int WRITEDATA512_GRAN  = 15;
+  localparam int WRITEDATA1024_BITS = 1200; localparam int WRITEDATA1024_GRAN = 30;
+  localparam int READDATA512_BITS   = 560;  localparam int READDATA512_GRAN   = 14;
+  localparam int READDATA1024_BITS  = 1080; localparam int READDATA1024_GRAN  = 27;
 
-  localparam int MSG_MAX_BITS = 320;   // largest built message (WriteData256)
-  localparam int MSG_MAX_GRAN = 8;
+  // Largest modelled message is WriteData(1024b) = 1200b / 30 granules (Table 6);
+  // every message is left-justified (granule 0 in the MSBs) in this container.
+  localparam int MSG_MAX_BITS = 1200;
+  localparam int MSG_MAX_GRAN = 30;
 
   typedef logic [MSG_MAX_BITS-1:0] msg_t;   // left-justified message container
 
@@ -167,17 +186,18 @@ package aou_pkg;
   endfunction
 
   // WriteData 256b (Table 4): MSGTYPE,RP,DLENGTH,FLEX,WDATA(256),WSTRB(32),
-  //                           RsvdZero(8) => 320b (exactly MSG_MAX_BITS)
+  //                           RsvdZero(8) => 320b, left-justified in MSG_MAX_BITS
   function automatic msg_t mk_writedata256(
       input logic [RP_W-1:0]       rp,
       input logic [FLEX_W-1:0]     flex,
       input logic [AOU_DATA_W-1:0] wdata,
       input logic [AOU_STRB_W-1:0] wstrb);
-    mk_writedata256 = {MT_WRITEDATA, rp, DLEN_256, flex, wdata, wstrb, 8'b0};
+    mk_writedata256 = {MT_WRITEDATA, rp, DLEN_256, flex, wdata, wstrb, 8'b0,
+                       {(MSG_MAX_BITS-WRITEDATA_BITS){1'b0}}};
   endfunction
 
   // ReadData 256b (Table 10): MSGTYPE,RP,DLENGTH,FLEX,RID,RRESP,RLAST,
-  //   RsvdZero(3),RDATA(256),RsvdZero(24) => 320b
+  //   RsvdZero(3),RDATA(256),RsvdZero(24) => 320b, left-justified
   function automatic msg_t mk_readdata256(
       input logic [RP_W-1:0]       rp,
       input logic [FLEX_W-1:0]     flex,
@@ -186,8 +206,58 @@ package aou_pkg;
       input logic                  rlast,
       input logic [AOU_DATA_W-1:0] rdata);
     mk_readdata256 = {MT_READDATA, rp, DLEN_256, flex, rid, rresp, rlast,
-                      3'b0, rdata, 24'b0};
+                      3'b0, rdata, 24'b0, {(MSG_MAX_BITS-READDATA_BITS){1'b0}}};
   endfunction
+
+  // Wide WriteData/ReadData builders (§5.4 Tables 5/6/11/12).  Same field order
+  // as the 256b variants, wider WDATA/RDATA + WSTRB and per-width trailing
+  // RsvdZero, left-justified in MSG_MAX_BITS.  Exercised in dv/pack (format
+  // conformance), never on the 32-bit end-to-end path, so kept out of the
+  // coverage harness's line accounting.
+  // verilator coverage_off
+  // WriteData 512b (Table 5): +WSTRB(64), no trailing RsvdZero => 600b
+  function automatic msg_t mk_writedata512(
+      input logic [RP_W-1:0]          rp,
+      input logic [FLEX_W-1:0]        flex,
+      input logic [AOU_DATA512_W-1:0] wdata,
+      input logic [AOU_STRB512_W-1:0] wstrb);
+    mk_writedata512 = {MT_WRITEDATA, rp, DLEN_512, flex, wdata, wstrb,
+                       {(MSG_MAX_BITS-WRITEDATA512_BITS){1'b0}}};
+  endfunction
+
+  // WriteData 1024b (Table 6): +WSTRB(128), RsvdZero(24) => 1200b (== MSG_MAX)
+  function automatic msg_t mk_writedata1024(
+      input logic [RP_W-1:0]           rp,
+      input logic [FLEX_W-1:0]         flex,
+      input logic [AOU_DATA1024_W-1:0] wdata,
+      input logic [AOU_STRB1024_W-1:0] wstrb);
+    mk_writedata1024 = {MT_WRITEDATA, rp, DLEN_1024, flex, wdata, wstrb, 24'b0};
+  endfunction
+
+  // ReadData 512b (Table 11): RDATA(512), trailing RsvdZero(8) => 560b
+  function automatic msg_t mk_readdata512(
+      input logic [RP_W-1:0]          rp,
+      input logic [FLEX_W-1:0]        flex,
+      input logic [AOU_ID_W-1:0]      rid,
+      input logic [AOU_RESP_W-1:0]    rresp,
+      input logic                     rlast,
+      input logic [AOU_DATA512_W-1:0] rdata);
+    mk_readdata512 = {MT_READDATA, rp, DLEN_512, flex, rid, rresp, rlast,
+                      3'b0, rdata, 8'b0, {(MSG_MAX_BITS-READDATA512_BITS){1'b0}}};
+  endfunction
+
+  // ReadData 1024b (Table 12): RDATA(1024), trailing RsvdZero(16) => 1080b
+  function automatic msg_t mk_readdata1024(
+      input logic [RP_W-1:0]           rp,
+      input logic [FLEX_W-1:0]         flex,
+      input logic [AOU_ID_W-1:0]       rid,
+      input logic [AOU_RESP_W-1:0]     rresp,
+      input logic                      rlast,
+      input logic [AOU_DATA1024_W-1:0] rdata);
+    mk_readdata1024 = {MT_READDATA, rp, DLEN_1024, flex, rid, rresp, rlast,
+                       3'b0, rdata, 16'b0, {(MSG_MAX_BITS-READDATA1024_BITS){1'b0}}};
+  endfunction
+  // verilator coverage_on
 
   // WriteResp (Table 13): MSGTYPE,RP,RsvdZero(2),FLEX,BID,BRESP,RsvdZero(4)
   //                       => 40b (1 granule) left-justified in 320b
@@ -263,6 +333,37 @@ package aou_pkg;
   localparam logic [1:0] AXBURST_INCR  = 2'b01;
   localparam logic [1:0] AXBURST_WRAP  = 2'b10;
 
+  // --- FLEX usage map (§5.2: FLEX carries "additional information/extensions")
+  // No new message field is introduced anywhere: the whole AoU byte map of
+  // §4.3/§5.8 is untouched.  Two disjoint slices of the existing 16-bit FLEX
+  // field are used:
+  //   FLEX[1:0]   AxBURST for requests (above).
+  //   FLEX[15:12] AoU transaction tag, used ONLY by the optional out-of-order
+  //               mode (docs/PLAN.md F2): the initiator stamps the reorder-buffer
+  //               slot it allocated onto a WriteReq/ReadReq, and the target
+  //               echoes those bits back in the WriteResp/ReadData so a
+  //               completion can be matched to its slot when responses arrive
+  //               out of order.  With OOO_EN=0 (the shipping default) the
+  //               initiator stamps 0 and the target echoes 0, so every flit is
+  //               byte-identical to the in-order build.
+  localparam int FLEX_TAG_LSB = 12;
+  localparam int FLEX_TAG_W   = 4;
+
+  function automatic logic [FLEX_TAG_W-1:0] flex_tag(input logic [FLEX_W-1:0] f);
+    flex_tag = f[FLEX_TAG_LSB +: FLEX_TAG_W];
+  endfunction
+
+  function automatic logic [FLEX_W-1:0] mk_flex_tag(input logic [FLEX_TAG_W-1:0] tag);
+    mk_flex_tag = {tag, {FLEX_TAG_LSB{1'b0}}};
+  endfunction
+
+  // FLEX sits at the same offset in every §5.8 message that carries it — after
+  // MSGTYPE(4)+RP(2)+2 bits of DLENGTH/AWLOCK/RsvdZero — so one getter serves
+  // WriteReq/ReadReq/WriteData/ReadData/WriteResp alike.
+  function automatic logic [FLEX_W-1:0] msg_flex(input msg_t m);
+    msg_flex = m[MSG_MAX_BITS-1-8 -: FLEX_W];
+  endfunction
+
   // Next-beat address for an AXI burst (FIXED/INCR/WRAP), per the AXI4 spec.
   //   addr = current beat address, base = burst start address,
   //   size = log2(bytes/beat), len = AxLEN (beats-1).
@@ -312,6 +413,35 @@ package aou_pkg;
   function automatic logic [AOU_DATA_W-1:0] rd_data(input msg_t m);
     rd_data = m[MSG_MAX_BITS-1-40 -: AOU_DATA_W];  // after 24+10+2+1+3 = 40
   endfunction
+
+  // DLENGTH selector, shared by all data messages (after MSGTYPE(4),RP(2) = 6).
+  function automatic logic [DLENGTH_W-1:0] msg_dlength(input msg_t m);
+    msg_dlength = m[MSG_MAX_BITS-1-6 -: DLENGTH_W];
+  endfunction
+
+  // Wide WriteData/ReadData getters.  The fields preceding WDATA (24 bits) and
+  // RDATA (40 bits) are identical across widths, so only the data/strobe widths
+  // change.  Conformance-tested in dv/pack; off the end-to-end path.
+  // verilator coverage_off
+  function automatic logic [AOU_DATA512_W-1:0] wd_data512(input msg_t m);
+    wd_data512 = m[MSG_MAX_BITS-1-24 -: AOU_DATA512_W];
+  endfunction
+  function automatic logic [AOU_STRB512_W-1:0] wd_strb512(input msg_t m);
+    wd_strb512 = m[MSG_MAX_BITS-1-24-AOU_DATA512_W -: AOU_STRB512_W];
+  endfunction
+  function automatic logic [AOU_DATA1024_W-1:0] wd_data1024(input msg_t m);
+    wd_data1024 = m[MSG_MAX_BITS-1-24 -: AOU_DATA1024_W];
+  endfunction
+  function automatic logic [AOU_STRB1024_W-1:0] wd_strb1024(input msg_t m);
+    wd_strb1024 = m[MSG_MAX_BITS-1-24-AOU_DATA1024_W -: AOU_STRB1024_W];
+  endfunction
+  function automatic logic [AOU_DATA512_W-1:0] rd_data512(input msg_t m);
+    rd_data512 = m[MSG_MAX_BITS-1-40 -: AOU_DATA512_W];
+  endfunction
+  function automatic logic [AOU_DATA1024_W-1:0] rd_data1024(input msg_t m);
+    rd_data1024 = m[MSG_MAX_BITS-1-40 -: AOU_DATA1024_W];
+  endfunction
+  // verilator coverage_on
 
   // WriteResp getters: after MSGTYPE(4),RP(2),RsvdZero(2),FLEX(16) = 24 bits
   function automatic logic [AOU_ID_W-1:0] wrsp_id(input msg_t m);
@@ -559,36 +689,84 @@ package aou_pkg;
   // ActivateReq (Table 25): as ActivationOthers but ACTIVATIONOP=ActivateReq
   //   plus RsvdZero(3) and RP0..RP3 Profile{ID(5),Rev(5),Opt(16)} => 160b.  The
   //   Basic Profile leaves the profile fields at 0 (Chapter 11 defines them).
-  function automatic msg_t mk_activate_req(
-      input logic [4:0]  rp0_id,  input logic [4:0]  rp0_rev, input logic [15:0] rp0_opt);
+  //
+  // Bit layout, by transmission offset g within the 160b message (g=0 is the
+  // MSB): MSGTYPE g=0(4), MISCOP g=4(3), ACTIVATIONOP g=7(4), RsvdZero g=11(3),
+  // then one 26-bit Profile{ID(5),Rev(5),Opt(16)} per plane on a 40-bit stride
+  // (26 profile bits + 14 RsvdZero), i.e. plane p's profile starts at
+  // g = AR_PROF_G0 + p*AR_PROF_STRIDE.  RP3 has no trailing RsvdZero.
+  localparam int AR_PROF_G0     = 14;
+  localparam int AR_PROF_STRIDE = 40;
+
+  // Per-plane ActivateReq: places one plane's Profile in ITS OWN Table-25 slot
+  // and leaves the other three at 0.  mk_activate_req() below is the rp=0 case
+  // and is byte-identical to the single-plane build.
+  function automatic msg_t mk_activate_req_rp(
+      input logic [RP_W-1:0] rp,
+      input logic [4:0]      prof_id,
+      input logic [4:0]      prof_rev,
+      input logic [15:0]     prof_opt);
     logic [159:0] v;
+    int           g;
     begin
-      v = {MT_MISC, MISCOP_ACTIVATION, ACTOP_ACTIVATE_REQ, 3'b0,
-           rp0_id, rp0_rev, rp0_opt, 14'b0,   // RP0
-           5'b0,   5'b0,    16'b0,   14'b0,   // RP1 (not present)
-           5'b0,   5'b0,    16'b0,   14'b0,   // RP2 (not present)
-           5'b0,   5'b0,    16'b0};           // RP3 (not present)
-      mk_activate_req = {v, {(MSG_MAX_BITS-160){1'b0}}};
+      v = '0;
+      v[159 -: MSGTYPE_W]                    = MT_MISC;
+      v[159-MSGTYPE_W -: MISCOP_W]           = MISCOP_ACTIVATION;
+      v[159-7 -: ACTIVATIONOP_W]             = ACTOP_ACTIVATE_REQ;
+      g = AR_PROF_G0 + AR_PROF_STRIDE * int'(rp);
+      v[159-g       -: 5]  = prof_id;
+      v[159-(g+5)   -: 5]  = prof_rev;
+      v[159-(g+10)  -: 16] = prof_opt;
+      mk_activate_req_rp = {v, {(MSG_MAX_BITS-160){1'b0}}};
     end
   endfunction
 
-  // CrdtGrant (Table 18): bulk credit advertisement.  Only RP0 is populated in
-  // this single-plane build; RP1..RP3 fields are 0.  Inputs are Table-17 codes.
+  function automatic msg_t mk_activate_req(
+      input logic [4:0]  rp0_id,  input logic [4:0]  rp0_rev, input logic [15:0] rp0_opt);
+    mk_activate_req = mk_activate_req_rp(2'b00, rp0_id, rp0_rev, rp0_opt);
+  endfunction
+
+  // CrdtGrant (Table 18): bulk credit advertisement, four per-plane slots per
+  // message type.  Field offsets by transmission position g within the 80b
+  // message: WREQCRED0..3 at g=7+3p, RREQCRED0..3 at g=19+3p, WDATACRED0..3 at
+  // g=31+3p, RDATACRED0..3 at g=43+3p, WRESPCRED0..3 at g=55+2p, then 17 Rsvd.
+  localparam int CG_WREQ_G0  = 7;
+  localparam int CG_RREQ_G0  = 19;
+  localparam int CG_WDATA_G0 = 31;
+  localparam int CG_RDATA_G0 = 43;
+  localparam int CG_WRESP_G0 = 55;
+
+  // Per-plane CrdtGrant: the Table-17 bucket codes land in plane `rp`'s slots;
+  // every other plane's slot stays 0 (that plane is granted nothing).  A credit
+  // therefore names the plane it belongs to, which is what keeps the receiving
+  // bridge from applying it to another plane's counters.
+  function automatic msg_t mk_crdtgrant_rp(
+      input logic [RP_W-1:0] rp,
+      input logic [2:0]      wreq,  input logic [2:0] rreq,
+      input logic [2:0]      wdata, input logic [2:0] rdata,
+      input logic [1:0]      wresp);
+    logic [79:0] v;
+    int          p;
+    begin
+      v = '0;
+      v[79 -: MSGTYPE_W]          = MT_MISC;
+      v[79-MSGTYPE_W -: MISCOP_W] = MISCOP_CRDTGRANT;
+      p = int'(rp);
+      v[79-(CG_WREQ_G0  + 3*p) -: 3] = wreq;
+      v[79-(CG_RREQ_G0  + 3*p) -: 3] = rreq;
+      v[79-(CG_WDATA_G0 + 3*p) -: 3] = wdata;
+      v[79-(CG_RDATA_G0 + 3*p) -: 3] = rdata;
+      v[79-(CG_WRESP_G0 + 2*p) -: 2] = wresp;
+      mk_crdtgrant_rp = {v, {(MSG_MAX_BITS-80){1'b0}}};
+    end
+  endfunction
+
+  // RP0 convenience wrapper — byte-identical to the single-plane build.
   function automatic msg_t mk_crdtgrant(
       input logic [2:0] wreq0,  input logic [2:0] rreq0,
       input logic [2:0] wdata0, input logic [2:0] rdata0,
       input logic [1:0] wresp0);
-    logic [79:0] v;
-    begin
-      v = {MT_MISC, MISCOP_CRDTGRANT,
-           wreq0,  3'b0, 3'b0, 3'b0,          // WREQCRED0..3
-           rreq0,  3'b0, 3'b0, 3'b0,          // RREQCRED0..3
-           wdata0, 3'b0, 3'b0, 3'b0,          // WDATACRED0..3
-           rdata0, 3'b0, 3'b0, 3'b0,          // RDATACRED0..3
-           wresp0, 2'b0, 2'b0, 2'b0,          // WRESPCRED0..3
-           17'b0};
-      mk_crdtgrant = {v, {(MSG_MAX_BITS-80){1'b0}}};
-    end
+    mk_crdtgrant = mk_crdtgrant_rp(2'b00, wreq0, rreq0, wdata0, rdata0, wresp0);
   endfunction
 
   // --- getters (MSGTYPE is get_msgtype(); these read the Misc sub-fields) ---
@@ -599,12 +777,40 @@ package aou_pkg;
     misc_activationop = m[MSG_MAX_BITS-1-7 -: ACTIVATIONOP_W];    // after 4+3
   endfunction
 
+  // ActivateReq per-plane Profile getters (Table 25).
+  function automatic logic [4:0] ar_prof_id(input msg_t m, input logic [RP_W-1:0] rp);
+    ar_prof_id = m[MSG_MAX_BITS-1-(AR_PROF_G0 + AR_PROF_STRIDE*int'(rp)) -: 5];
+  endfunction
+  function automatic logic [4:0] ar_prof_rev(input msg_t m, input logic [RP_W-1:0] rp);
+    ar_prof_rev = m[MSG_MAX_BITS-1-(AR_PROF_G0 + AR_PROF_STRIDE*int'(rp) + 5) -: 5];
+  endfunction
+  function automatic logic [15:0] ar_prof_opt(input msg_t m, input logic [RP_W-1:0] rp);
+    ar_prof_opt = m[MSG_MAX_BITS-1-(AR_PROF_G0 + AR_PROF_STRIDE*int'(rp) + 10) -: 16];
+  endfunction
+
+  // CrdtGrant per-plane credit-code getters (Table 18).
+  function automatic logic [2:0] cg_wreq (input msg_t m, input logic [RP_W-1:0] rp);
+    cg_wreq  = m[MSG_MAX_BITS-1-(CG_WREQ_G0  + 3*int'(rp)) -: 3];
+  endfunction
+  function automatic logic [2:0] cg_rreq (input msg_t m, input logic [RP_W-1:0] rp);
+    cg_rreq  = m[MSG_MAX_BITS-1-(CG_RREQ_G0  + 3*int'(rp)) -: 3];
+  endfunction
+  function automatic logic [2:0] cg_wdata(input msg_t m, input logic [RP_W-1:0] rp);
+    cg_wdata = m[MSG_MAX_BITS-1-(CG_WDATA_G0 + 3*int'(rp)) -: 3];
+  endfunction
+  function automatic logic [2:0] cg_rdata(input msg_t m, input logic [RP_W-1:0] rp);
+    cg_rdata = m[MSG_MAX_BITS-1-(CG_RDATA_G0 + 3*int'(rp)) -: 3];
+  endfunction
+  function automatic logic [1:0] cg_wresp(input msg_t m, input logic [RP_W-1:0] rp);
+    cg_wresp = m[MSG_MAX_BITS-1-(CG_WRESP_G0 + 2*int'(rp)) -: 2];
+  endfunction
+
   // CrdtGrant RP0 credit-code getters (offsets after MSGTYPE(4)+MISCOP(3)=7).
-  function automatic logic [2:0] cg_wreq0 (input msg_t m); cg_wreq0  = m[MSG_MAX_BITS-1-7  -: 3]; endfunction
-  function automatic logic [2:0] cg_rreq0 (input msg_t m); cg_rreq0  = m[MSG_MAX_BITS-1-19 -: 3]; endfunction
-  function automatic logic [2:0] cg_wdata0(input msg_t m); cg_wdata0 = m[MSG_MAX_BITS-1-31 -: 3]; endfunction
-  function automatic logic [2:0] cg_rdata0(input msg_t m); cg_rdata0 = m[MSG_MAX_BITS-1-43 -: 3]; endfunction
-  function automatic logic [1:0] cg_wresp0(input msg_t m); cg_wresp0 = m[MSG_MAX_BITS-1-55 -: 2]; endfunction
+  function automatic logic [2:0] cg_wreq0 (input msg_t m); cg_wreq0  = cg_wreq (m, 2'b00); endfunction
+  function automatic logic [2:0] cg_rreq0 (input msg_t m); cg_rreq0  = cg_rreq (m, 2'b00); endfunction
+  function automatic logic [2:0] cg_wdata0(input msg_t m); cg_wdata0 = cg_wdata(m, 2'b00); endfunction
+  function automatic logic [2:0] cg_rdata0(input msg_t m); cg_rdata0 = cg_rdata(m, 2'b00); endfunction
+  function automatic logic [1:0] cg_wresp0(input msg_t m); cg_wresp0 = cg_wresp(m, 2'b00); endfunction
 
 endpackage : aou_pkg
 // verilator lint_on UNUSEDSIGNAL
@@ -690,10 +896,19 @@ endmodule
 // (§8.2: "discards all previously received protocol-level credits").
 //
 // Deactivate is triggered by `deact_trig` (§8.3.2: "System Software writing a
-// flag in the AoU bridge").  Only Option 1 (§8.3.2, MANDATORY) is modelled: the
-// bridge asserts `deact_trig` only once the link is quiesced, so DEACTIVATE has
-// no pending Data/WriteResp to drain and the module can own the link for the
-// teardown handshake.  Option 2 (hardware quiescing) is a documented follow-on.
+// flag in the AoU bridge").  Both §8.3.2 options are modelled:
+//   * Option 1 (MANDATORY): SW pre-quiesces the link, so `data_idle` is already
+//     high when `deact_trig` fires and teardown starts the same cycle.
+//   * Option 2 (OPTIONAL, hardware-managed quiescing): `deact_trig` may be
+//     asserted at ANY time (mid-transaction).  The intent is latched
+//     (`deact_pending`) and `quiescing` is raised so the bridge stops accepting
+//     new AXI requests; the module holds in ENABLED — letting in-flight
+//     Data/WriteResp drain, which the spec explicitly permits after the flag is
+//     set — and only enters DEACTIVATE to emit DeactivateReq once the bridge
+//     reports its data path drained (`data_idle`).  Option 1 is the degenerate
+//     case where `data_idle` is tied high.
+// A peer-initiated DeactivateReq (received while ENABLED) is answered
+// immediately, independent of the local quiescing gate.
 //
 // ERROR (§8.3.3): entered when an inconsistent link-state Req is received (e.g.
 // an ActivateReq while ENABLED, or a DeactivateReq while DISABLED).  In ERROR no
@@ -706,7 +921,14 @@ endmodule
 // flits (CrdtGrant is the peer's last bring-up message).  So a data flit never
 // reaches a still-activating receiver.
 //
-// Scope: CrdtGrant covers resource plane RP0.
+// Scope: one instance manages ONE resource plane's chain.  `RP_ID` (default 0)
+// names that plane: every bring-up/teardown flit this module emits carries
+// FDId = RP_ID (§4.3), its CrdtGrant puts the granted Table-17 codes in the
+// plane's OWN Table-18 slot, its ActivateReq fills the plane's own Table-25
+// Profile slot, and the peer's CrdtGrant is decoded from that same slot — so a
+// credit advertised for another plane can never seed this plane's counters.
+// With RP_ID = 0 (the single-plane default) every emitted flit is byte-identical
+// to the RP0-only build.
 // -----------------------------------------------------------------------------
 `ifndef AOU_ACTIVATION_SV
 `define AOU_ACTIVATION_SV
@@ -721,7 +943,10 @@ module aou_activation
     parameter logic [2:0] GRANT_RREQ  = 3'b000,
     parameter logic [2:0] GRANT_WDATA = 3'b000,
     parameter logic [2:0] GRANT_RDATA = 3'b000,
-    parameter logic [1:0] GRANT_WRESP = 2'b00
+    parameter logic [1:0] GRANT_WRESP = 2'b00,
+    // Resource plane this chain belongs to (§3).  Selects the FDId stamped on
+    // every bring-up flit and the CrdtGrant / ActivateReq per-plane slot used.
+    parameter logic [aou_pkg::RP_W-1:0] RP_ID = 2'b00
 ) (
     input  logic                clk,
     input  logic                rstn,
@@ -729,6 +954,8 @@ module aou_activation
     output logic                act_disabled,      // DISABLED (credit-reset qual)
     output logic                error,             // ERROR state
     input  logic                deact_trig,        // §8.3.2 SW deactivate flag
+    input  logic                data_idle,         // §8.3.2 Opt-2: data path drained
+    output logic                quiescing,         // draining before teardown (Opt-2)
     input  logic                err_clear,         // §8.4 ERROR->DISABLED trigger
     // physical flit link (owned by this module until ENABLED)
     output logic [PLP_BITS-1:0] tx_data,
@@ -761,10 +988,15 @@ module aou_activation
   // activate-phase / deactivate-phase handshake flags
   logic areq_sent, areq_rcvd, aack_sent, aack_rcvd, crdt_sent, crdt_rcvd;
   logic dreq_sent, dreq_rcvd, dack_sent, dack_rcvd;
+  // §8.3.2 Option 2: SW deactivate intent latched while the data path drains.
+  logic deact_pending;
 
   assign enabled      = (state == ACT_ENABLED);
   assign act_disabled = (state == ACT_DISABLED);
   assign error        = (state == ACT_ERROR);
+  // Raised while a latched SW deactivate waits for the data path to quiesce; the
+  // bridge uses it to stop accepting new AXI requests (Option 2).
+  assign quiescing    = enabled && deact_pending;
 
   wire in_bringup = (state == ACT_DISABLED) || (state == ACT_ACTIVATE);
 
@@ -786,19 +1018,20 @@ module aou_activation
     act_tx_flit  = '0;
     act_tx_valid = 1'b0;
     if (send_areq) begin
-      m  = mk_activate_req(5'b0, 5'b0, 16'b0);
+      m  = mk_activate_req_rp(RP_ID, 5'b0, 5'b0, 16'b0);
       pl = payload_put('0, 0, ACTIVATEREQ_GRAN, m);
-      act_tx_flit  = flit_assemble('0, msgstart_t'(1), pl);
+      act_tx_flit  = flit_assemble(RP_ID, msgstart_t'(1), pl);
       act_tx_valid = 1'b1;
     end else if (send_aack) begin
       m  = mk_activation_other(ACTOP_ACTIVATE_ACK);
       pl = payload_put('0, 0, MISC_GRAN, m);
-      act_tx_flit  = flit_assemble('0, msgstart_t'(1), pl);
+      act_tx_flit  = flit_assemble(RP_ID, msgstart_t'(1), pl);
       act_tx_valid = 1'b1;
     end else if (send_crdt) begin
-      m  = mk_crdtgrant(GRANT_WREQ, GRANT_RREQ, GRANT_WDATA, GRANT_RDATA, GRANT_WRESP);
+      m  = mk_crdtgrant_rp(RP_ID, GRANT_WREQ, GRANT_RREQ, GRANT_WDATA,
+                           GRANT_RDATA, GRANT_WRESP);
       pl = payload_put('0, 0, CRDTGRANT_GRAN, m);
-      act_tx_flit  = flit_assemble('0, msgstart_t'(1), pl);
+      act_tx_flit  = flit_assemble(RP_ID, msgstart_t'(1), pl);
       act_tx_valid = 1'b1;
     // teardown TX is exercised by dv/act, not the full-chain coverage harness
     // (which ties deact_trig/err_clear low) — see the coverage note at the FSM.
@@ -806,12 +1039,12 @@ module aou_activation
     end else if (send_dreq) begin
       m  = mk_activation_other(ACTOP_DEACTIVATE_REQ);
       pl = payload_put('0, 0, MISC_GRAN, m);
-      act_tx_flit  = flit_assemble('0, msgstart_t'(1), pl);
+      act_tx_flit  = flit_assemble(RP_ID, msgstart_t'(1), pl);
       act_tx_valid = 1'b1;
     end else if (send_dack) begin
       m  = mk_activation_other(ACTOP_DEACTIVATE_ACK);
       pl = payload_put('0, 0, MISC_GRAN, m);
-      act_tx_flit  = flit_assemble('0, msgstart_t'(1), pl);
+      act_tx_flit  = flit_assemble(RP_ID, msgstart_t'(1), pl);
       act_tx_valid = 1'b1;
     end
     // verilator coverage_on
@@ -841,13 +1074,15 @@ module aou_activation
       (rx_is_areq && ((state == ACT_ENABLED)  || (state == ACT_DEACTIVATE))) ||
       (rx_is_dreq && ((state == ACT_DISABLED) || (state == ACT_ACTIVATE))));
 
-  // credit seed (decoded RP0 grant fields) — pulsed as the CrdtGrant is consumed
+  // credit seed — pulsed as the CrdtGrant is consumed.  The grant fields are
+  // read from THIS plane's Table-18 slot, so a grant addressed to another plane
+  // seeds nothing here (its own slot is 0).
   assign seed_valid = rx_valid && !enabled && (state != ACT_ERROR) && rx_is_crdt;
-  assign seed_wreq  = cg_wreq0(rm);
-  assign seed_rreq  = cg_rreq0(rm);
-  assign seed_wdata = cg_wdata0(rm);
-  assign seed_rdata = cg_rdata0(rm);
-  assign seed_wresp = cg_wresp0(rm);
+  assign seed_wreq  = cg_wreq (rm, RP_ID);
+  assign seed_rreq  = cg_rreq (rm, RP_ID);
+  assign seed_wdata = cg_wdata(rm, RP_ID);
+  assign seed_rdata = cg_rdata(rm, RP_ID);
+  assign seed_wresp = cg_wresp(rm, RP_ID);
 
   // --- link / data-path mux -------------------------------------------------
   // ERROR transmits nothing (act_tx_valid is already 0 there); every non-ENABLED
@@ -870,6 +1105,7 @@ module aou_activation
       crdt_sent <= 1'b0; crdt_rcvd <= 1'b0;
       dreq_sent <= 1'b0; dreq_rcvd <= 1'b0;
       dack_sent <= 1'b0; dack_rcvd <= 1'b0;
+      deact_pending <= 1'b0;
     end else begin
       // sent-flags: which Misc message went out this cycle.
       // NOTE: the DEACTIVATE / ERROR paths below are unreachable in the
@@ -917,9 +1153,23 @@ module aou_activation
         // none of which the full-chain coverage harness stimulates (dv/act does).
         // verilator coverage_off
         ACT_ENABLED: begin
-          if (err_now) state <= ACT_ERROR;
-          else if (deact_trig || (rx_valid && rx_is_dreq))
+          if (err_now) begin
+            state <= ACT_ERROR;
+            deact_pending <= 1'b0;
+          end else if (rx_valid && rx_is_dreq) begin
+            // peer-initiated teardown: answer immediately, ungated
             state <= ACT_DEACTIVATE;
+            deact_pending <= 1'b0;
+          end else if ((deact_pending || deact_trig) && data_idle) begin
+            // §8.3.2 Opt-2: SW teardown proceeds once the data path is drained
+            // (Opt-1 is the case where data_idle is already high on deact_trig)
+            state <= ACT_DEACTIVATE;
+            deact_pending <= 1'b0;
+          end else if (deact_trig) begin
+            // SW wrote the flag while data still in flight: latch and keep
+            // draining (quiescing asserted) until data_idle
+            deact_pending <= 1'b1;
+          end
         end
         ACT_DEACTIVATE: begin
           if (err_now) state <= ACT_ERROR;
@@ -1094,6 +1344,492 @@ module axi_lite_mem #(
 endmodule
 `endif
 
+// ==================== rtl/aou_reorder.sv ====================
+// -----------------------------------------------------------------------------
+// aou_reorder : per-ID response reorder buffer (out-of-order-by-ID completion).
+//
+// Models the initiator-side buffer AXI needs when responses may complete out of
+// order.  The AXI ordering rule is: transactions with the SAME ID complete in
+// issue order, transactions with DIFFERENT IDs may complete in any order.  This
+// block delivers exactly that:
+//   * issue side  — allocates a slot per transaction in issue order, returning
+//                   a tag (the slot index) and storing the transaction's ID;
+//   * completion  — data arrives addressed by tag and may arrive in ANY order
+//                   (this is the "out-of-order" the initiator must tolerate);
+//   * output side — presents a completed response as soon as it is the OLDEST
+//                   not-yet-released transaction OF ITS ID.  A younger response
+//                   of a different ID can therefore overtake an older one still
+//                   awaiting completion (out-of-order across IDs), while two
+//                   responses sharing an ID always leave in issue order.
+//
+// The current AoU chain (single serialized link + single in-order memory) never
+// produces out-of-order completions, so this block is not wired into the full
+// datapath; it is a synthesizable, self-contained mechanism verified by the
+// directed unit test in dv/reorder, ready for a variable-latency / multi-channel
+// target.  See docs/PLAN.md (F2).
+//
+// Slots occupy a contiguous window [head, tail): position within the window is
+// age (head = oldest).  Completed responses may leave the window out of order
+// (occ cleared in place); the freed space is reclaimed in issue order as head
+// advances over vacated slots (at most one slot/cycle).  DEPTH must be a power
+// of two so the tag/head/tail pointers wrap naturally.
+// -----------------------------------------------------------------------------
+`ifndef AOU_REORDER_SV
+`define AOU_REORDER_SV
+
+module aou_reorder #(
+    parameter int DEPTH  = 8,        // outstanding capacity (power of two)
+    parameter int ID_W   = 10,
+    parameter int DATA_W = 32,
+    // Derived; do NOT override.  In the parameter list so the ports can use it.
+    parameter int TAGW   = (DEPTH > 1) ? $clog2(DEPTH) : 1
+) (
+    input  logic                     clk,
+    input  logic                     rstn,
+    // issue: allocate a slot in issue order (iss_tag valid when fired)
+    input  logic                     iss_valid,
+    output logic                     iss_ready,
+    input  logic [ID_W-1:0]          iss_id,
+    output logic [TAGW-1:0]          iss_tag,
+    // completion: data for `cmp_tag` arrives, possibly out of order
+    input  logic                     cmp_valid,
+    input  logic [TAGW-1:0]          cmp_tag,
+    input  logic [DATA_W-1:0]        cmp_data,
+    // output: oldest-of-its-ID completed response, released on out_ready
+    output logic                     out_valid,
+    output logic [ID_W-1:0]          out_id,
+    output logic [DATA_W-1:0]        out_data,
+    input  logic                     out_ready
+);
+
+  logic [DEPTH-1:0]   occ;                 // slot allocated, not yet released
+  logic [DEPTH-1:0]   done;                // completion data has arrived
+  logic [ID_W-1:0]    id_arr   [DEPTH];
+  logic [DATA_W-1:0]  data_arr [DEPTH];
+  logic [TAGW-1:0]    head, tail;
+  logic [TAGW:0]      count;               // window size (tail-head), 0..DEPTH
+
+  // circular index of the k-th slot from head (0 = oldest)
+  function automatic logic [TAGW-1:0] idx_at(input int k);
+    int s;
+    begin
+      s = int'(head) + k;
+      if (s >= DEPTH) s -= DEPTH;
+      idx_at = s[TAGW-1:0];
+    end
+  endfunction
+
+  assign iss_ready = (count != DEPTH[TAGW:0]);
+  assign iss_tag   = tail;
+
+  wire iss_fire = iss_valid && iss_ready;
+  wire cmp_fire = cmp_valid;
+
+  // --- output selection: oldest completed slot with no older same-ID slot ----
+  logic [TAGW-1:0] out_idx;
+  always_comb begin
+    logic [TAGW-1:0] idx, jdx;
+    logic            blocked;
+    idx       = '0;
+    jdx       = '0;
+    blocked   = 1'b0;
+    out_valid = 1'b0;
+    out_idx   = head;
+    for (int k = 0; k < DEPTH; k++) begin
+      idx = idx_at(k);
+      if ((k < int'(count)) && occ[idx] && done[idx] && !out_valid) begin
+        blocked = 1'b0;
+        for (int j = 0; j < DEPTH; j++) begin
+          jdx = idx_at(j);
+          if ((j < k) && occ[jdx] && (id_arr[jdx] == id_arr[idx]))
+            blocked = 1'b1;               // an older, still-present same-ID slot
+        end
+        if (!blocked) begin
+          out_valid = 1'b1;
+          out_idx   = idx;
+        end
+      end
+    end
+  end
+  assign out_id   = id_arr[out_idx];
+  assign out_data = data_arr[out_idx];
+
+  wire out_fire = out_valid && out_ready;
+
+  // head slot is vacated this cycle (or already vacant) -> reclaim its space
+  wire reclaim = (count != '0) &&
+                 (!occ[head] || (out_fire && (out_idx == head)));
+
+  always_ff @(posedge clk or negedge rstn) begin
+    if (!rstn) begin
+      occ   <= '0;
+      done  <= '0;
+      head  <= '0;
+      tail  <= '0;
+      count <= '0;
+    end else begin
+      if (iss_fire) begin
+        occ[tail]     <= 1'b1;
+        done[tail]    <= 1'b0;
+        id_arr[tail]  <= iss_id;
+        tail          <= tail + 1'b1;
+      end
+      if (cmp_fire) begin
+        done[cmp_tag]     <= 1'b1;
+        data_arr[cmp_tag] <= cmp_data;
+      end
+      if (out_fire) begin
+        occ[out_idx]  <= 1'b0;
+        done[out_idx] <= 1'b0;
+      end
+      if (reclaim) head <= head + 1'b1;
+      count <= count + (TAGW+1)'(iss_fire) - (TAGW+1)'(reclaim);
+    end
+  end
+
+endmodule
+`endif
+
+// ==================== rtl/aou_ooo_resp_src.sv ====================
+// -----------------------------------------------------------------------------
+// aou_ooo_resp_src : optional out-of-order RESPONSE SOURCE for the AoU target.
+//
+// Sits on the target bridge's response (B->A) flit path, between the bridge FSM
+// and its §8 activation mux, and turns the otherwise strictly in-order response
+// stream into a legally out-of-order one:
+//
+//   * it may HOLD one completed, single-flit response transaction (a WriteResp,
+//     or a single-beat ReadData — i.e. one whose first flit is also its last);
+//   * a LATER response of a DIFFERENT ID is then forwarded past the held one,
+//     so it overtakes it on the link;
+//   * the held response is released as soon as one whole transaction has passed
+//     it, or a response of the SAME ID arrives (same-ID order is inviolable), or
+//     a bounded hold timer expires (liveness with no other traffic).
+//
+// It therefore only ever reorders responses of DIFFERENT IDs — the exact
+// freedom AXI grants — and never splits or interleaves the flits of one
+// transaction (a multi-flit ReadData burst is always forwarded whole, and is
+// never chosen as the held transaction).  Bounded state: one flit register, one
+// ID register and one down-counter; nothing scales with traffic.
+//
+// This is the "OOO source" of docs/PLAN.md F2.  It is instantiated ONLY when
+// aou_axi_target_bridge is built with OOO_EN=1; with the shipping default
+// (OOO_EN=0) the bridge's response path is a plain wire and this module is not
+// elaborated at all, so the default datapath is bit- and cycle-identical.
+// -----------------------------------------------------------------------------
+`ifndef AOU_OOO_RESP_SRC_SV
+`define AOU_OOO_RESP_SRC_SV
+
+module aou_ooo_resp_src
+  import aou_pkg::*;
+#(
+    parameter int AXI_ID_W = 4,
+    // Cycles a response may be held with no other traffic to overtake it.
+    // Bounds the added latency (and guarantees forward progress) when the
+    // initiator has only one transaction outstanding.
+    parameter int HOLD_CYC = 48
+) (
+    input  logic                clk,
+    input  logic                rstn,
+    // from the target bridge FSM
+    input  logic [PLP_BITS-1:0] in_data,
+    input  logic                in_valid,
+    output logic                in_ready,
+    // to the link (via the §8 activation mux)
+    output logic [PLP_BITS-1:0] out_data,
+    output logic                out_valid,
+    input  logic                out_ready
+);
+
+  localparam int CW = $clog2(HOLD_CYC + 1);
+
+  // --- decode the response's ID and its end-of-transaction marker -----------
+  // Every response message starts at granule 0 and both fields we need (RID/BID
+  // at bit offset 24, RLAST at offset 36) live inside that first 40-bit granule,
+  // so one 1-granule payload_get() serves WriteResp and ReadData alike.
+  msg_t                 m1;
+  logic [MSGTYPE_W-1:0] mt;
+  logic                 in_last;
+  // verilator lint_off UNUSEDSIGNAL
+  logic [AOU_ID_W-1:0]  in_id_full;         // only the low AXI_ID_W bits are used
+  // verilator lint_on UNUSEDSIGNAL
+  assign m1         = payload_get(flit_payload(in_data), 0, 1);
+  assign mt         = get_msgtype(m1);
+  assign in_last    = (mt == MT_WRITERESP) ? 1'b1 : rd_last(m1);
+  assign in_id_full = (mt == MT_WRITERESP) ? wrsp_id(m1) : rd_id(m1);
+  wire [AXI_ID_W-1:0] in_id = in_id_full[AXI_ID_W-1:0];
+
+  // --- held-response state --------------------------------------------------
+  logic                mid;        // mid-transaction on the forwarded stream
+  logic                h_valid;    // a response transaction is being held
+  logic [PLP_BITS-1:0] h_data;
+  logic [AXI_ID_W-1:0] h_id;
+  logic [CW-1:0]       h_timer;
+  logic                fwd_seen;   // a whole transaction overtook the held one
+  logic                flushing;   // release in progress (keeps out_valid stable)
+
+  wire in_first   = !mid;                         // next flit starts a transaction
+  // A same-ID response must never overtake the held one: release it first.
+  wire same_id_in = h_valid && in_valid && in_first && (in_id == h_id);
+  wire flush_trig = h_valid && !mid &&
+                    (fwd_seen || (h_timer == '0) || same_id_in);
+  // Latched once triggered so out_valid never drops before out_ready (the flit
+  // link and dv/sva/aou_flit_sva both require a stable valid/ready handshake).
+  wire flush_now  = h_valid && (flushing || flush_trig);
+  // Take a complete single-flit response into the hold register.
+  wire capture    = !flush_now && !h_valid && in_valid && in_first && in_last;
+
+  assign out_valid = flush_now ? 1'b1 : (in_valid && !capture);
+  assign out_data  = flush_now ? h_data : in_data;
+  assign in_ready  = !flush_now && (capture || out_ready);
+
+  wire in_fire  = in_valid && in_ready;
+  wire fwd_fire = in_fire && !capture;             // a flit was forwarded
+
+  always_ff @(posedge clk or negedge rstn) begin
+    if (!rstn) begin
+      mid      <= 1'b0;
+      h_valid  <= 1'b0;
+      h_data   <= '0;
+      h_id     <= '0;
+      h_timer  <= '0;
+      fwd_seen <= 1'b0;
+      flushing <= 1'b0;
+    end else begin
+      if (in_fire) mid <= !in_last;
+      if (capture) begin
+        h_valid  <= 1'b1;
+        h_data   <= in_data;
+        h_id     <= in_id;
+        h_timer  <= CW'(HOLD_CYC);
+        fwd_seen <= 1'b0;
+      end else begin
+        if (h_valid && (h_timer != '0)) h_timer <= h_timer - 1'b1;
+        if (fwd_fire && in_last)        fwd_seen <= 1'b1;
+        if (flush_now && out_ready) begin
+          h_valid  <= 1'b0;
+          fwd_seen <= 1'b0;
+        end
+      end
+      flushing <= flush_now && !out_ready;
+    end
+  end
+
+endmodule
+`endif
+
+// ==================== rtl/aou_rp_mux.sv ====================
+// -----------------------------------------------------------------------------
+// aou_rp_mux : resource-plane (§3) multiplexing onto one shared UCIe flit link.
+//
+// docs/PLAN.md F1.  A chiplet runs NUM_RP independent AoU chains — one per
+// resource plane — over a SINGLE physical link.  Two small blocks do all the
+// plane multiplexing; everything else (bridges, activation, credits) is the
+// existing single-plane logic, instantiated once per plane:
+//
+//   aou_rp_arb   N -> 1 egress.  Round-robin over the planes that have a flit
+//                ready, so every ready plane is served within NUM_RP grants
+//                (starvation-free); the grant is LOCKED while the link stalls so
+//                the presented flit is held stable (the §4.3 flit SVA checks it).
+//
+//   aou_rp_route 1 -> N ingress.  Routes each arriving flit to the plane named by
+//                its §4.3 FDId header field and buffers it in that plane's OWN
+//                receive queue.  A plane therefore only ever sees flits addressed
+//                to it: responses and the MsgCredit word they carry cannot reach
+//                another plane's bridge, which is what makes the per-plane credit
+//                banks isolated by construction.
+//
+// Why the per-plane receive queue matters (head-of-line blocking).  §6.1: "a
+// credit guarantees the receiver has room" — so a receiver must actually own the
+// room it advertised, otherwise it backpressures the SHARED link and one plane's
+// stall becomes every plane's stall.  RX_D is therefore sized to the largest
+// credit grant in flits (128 granules / 8 granules-per-data-message = 16), so a
+// fully-credited plane can always be drained off the link even while its bridge
+// is busy or its AXI master is backpressuring.  With that buffer, a plane that is
+// out of credits sends nothing and a plane that is stalled absorbs what it was
+// credited for — neither can stall another plane.
+//
+// Not elaborated at NUM_RP == 1: axi_ucie_mem_top's single-plane branch wires the
+// bridges straight to the links exactly as before.
+// -----------------------------------------------------------------------------
+`ifndef AOU_RP_MUX_SV
+`define AOU_RP_MUX_SV
+
+// =============================================================================
+// aou_rp_arb : round-robin N->1 flit arbiter (plane egress onto the link).
+// =============================================================================
+module aou_rp_arb #(
+    parameter int W      = 2000,          // flit width (PLP bits)
+    parameter int NUM_RP = 2              // number of planes (>= 2 here)
+) (
+    input  logic                clk,
+    input  logic                rstn,
+    // per-plane inputs, plane p in bits [p*W +: W]
+    input  logic [NUM_RP*W-1:0] in_data,
+    input  logic [NUM_RP-1:0]   in_valid,
+    output logic [NUM_RP-1:0]   in_ready,
+    // shared link output
+    output logic [W-1:0]        out_data,
+    output logic                out_valid,
+    input  logic                out_ready,
+    // grant observability (per-plane served count / fairness checks in DV)
+    output logic [NUM_RP-1:0]   grant
+);
+
+  localparam int SELW = (NUM_RP > 1) ? $clog2(NUM_RP) : 1;
+
+  logic [SELW-1:0] last;        // last plane granted (rotation anchor)
+  logic [SELW-1:0] rr_sel;      // round-robin pick this cycle
+  logic            rr_hit;
+  logic            lock;        // grant held across a link stall
+  logic [SELW-1:0] lock_sel;
+
+  // Rotate the priority: the plane AFTER the last one granted looks first, so a
+  // ready plane waits at most NUM_RP-1 grants.
+  always_comb begin
+    // verilator lint_off UNUSEDSIGNAL
+    int idx;                     // only the low $clog2(NUM_RP) bits are used
+    // verilator lint_on UNUSEDSIGNAL
+    rr_sel = '0;
+    rr_hit = 1'b0;
+    for (int k = 1; k <= NUM_RP; k++) begin
+      idx = (int'(last) + k) % NUM_RP;
+      if (!rr_hit && in_valid[idx]) begin
+        rr_hit = 1'b1;
+        rr_sel = SELW'(idx);
+      end
+    end
+  end
+
+  wire [SELW-1:0] sel   = lock ? lock_sel : rr_sel;
+  wire            valid = lock ? in_valid[lock_sel] : rr_hit;
+
+  assign out_valid = valid;
+  assign out_data  = in_data[int'(sel)*W +: W];
+
+  always_comb begin
+    grant = '0;
+    if (valid) grant[sel] = 1'b1;
+  end
+  assign in_ready = grant & {NUM_RP{out_ready}};
+
+  always_ff @(posedge clk or negedge rstn) begin
+    if (!rstn) begin
+      last <= '0; lock <= 1'b0; lock_sel <= '0;
+    end else begin
+      // hold the selection while the link stalls (flit must stay stable)
+      lock     <= valid && !out_ready;
+      lock_sel <= sel;
+      if (valid && out_ready) last <= sel;
+    end
+  end
+
+endmodule
+
+// =============================================================================
+// aou_flit_fifo : DEPTH-deep flit queue (a plane's receive buffer).
+// =============================================================================
+module aou_flit_fifo #(
+    parameter int W     = 2000,
+    parameter int DEPTH = 16              // power of two
+) (
+    input  logic         clk,
+    input  logic         rstn,
+    input  logic [W-1:0] in_data,
+    input  logic         in_valid,
+    output logic         in_ready,
+    output logic [W-1:0] out_data,
+    output logic         out_valid,
+    input  logic         out_ready
+);
+
+  localparam int PW = (DEPTH > 1) ? $clog2(DEPTH) : 1;
+
+  logic [W-1:0]  mem [0:DEPTH-1];
+  logic [PW-1:0] head, tail;
+  logic [PW:0]   count;
+
+  wire full        = (count == (PW+1)'(DEPTH));
+  assign in_ready  = !full || out_ready;
+  assign out_valid = (count != '0);
+  assign out_data  = mem[head];
+
+  wire push = in_valid  && in_ready;
+  wire pop  = out_valid && out_ready;
+
+  always_ff @(posedge clk or negedge rstn) begin
+    if (!rstn) begin
+      head <= '0; tail <= '0; count <= '0;
+      for (int i = 0; i < DEPTH; i++) mem[i] <= '0;
+    end else begin
+      if (push) begin
+        mem[tail] <= in_data;
+        tail      <= (int'(tail) == DEPTH-1) ? '0 : tail + 1'b1;
+      end
+      if (pop) head <= (int'(head) == DEPTH-1) ? '0 : head + 1'b1;
+      if      (push && !pop) count <= count + 1'b1;
+      else if (!push && pop) count <= count - 1'b1;
+    end
+  end
+
+endmodule
+
+// =============================================================================
+// aou_rp_route : 1->N flit router by §4.3 FDId + per-plane receive queue.
+// =============================================================================
+module aou_rp_route
+  import aou_pkg::*;
+#(
+    parameter int NUM_RP = 2,
+    // Receive queue depth per plane, in flits.  Must cover the largest credit
+    // grant this endpoint advertises (see the file header).
+    parameter int RX_D   = 16
+) (
+    input  logic                       clk,
+    input  logic                       rstn,
+    // shared link input
+    input  logic [PLP_BITS-1:0]        in_data,
+    input  logic                       in_valid,
+    output logic                       in_ready,
+    // per-plane outputs, plane p in bits [p*PLP_BITS +: PLP_BITS]
+    output logic [NUM_RP*PLP_BITS-1:0] out_data,
+    output logic [NUM_RP-1:0]          out_valid,
+    input  logic [NUM_RP-1:0]          out_ready
+);
+
+  wire [FDID_W-1:0]  fdid = flit_fdid(in_data);
+
+  logic [NUM_RP-1:0] hit;          // flit is addressed to plane p
+  logic [NUM_RP-1:0] q_in_valid, q_in_ready;
+
+  always_comb begin
+    for (int p = 0; p < NUM_RP; p++)
+      hit[p] = in_valid && (fdid == FDID_W'(p));
+  end
+
+  assign q_in_valid = hit;
+  // Accept when the addressed plane's queue can take it.  An FDId outside
+  // 0..NUM_RP-1 addresses no plane in this build and is consumed and dropped so
+  // it can never wedge the shared link; dv/sva/aou_flit_sva.sv asserts every
+  // transmitted flit carries an in-range FDId, so this is unreachable here.
+  assign in_ready = (|hit) ? |(hit & q_in_ready) : 1'b1;
+
+  genvar p;
+  generate
+    for (p = 0; p < NUM_RP; p++) begin : g_q
+      aou_flit_fifo #(.W(PLP_BITS), .DEPTH(RX_D)) u_q (
+        .clk(clk), .rstn(rstn),
+        .in_data(in_data), .in_valid(q_in_valid[p]), .in_ready(q_in_ready[p]),
+        .out_data(out_data[p*PLP_BITS +: PLP_BITS]),
+        .out_valid(out_valid[p]), .out_ready(out_ready[p])
+      );
+    end
+  endgenerate
+
+endmodule
+
+`endif
+
 // ==================== rtl/aou_axi_initiator_bridge.sv ====================
 // -----------------------------------------------------------------------------
 // aou_axi_initiator_bridge : chiplet-A bridge (AXI4 subordinate -> AoU).
@@ -1110,13 +1846,30 @@ endmodule
 // Multiple-outstanding (stage 2): a REQ_QD-deep request queue decouples the AXI
 // AW/AR accept from the FSM, so the master can have several transactions queued
 // while a prior burst is still in flight (s_awready/s_arready track queue-space,
-// not FSM state).  The FSM still processes one queued request at a time and the
-// single serialized link + single in-order memory return completions in issue
-// order, so this is multiple-outstanding with in-order completion.
+// not FSM state).
 // Bursts are bounded by the data-message credit ceiling (§6): the target's
 // CrdtGrant seeds enough WriteData/ReadData credits for up to CR_* granules, so
 // AxLEN+1 <= CR_WDATA/WRITEDATA_GRAN beats (16 by default); longer bursts need
 // mid-burst credit replenishment (follow-on).
+//
+// Two response paths, selected by OOO_EN (docs/PLAN.md F2):
+//
+//   OOO_EN = 0 (SHIPPING DEFAULT) — in-order.  The FSM processes one queued
+//     request at a time and blocks on its response (S_WWAIT / S_RDATA); the
+//     single serialized link and single in-order memory return completions in
+//     issue order, so this is multiple-outstanding with in-order completion.
+//     This is exactly the pre-F2 datapath, bit- and cycle-identical.
+//
+//   OOO_EN = 1 — out-of-order-by-ID.  The FSM issues a request and immediately
+//     returns to S_IDLE, so up to OOO_DEPTH transactions are in flight.  Each
+//     issue allocates a slot in an `aou_reorder` buffer keyed by AXI ID (one
+//     buffer for reads -> R, one for writes -> B, so neither channel heads-of-
+//     line the other); the allocated slot index is stamped into the request's
+//     FLEX[15:12] tag and echoed by the target in the response, so completions
+//     may arrive in ANY order and are still attributed to the right slot.  The
+//     reorder buffer then presents the oldest-not-yet-released response OF ITS
+//     ID onto R/B, which is precisely the AXI ordering rule.  The out-of-order
+//     completions themselves come from aou_ooo_resp_src on the target side.
 // -----------------------------------------------------------------------------
 `ifndef AOU_AXI_INITIATOR_BRIDGE_SV
 `define AOU_AXI_INITIATOR_BRIDGE_SV
@@ -1128,6 +1881,12 @@ module aou_axi_initiator_bridge
     parameter int AXI_DATA_W = 32,
     parameter int AXI_STRB_W = AXI_DATA_W/8,
     parameter int AXI_ID_W   = 4,
+    // Resource plane (§3) this bridge chain serves.  Stamped into the FDId of
+    // every flit it sends, into the §5.8 RP field of every message it builds and
+    // into the MsgCredit RP subfield (Table 16) of every credit it returns; its
+    // §8 activation instance uses the matching per-plane CrdtGrant slot.  The
+    // default (RP0) build is byte-identical to the single-plane design.
+    parameter logic [aou_pkg::RP_W-1:0] RP_ID = 2'b00,
     // Multiple-outstanding request-queue depth (AXI AW/AR accepted ahead of the
     // FSM).  Depth 1 reduces to the original single-outstanding behaviour.
     parameter int REQ_QD     = 4,
@@ -1137,7 +1896,14 @@ module aou_axi_initiator_bridge
     // return (the WriteResp replenishes it at the end).
     parameter int CR_WREQ  = WRITEREQ_GRAN,     // WriteReq  credits (3 granules)
     parameter int CR_RREQ  = READREQ_GRAN,      // ReadReq   credits (3 granules)
-    parameter int CR_WDATA = 128                // WriteData credits (16 beats)
+    parameter int CR_WDATA = 128,               // WriteData credits (16 beats)
+    // --- out-of-order response handling (default OFF) ---------------------
+    parameter bit OOO_EN    = 1'b0,
+    // Outstanding capacity of each reorder buffer.  Power of two, and
+    // $clog2(OOO_DEPTH)+1 must fit the FLEX_TAG_W-bit tag (so <= 8).
+    parameter int OOO_DEPTH = REQ_QD,
+    // Longest read burst a reorder slot can hold (credit ceiling is 16 beats).
+    parameter int OOO_MAXB  = 16
 ) (
     input  logic                    clk,
     input  logic                    rstn,
@@ -1183,15 +1949,20 @@ module aou_axi_initiator_bridge
     output logic                    rx_ready
 );
 
+  // FSM state encodings.  Declared at module scope (not inside the generate
+  // branch that uses them) because Icarus does not resolve enum labels declared
+  // in a generate block.  Only one of the two FSMs is ever elaborated.
   typedef enum logic [2:0] {
     S_IDLE, S_WREQ, S_WDATA, S_WWAIT, S_B, S_RREQ, S_RDATA
-  } state_e;
-  state_e state;
+  } state_e;                                        // OOO_EN = 0
+  typedef enum logic [1:0] {
+    O_IDLE, O_WREQ, O_WDATA, O_RREQ
+  } ostate_e;                                       // OOO_EN = 1
 
   // --- multiple-outstanding request queue -----------------------------------
   // Descriptors for AW/AR requests accepted from the AXI master but not yet
   // processed by the FSM.  A single write port (AW has priority over AR) keeps
-  // one push per cycle; the FSM pops one descriptor per burst.
+  // one push per cycle; the FSM pops one descriptor per burst (`do_pop`).
   localparam int QPW = (REQ_QD > 1) ? $clog2(REQ_QD) : 1;   // pointer width
   localparam logic [QPW-1:0] QLAST = QPW'(REQ_QD-1);        // wrap value
   logic                  q_wr    [0:REQ_QD-1];   // 1 = write, 0 = read
@@ -1205,8 +1976,9 @@ module aou_axi_initiator_bridge
   logic [QPW:0]          q_count;                // 0 .. REQ_QD
   wire                   q_full  = (q_count == REQ_QD[QPW:0]);
   wire                   q_empty = (q_count == '0);
+  logic                  do_pop;                 // driven by the selected FSM
 
-  // captured request context (one burst in flight)
+  // captured request context (one burst being transmitted)
   logic [AXI_ID_W-1:0]   id_q;
   logic [AXI_ADDR_W-1:0] addr_q;
   logic [7:0]            len_q;
@@ -1216,10 +1988,9 @@ module aou_axi_initiator_bridge
   // write-data beat buffer
   logic [AXI_DATA_W-1:0] wdata_q;
   logic [AXI_STRB_W-1:0] wstrb_q;
-  logic                  wbeat_valid, wlast_q;
-  // response context
-  logic [AXI_ID_W-1:0]   bid_q;
-  logic [1:0]            bresp_q;
+  // FLEX word stamped on the outgoing request (burst type, plus the reorder tag
+  // in OOO mode — zero in the default build, so the byte map is unchanged).
+  logic [FLEX_W-1:0]     req_flex;
 
   // §6 credits HELD to transmit (granted by chiplet B).  Consumed per message,
   // replenished from the MsgCredit field of the B->A response flit.
@@ -1227,6 +1998,11 @@ module aou_axi_initiator_bridge
   // §6 credits OWED back to B for the responses this bridge consumes
   // (ReadData / WriteResp): advertised in the next A->B flit header, then cleared.
   logic [7:0] ret_rdata, ret_wresp;
+
+  // In OOO mode several requests are in flight before any response returns, so
+  // the request-message credit ceilings scale with the outstanding capacity.
+  localparam int LCR_WREQ = OOO_EN ? (WRITEREQ_GRAN * OOO_DEPTH) : CR_WREQ;
+  localparam int LCR_RREQ = OOO_EN ? (READREQ_GRAN  * OOO_DEPTH) : CR_RREQ;
 
   // saturating add: cur + add, clamped at lim (§6.4 counter-saturation rule).
   function automatic logic [7:0] sat_add(input logic [7:0]  cur,
@@ -1245,9 +2021,10 @@ module aou_axi_initiator_bridge
 
   // === §8 activation + §6.4.3 reset credit exchange ========================
   // This side is the initiator: it grants ReadData/WriteResp credits to chiplet
-  // B (the message types B transmits).  ReadData is sized for a full read burst.
-  localparam logic [2:0] GR_RDATA = 3'b111;   // 128 granules (16 ReadData beats)
-  localparam logic [1:0] GR_WRESP = 2'b01;    // >= WRITERESP_GRAN (1)
+  // B (the message types B transmits).  ReadData is sized for a full read burst;
+  // in OOO mode WriteResp needs room for a held response plus one overtaking it.
+  localparam logic [2:0] GR_RDATA = 3'b111;                  // 128 granules
+  localparam logic [1:0] GR_WRESP = OOO_EN ? 2'b11 : 2'b01;  // 8 : 1 granule(s)
 
   logic                  act_enabled, act_disabled;
   logic [PLP_BITS-1:0]   dtx_data, drx_data;
@@ -1258,14 +2035,17 @@ module aou_axi_initiator_bridge
   logic [2:0]            seed_rdata;
   logic [1:0]            seed_wresp;
   logic                  act_error;
+  logic                  act_quiescing;   // Opt-2 drain hint, unused (deact tied 0)
   // verilator lint_on UNUSEDSIGNAL
 
   aou_activation #(
-    .GRANT_RDATA(GR_RDATA), .GRANT_WRESP(GR_WRESP)
+    .GRANT_RDATA(GR_RDATA), .GRANT_WRESP(GR_WRESP), .RP_ID(RP_ID)
   ) u_act (
     .clk(clk), .rstn(rstn), .enabled(act_enabled),
     .act_disabled(act_disabled), .error(act_error),
-    .deact_trig(1'b0), .err_clear(1'b0),
+    // deact/quiesce unused here (no SW teardown in the full chain); data_idle
+    // tied high = Option-1 degenerate.  Option 2 is exercised in dv/act.
+    .deact_trig(1'b0), .data_idle(1'b1), .quiescing(act_quiescing), .err_clear(1'b0),
     .tx_data(tx_data),  .tx_valid(tx_valid),  .tx_ready(tx_ready),
     .rx_data(rx_data),  .rx_valid(rx_valid),  .rx_ready(rx_ready),
     .d_tx_data(dtx_data), .d_tx_valid(dtx_valid), .d_tx_ready(dtx_ready),
@@ -1276,7 +2056,7 @@ module aou_axi_initiator_bridge
 
   // MsgCredit this bridge advertises to B (grants ReadData/WriteResp).
   function automatic logic [CREDIT_W-1:0] return_credit();
-    return_credit = mk_msgcredit(2'b00, 3'b000, 3'b000, 3'b000,
+    return_credit = mk_msgcredit(RP_ID, 3'b000, 3'b000, 3'b000,
                                  cred_encode_ge(ret_rdata),
                                  cred_encode_ge2(ret_wresp));
   endfunction
@@ -1285,49 +2065,39 @@ module aou_axi_initiator_bridge
   function automatic flit_t build_wreq_flit();
     msg_t m; payload_t pl;
     begin
-      m  = mk_writereq(2'b00, 1'b0, {{(FLEX_W-2){1'b0}}, burst_q},
+      m  = mk_writereq(RP_ID, 1'b0, req_flex,
                        {{(AOU_ID_W-AXI_ID_W){1'b0}}, id_q}, size_q, prot_q,
                        len_q, '0, '0,
                        {{(AOU_ADDR_W-AXI_ADDR_W){1'b0}}, addr_q});
       pl = payload_put('0, 0, WRITEREQ_GRAN, m);
-      build_wreq_flit = flit_assemble_cr('0, msgstart_t'(1), return_credit(), pl);
+      build_wreq_flit = flit_assemble_cr(RP_ID, msgstart_t'(1), return_credit(), pl);
     end
   endfunction
 
   function automatic flit_t build_wdata_flit();
     msg_t m; payload_t pl;
     begin
-      m  = mk_writedata256(2'b00, '0,
+      m  = mk_writedata256(RP_ID, '0,
                        {{(AOU_DATA_W-AXI_DATA_W){1'b0}}, wdata_q},
                        {{(AOU_STRB_W-AXI_STRB_W){1'b0}}, wstrb_q});
       pl = payload_put('0, 0, WRITEDATA_GRAN, m);
-      build_wdata_flit = flit_assemble_cr('0, msgstart_t'(1), return_credit(), pl);
+      build_wdata_flit = flit_assemble_cr(RP_ID, msgstart_t'(1), return_credit(), pl);
     end
   endfunction
 
   function automatic flit_t build_rreq_flit();
     msg_t m; payload_t pl;
     begin
-      m  = mk_readreq(2'b00, 1'b0, {{(FLEX_W-2){1'b0}}, burst_q},
+      m  = mk_readreq(RP_ID, 1'b0, req_flex,
                       {{(AOU_ID_W-AXI_ID_W){1'b0}}, id_q}, size_q, prot_q,
                       len_q, '0, '0,
                       {{(AOU_ADDR_W-AXI_ADDR_W){1'b0}}, addr_q});
       pl = payload_put('0, 0, READREQ_GRAN, m);
-      build_rreq_flit = flit_assemble_cr('0, msgstart_t'(1), return_credit(), pl);
+      build_rreq_flit = flit_assemble_cr(RP_ID, msgstart_t'(1), return_credit(), pl);
     end
   endfunction
 
-  // --- read-beat view of the current B->A flit ------------------------------
-  msg_t rdmsg;
-  // verilator lint_off UNUSEDSIGNAL
-  logic [AOU_ID_W-1:0]   rd_rid_full;    // only low AXI_ID_W bits used
-  logic [AOU_DATA_W-1:0] rd_full;
-  // verilator lint_on UNUSEDSIGNAL
-  assign rdmsg       = payload_get(flit_payload(drx_data), 0, READDATA_GRAN);
-  assign rd_full     = rd_data(rdmsg);
-  assign rd_rid_full = rd_id(rdmsg);
-
-  // --- combinational outputs ------------------------------------------------
+  // --- AXI accept + request queue (shared by both response paths) -----------
   // AXI accepted once ENABLED (§8) whenever the request queue has space; the FSM
   // pops and processes descriptors independently (multiple-outstanding accept).
   // AW has priority over AR so at most one descriptor is enqueued per cycle.
@@ -1335,58 +2105,11 @@ module aou_axi_initiator_bridge
   assign s_arready = act_enabled && !q_full && !s_awvalid;  // AW priority
   wire acc_aw = s_awvalid && s_awready;
   wire acc_ar = s_arvalid && s_arready;
-  wire do_pop = (state == S_IDLE) && !q_empty;
-  // In S_WDATA we take a W beat only when no beat is buffered awaiting send.
-  assign s_wready  = (state == S_WDATA) && !wbeat_valid;
-  assign s_bid     = bid_q;
-  assign s_bvalid  = (state == S_B);
-  assign s_bresp   = bresp_q;
-  // Drive an R beat straight from an incoming ReadData flit.
-  assign s_rid     = rd_rid_full[AXI_ID_W-1:0];
-  assign s_rvalid  = (state == S_RDATA) && drx_valid;
-  assign s_rdata   = rd_full[AXI_DATA_W-1:0];
-  assign s_rresp   = rd_resp(rdmsg);
-  assign s_rlast   = rd_last(rdmsg);
 
-  // flit TX valid: gated by the credit for the message the state emits.
-  assign dtx_valid = ((state == S_WREQ)  && wreq_ok)  ||
-                     ((state == S_WDATA) && wbeat_valid && wdata_ok) ||
-                     ((state == S_RREQ)  && rreq_ok);
-  // flit RX ready: consume a WriteResp in S_WWAIT, or a ReadData as its R beat
-  // is accepted in S_RDATA.
-  assign drx_ready = (state == S_WWAIT) ||
-                     ((state == S_RDATA) && s_rready);
-
-  // Build the outgoing flit procedurally (Icarus 11 wide-ufunc-in-assign issue).
-  always_comb begin
-    unique case (state)
-      S_WREQ:  dtx_data = build_wreq_flit();
-      S_WDATA: dtx_data = build_wdata_flit();
-      default: dtx_data = build_rreq_flit();
-    endcase
-  end
-
-  // --- FSM ------------------------------------------------------------------
   always_ff @(posedge clk or negedge rstn) begin
     if (!rstn) begin
-      state    <= S_IDLE;
-      q_head   <= '0; q_tail <= '0; q_count <= '0;
-      id_q     <= '0; addr_q <= '0; len_q <= '0; size_q <= '0;
-      burst_q  <= '0; prot_q <= '0;
-      wdata_q  <= '0; wstrb_q <= '0; wbeat_valid <= 1'b0; wlast_q <= 1'b0;
-      bid_q    <= '0; bresp_q <= '0;
-      cr_wreq  <= '0; cr_rreq <= '0; cr_wdata <= '0;
-      ret_rdata <= '0; ret_wresp <= '0;
+      q_head <= '0; q_tail <= '0; q_count <= '0;
     end else begin
-      // §8.2 DISABLED: discard granted credits; §6.4.3 seed re-grants them.
-      if (act_disabled) begin
-        cr_wreq <= '0; cr_rreq <= '0; cr_wdata <= '0;
-      end else if (seed_valid) begin
-        cr_wreq  <= sat_add(cr_wreq,  cred_decode(seed_wreq),  CR_WREQ);
-        cr_rreq  <= sat_add(cr_rreq,  cred_decode(seed_rreq),  CR_RREQ);
-        cr_wdata <= sat_add(cr_wdata, cred_decode(seed_wdata), CR_WDATA);
-      end
-      // ---- request-queue push (AW priority; one push per cycle) ----
       if (acc_aw) begin
         q_wr[q_tail]   <= 1'b1;      q_id[q_tail]    <= s_awid;
         q_addr[q_tail] <= s_awaddr;  q_len[q_tail]   <= s_awlen;
@@ -1400,82 +2123,492 @@ module aou_axi_initiator_bridge
         q_prot[q_tail] <= s_arprot;
         q_tail <= (q_tail == QLAST) ? '0 : q_tail + 1'b1;
       end
+      if (do_pop) q_head <= (q_head == QLAST) ? '0 : q_head + 1'b1;
       if ((acc_aw || acc_ar) && !do_pop)      q_count <= q_count + 1'b1;
       else if (!(acc_aw || acc_ar) && do_pop) q_count <= q_count - 1'b1;
-
-      unique case (state)
-        // Pop the next queued request (issue order) and start its burst.
-        S_IDLE: if (!q_empty) begin
-          id_q    <= q_id[q_head];    addr_q  <= q_addr[q_head];
-          len_q   <= q_len[q_head];   size_q  <= q_size[q_head];
-          burst_q <= q_burst[q_head]; prot_q  <= q_prot[q_head];
-          q_head  <= (q_head == QLAST) ? '0 : q_head + 1'b1;
-          if (q_wr[q_head]) begin
-            wbeat_valid <= 1'b0;
-            state <= S_WREQ;
-          end else begin
-            state <= S_RREQ;
-          end
-        end
-        S_WREQ: if (dtx_valid && dtx_ready) begin
-          cr_wreq   <= cr_wreq - WRITEREQ_GRAN[7:0];
-          ret_rdata <= '0; ret_wresp <= '0;   // return-credits just flushed
-          state     <= S_WDATA;
-        end
-        S_WDATA: begin
-          // capture a W beat when the buffer is free
-          if (s_wvalid && s_wready) begin
-            wdata_q <= s_wdata; wstrb_q <= s_wstrb; wlast_q <= s_wlast;
-            wbeat_valid <= 1'b1;
-          end
-          // send the buffered beat as a WriteData flit
-          if (dtx_valid && dtx_ready) begin
-            wbeat_valid <= 1'b0;
-            cr_wdata    <= cr_wdata - WRITEDATA_GRAN[7:0];
-            if (wlast_q) state <= S_WWAIT;
-          end
-        end
-        S_WWAIT: if (drx_valid) begin : s_wwait_blk
-          msg_t                m;
-          logic [CREDIT_W-1:0] mc;
-          // verilator lint_off UNUSEDSIGNAL
-          logic [AOU_ID_W-1:0] bidf;   // only low AXI_ID_W bits used
-          // verilator lint_on UNUSEDSIGNAL
-          m  = payload_get(flit_payload(drx_data), 0, WRITERESP_GRAN);
-          mc = flit_credit(drx_data);
-          bidf = wrsp_id(m);
-          cr_wreq  <= sat_add(cr_wreq,  cred_decode(mc_wreq (mc)), CR_WREQ);
-          cr_rreq  <= sat_add(cr_rreq,  cred_decode(mc_rreq (mc)), CR_RREQ);
-          cr_wdata <= sat_add(cr_wdata, cred_decode(mc_wdata(mc)), CR_WDATA);
-          bresp_q  <= wrsp_resp(m);
-          bid_q    <= bidf[AXI_ID_W-1:0];
-          ret_wresp <= ret_wresp + WRITERESP_GRAN[7:0];
-          state    <= S_B;
-        end
-        S_B: if (s_bready) state <= S_IDLE;
-        S_RREQ: if (dtx_valid && dtx_ready) begin
-          cr_rreq   <= cr_rreq - READREQ_GRAN[7:0];
-          ret_rdata <= '0; ret_wresp <= '0;
-          state     <= S_RDATA;
-        end
-        S_RDATA: begin
-          // credit replenish + return-credit accounting happen per accepted beat
-          if (s_rvalid && s_rready) begin : s_rdata_blk
-            logic [CREDIT_W-1:0] mc;
-            mc = flit_credit(drx_data);
-            cr_wreq  <= sat_add(cr_wreq,  cred_decode(mc_wreq (mc)), CR_WREQ);
-            cr_rreq  <= sat_add(cr_rreq,  cred_decode(mc_rreq (mc)), CR_RREQ);
-            cr_wdata <= sat_add(cr_wdata, cred_decode(mc_wdata(mc)), CR_WDATA);
-            ret_rdata <= ret_rdata + READDATA_GRAN[7:0];
-            if (rd_last(rdmsg)) state <= S_IDLE;
-          end
-        end
-        // verilator coverage_off
-        default: state <= S_IDLE;   // unreachable (all states enumerated)
-        // verilator coverage_on
-      endcase
     end
   end
+
+  generate
+  // =========================================================================
+  // OOO_EN = 0 : the in-order response path (shipping default, unchanged).
+  // =========================================================================
+  if (!OOO_EN) begin : g_inorder
+
+    state_e state;
+
+    logic                  wbeat_valid, wlast_q;
+    logic [AXI_ID_W-1:0]   bid_q;
+    logic [1:0]            bresp_q;
+
+    // --- read-beat view of the current B->A flit ----------------------------
+    msg_t rdmsg;
+    // verilator lint_off UNUSEDSIGNAL
+    logic [AOU_ID_W-1:0]   rd_rid_full;    // only low AXI_ID_W bits used
+    logic [AOU_DATA_W-1:0] rd_full;
+    // verilator lint_on UNUSEDSIGNAL
+    assign rdmsg       = payload_get(flit_payload(drx_data), 0, READDATA_GRAN);
+    assign rd_full     = rd_data(rdmsg);
+    assign rd_rid_full = rd_id(rdmsg);
+
+    assign req_flex = {{(FLEX_W-2){1'b0}}, burst_q};
+    assign do_pop   = (state == S_IDLE) && !q_empty;
+    // In S_WDATA we take a W beat only when no beat is buffered awaiting send.
+    assign s_wready = (state == S_WDATA) && !wbeat_valid;
+    assign s_bid    = bid_q;
+    assign s_bvalid = (state == S_B);
+    assign s_bresp  = bresp_q;
+    // Drive an R beat straight from an incoming ReadData flit.
+    assign s_rid    = rd_rid_full[AXI_ID_W-1:0];
+    assign s_rvalid = (state == S_RDATA) && drx_valid;
+    assign s_rdata  = rd_full[AXI_DATA_W-1:0];
+    assign s_rresp  = rd_resp(rdmsg);
+    assign s_rlast  = rd_last(rdmsg);
+
+    // flit TX valid: gated by the credit for the message the state emits.
+    assign dtx_valid = ((state == S_WREQ)  && wreq_ok)  ||
+                       ((state == S_WDATA) && wbeat_valid && wdata_ok) ||
+                       ((state == S_RREQ)  && rreq_ok);
+    // flit RX ready: consume a WriteResp in S_WWAIT, or a ReadData as its R beat
+    // is accepted in S_RDATA.
+    assign drx_ready = (state == S_WWAIT) ||
+                       ((state == S_RDATA) && s_rready);
+
+    // Build the outgoing flit procedurally (Icarus 11 wide-ufunc-in-assign issue).
+    always_comb begin
+      unique case (state)
+        S_WREQ:  dtx_data = build_wreq_flit();
+        S_WDATA: dtx_data = build_wdata_flit();
+        default: dtx_data = build_rreq_flit();
+      endcase
+    end
+
+    // --- FSM --------------------------------------------------------------
+    always_ff @(posedge clk or negedge rstn) begin
+      if (!rstn) begin
+        state    <= S_IDLE;
+        id_q     <= '0; addr_q <= '0; len_q <= '0; size_q <= '0;
+        burst_q  <= '0; prot_q <= '0;
+        wdata_q  <= '0; wstrb_q <= '0; wbeat_valid <= 1'b0; wlast_q <= 1'b0;
+        bid_q    <= '0; bresp_q <= '0;
+        cr_wreq  <= '0; cr_rreq <= '0; cr_wdata <= '0;
+        ret_rdata <= '0; ret_wresp <= '0;
+      end else begin
+        // §8.2 DISABLED: discard granted credits; §6.4.3 seed re-grants them.
+        if (act_disabled) begin
+          cr_wreq <= '0; cr_rreq <= '0; cr_wdata <= '0;
+        end else if (seed_valid) begin
+          cr_wreq  <= sat_add(cr_wreq,  cred_decode(seed_wreq),  LCR_WREQ);
+          cr_rreq  <= sat_add(cr_rreq,  cred_decode(seed_rreq),  LCR_RREQ);
+          cr_wdata <= sat_add(cr_wdata, cred_decode(seed_wdata), CR_WDATA);
+        end
+
+        unique case (state)
+          // Pop the next queued request (issue order) and start its burst.
+          S_IDLE: if (!q_empty) begin
+            id_q    <= q_id[q_head];    addr_q  <= q_addr[q_head];
+            len_q   <= q_len[q_head];   size_q  <= q_size[q_head];
+            burst_q <= q_burst[q_head]; prot_q  <= q_prot[q_head];
+            if (q_wr[q_head]) begin
+              wbeat_valid <= 1'b0;
+              state <= S_WREQ;
+            end else begin
+              state <= S_RREQ;
+            end
+          end
+          S_WREQ: if (dtx_valid && dtx_ready) begin
+            cr_wreq   <= cr_wreq - WRITEREQ_GRAN[7:0];
+            ret_rdata <= '0; ret_wresp <= '0;   // return-credits just flushed
+            state     <= S_WDATA;
+          end
+          S_WDATA: begin
+            // capture a W beat when the buffer is free
+            if (s_wvalid && s_wready) begin
+              wdata_q <= s_wdata; wstrb_q <= s_wstrb; wlast_q <= s_wlast;
+              wbeat_valid <= 1'b1;
+            end
+            // send the buffered beat as a WriteData flit
+            if (dtx_valid && dtx_ready) begin
+              wbeat_valid <= 1'b0;
+              cr_wdata    <= cr_wdata - WRITEDATA_GRAN[7:0];
+              if (wlast_q) state <= S_WWAIT;
+            end
+          end
+          S_WWAIT: if (drx_valid) begin : s_wwait_blk
+            msg_t                m;
+            logic [CREDIT_W-1:0] mc;
+            // verilator lint_off UNUSEDSIGNAL
+            logic [AOU_ID_W-1:0] bidf;   // only low AXI_ID_W bits used
+            // verilator lint_on UNUSEDSIGNAL
+            m  = payload_get(flit_payload(drx_data), 0, WRITERESP_GRAN);
+            mc = flit_credit(drx_data);
+            bidf = wrsp_id(m);
+            cr_wreq  <= sat_add(cr_wreq,  cred_decode(mc_wreq (mc)), LCR_WREQ);
+            cr_rreq  <= sat_add(cr_rreq,  cred_decode(mc_rreq (mc)), LCR_RREQ);
+            cr_wdata <= sat_add(cr_wdata, cred_decode(mc_wdata(mc)), CR_WDATA);
+            bresp_q  <= wrsp_resp(m);
+            bid_q    <= bidf[AXI_ID_W-1:0];
+            ret_wresp <= ret_wresp + WRITERESP_GRAN[7:0];
+            state    <= S_B;
+          end
+          S_B: if (s_bready) state <= S_IDLE;
+          S_RREQ: if (dtx_valid && dtx_ready) begin
+            cr_rreq   <= cr_rreq - READREQ_GRAN[7:0];
+            ret_rdata <= '0; ret_wresp <= '0;
+            state     <= S_RDATA;
+          end
+          S_RDATA: begin
+            // credit replenish + return-credit accounting happen per accepted beat
+            if (s_rvalid && s_rready) begin : s_rdata_blk
+              logic [CREDIT_W-1:0] mc;
+              mc = flit_credit(drx_data);
+              cr_wreq  <= sat_add(cr_wreq,  cred_decode(mc_wreq (mc)), LCR_WREQ);
+              cr_rreq  <= sat_add(cr_rreq,  cred_decode(mc_rreq (mc)), LCR_RREQ);
+              cr_wdata <= sat_add(cr_wdata, cred_decode(mc_wdata(mc)), CR_WDATA);
+              ret_rdata <= ret_rdata + READDATA_GRAN[7:0];
+              if (rd_last(rdmsg)) state <= S_IDLE;
+            end
+          end
+          // verilator coverage_off
+          default: state <= S_IDLE;   // unreachable (all states enumerated)
+          // verilator coverage_on
+        endcase
+      end
+    end
+
+  end else begin : g_ooo
+  // =========================================================================
+  // OOO_EN = 1 : pipelined issue + per-ID reorder buffers on the response path.
+  // =========================================================================
+
+    localparam int OTAGW = (OOO_DEPTH > 1) ? $clog2(OOO_DEPTH) : 1;
+    localparam int EW    = AXI_DATA_W + 2;          // one held R beat: {RRESP,RDATA}
+    localparam int RVEC_W = OOO_MAXB * EW;          // all beats of one read burst
+    localparam int RDAT_W = RVEC_W + 8;             // + the burst's AxLEN
+
+    ostate_e ostate;
+
+    logic                  wbeat_valid, wlast_q;
+    logic [FLEX_TAG_W-1:0] tag_q;
+
+    // ---- the two per-ID reorder buffers (reads -> R, writes -> B) ---------
+    logic                 r_iss_valid, r_iss_ready;
+    logic [OTAGW-1:0]     r_iss_tag;
+    logic                 r_cmp_valid;
+    logic [OTAGW-1:0]     r_cmp_tag;
+    logic [RDAT_W-1:0]    r_cmp_data;
+    logic                 r_out_valid, r_out_ready;
+    logic [AXI_ID_W-1:0]  r_out_id;
+    logic [RDAT_W-1:0]    r_out_data;
+
+    logic                 w_iss_valid, w_iss_ready;
+    logic [OTAGW-1:0]     w_iss_tag;
+    logic                 w_cmp_valid;
+    logic [OTAGW-1:0]     w_cmp_tag;
+    logic [1:0]           w_cmp_data;
+    logic                 w_out_valid, w_out_ready;
+    logic [AXI_ID_W-1:0]  w_out_id;
+    logic [1:0]           w_out_data;
+
+    aou_reorder #(.DEPTH(OOO_DEPTH), .ID_W(AXI_ID_W), .DATA_W(RDAT_W)) u_rob_r (
+      .clk(clk), .rstn(rstn),
+      .iss_valid(r_iss_valid), .iss_ready(r_iss_ready),
+      .iss_id(q_id[q_head]),   .iss_tag(r_iss_tag),
+      .cmp_valid(r_cmp_valid), .cmp_tag(r_cmp_tag), .cmp_data(r_cmp_data),
+      .out_valid(r_out_valid), .out_id(r_out_id), .out_data(r_out_data),
+      .out_ready(r_out_ready)
+    );
+
+    aou_reorder #(.DEPTH(OOO_DEPTH), .ID_W(AXI_ID_W), .DATA_W(2)) u_rob_w (
+      .clk(clk), .rstn(rstn),
+      .iss_valid(w_iss_valid), .iss_ready(w_iss_ready),
+      .iss_id(q_id[q_head]),   .iss_tag(w_iss_tag),
+      .cmp_valid(w_cmp_valid), .cmp_tag(w_cmp_tag), .cmp_data(w_cmp_data),
+      .out_valid(w_out_valid), .out_id(w_out_id), .out_data(w_out_data),
+      .out_ready(w_out_ready)
+    );
+
+    // ---- issue -----------------------------------------------------------
+    // §6 anti-starvation.  This bridge returns ReadData/WriteResp credits only
+    // by piggybacking them on the NEXT request flit it sends.  With several
+    // reads in flight and no further request to send, the target could
+    // therefore exhaust its ReadData credits mid-flight and stall with no way
+    // to get more.  Bound it at issue: never let more ReadData granules be
+    // outstanding than the ceiling this bridge granted the target
+    // (GR_RDATA = 128 granules = 16 beats).  A lone transaction is always let
+    // through, so the worst case degenerates to exactly the in-order path,
+    // whose burst length that same ceiling already caps.
+    // (WriteResp needs no equivalent gate: at most OOO_DEPTH writes are
+    //  outstanding and GR_WRESP grants 8 >= OOO_DEPTH granules.)
+    localparam int RD_CEIL = 128;
+    logic [15:0] rd_out;                       // ReadData granules in flight
+    wire  [15:0] rd_need = 16'((32'(q_len[q_head]) + 1) * READDATA_GRAN);
+    wire         rd_fits = (rd_out == '0) ||
+                           ((32'(rd_out) + 32'(rd_need)) <= RD_CEIL);
+
+    wire q_is_wr    = q_wr[q_head];
+    wire rob_ready  = q_is_wr ? w_iss_ready : (r_iss_ready && rd_fits);
+    assign do_pop      = (ostate == O_IDLE) && !q_empty && rob_ready;
+    assign r_iss_valid = do_pop && !q_is_wr;
+    assign w_iss_valid = do_pop &&  q_is_wr;
+    // The reorder-slot index, zero-extended into the FLEX[15:12] tag field.
+    // Read and write slots share the tag space: MSGTYPE already tells a
+    // ReadData from a WriteResp, so the two buffers are indexed independently.
+    wire [FLEX_TAG_W-1:0] alloc_tag =
+        {{(FLEX_TAG_W-OTAGW){1'b0}}, (q_is_wr ? w_iss_tag : r_iss_tag)};
+
+    assign req_flex = {tag_q, {(FLEX_W-FLEX_TAG_W-2){1'b0}}, burst_q};
+
+    // ---- incoming response flit view -------------------------------------
+    msg_t rmsg;
+    // verilator lint_off UNUSEDSIGNAL
+    logic [AOU_DATA_W-1:0] rd_full;      // only the low AXI_DATA_W bits are used
+    // verilator lint_on UNUSEDSIGNAL
+    assign rmsg    = payload_get(flit_payload(drx_data), 0, READDATA_GRAN);
+    assign rd_full = rd_data(rmsg);
+    wire [MSGTYPE_W-1:0]   rsp_mt   = get_msgtype(rmsg);
+    wire                   rsp_rd   = drx_valid && (rsp_mt == MT_READDATA);
+    wire                   rsp_wr   = drx_valid && (rsp_mt == MT_WRITERESP);
+    // verilator lint_off UNUSEDSIGNAL
+    wire [FLEX_TAG_W-1:0]  rsp_tag  = flex_tag(msg_flex(rmsg));  // low OTAGW used
+    // verilator lint_on UNUSEDSIGNAL
+    wire [OTAGW-1:0]       rsp_slot = rsp_tag[OTAGW-1:0];
+    wire                   rsp_last = rd_last(rmsg);
+
+    // Completions are always accepted: the slot was reserved at issue time.
+    assign drx_ready = 1'b1;
+
+    // ---- read-beat accumulator (one flit per beat, RLAST closes the slot) --
+    logic [RVEC_W-1:0] acc     [0:OOO_DEPTH-1];
+    logic [7:0]        acc_cnt [0:OOO_DEPTH-1];
+    logic [7:0]        acc_len [0:OOO_DEPTH-1];
+    wire [7:0]         cur_cnt = acc_cnt[rsp_slot];
+    // verilator lint_off UNUSEDSIGNAL
+    wire [31:0]        cur_off = 32'(cur_cnt) * EW;   // part-select base
+    // verilator lint_on UNUSEDSIGNAL
+    // Guard the vector bound: bursts longer than OOO_MAXB beats cannot be held
+    // (the §6 ReadData credit ceiling already caps a burst at 16 beats).
+    wire               acc_ok  = (32'(cur_cnt) < OOO_MAXB);
+
+    // cmp is registered one cycle behind the flit so the accumulator write has
+    // landed; at most one response flit arrives per cycle, so nothing is lost.
+    logic             cmpr_pend;
+    logic [OTAGW-1:0] cmpr_tag;
+    logic             cmpw_pend;
+    logic [OTAGW-1:0] cmpw_tag;
+    logic [1:0]       cmpw_resp;
+
+    assign r_cmp_valid = cmpr_pend;
+    assign r_cmp_tag   = cmpr_tag;
+    assign r_cmp_data  = {acc_len[cmpr_tag], acc[cmpr_tag]};
+    assign w_cmp_valid = cmpw_pend;
+    assign w_cmp_tag   = cmpw_tag;
+    assign w_cmp_data  = cmpw_resp;
+
+    // ---- AXI R output stage (registered: the ROB's out_* selection is
+    //      combinational and may re-point when another slot completes) -------
+    logic [AXI_ID_W-1:0] r_id_q;
+    logic [RVEC_W-1:0]   r_vec_q;
+    logic [7:0]          r_len_q, r_beat;
+    logic                r_busy;
+    // verilator lint_off UNUSEDSIGNAL
+    wire [31:0]          r_off  = 32'(r_beat) * EW;   // part-select base
+    // verilator lint_on UNUSEDSIGNAL
+    wire [EW-1:0]        r_elem = r_vec_q[r_off +: EW];
+
+    assign r_out_ready = !r_busy;
+    assign s_rvalid    = r_busy;
+    assign s_rid       = r_id_q;
+    assign s_rdata     = r_elem[AXI_DATA_W-1:0];
+    assign s_rresp     = r_elem[EW-1 -: 2];
+    assign s_rlast     = (r_beat == r_len_q);
+
+    // ---- AXI B output stage ----------------------------------------------
+    logic [AXI_ID_W-1:0] b_id_q;
+    logic [1:0]          b_resp_q;
+    logic                b_busy;
+    assign w_out_ready = !b_busy;
+    assign s_bvalid    = b_busy;
+    assign s_bid       = b_id_q;
+    assign s_bresp     = b_resp_q;
+
+    // ---- request transmit -------------------------------------------------
+    assign s_wready  = (ostate == O_WDATA) && !wbeat_valid;
+    assign dtx_valid = ((ostate == O_WREQ)  && wreq_ok)  ||
+                       ((ostate == O_WDATA) && wbeat_valid && wdata_ok) ||
+                       ((ostate == O_RREQ)  && rreq_ok);
+    wire dtx_fire  = dtx_valid && dtx_ready;
+    wire wreq_fire = dtx_fire && (ostate == O_WREQ);
+    wire rreq_fire = dtx_fire && (ostate == O_RREQ);
+    wire wdat_fire = dtx_fire && (ostate == O_WDATA);
+    wire req_fire  = wreq_fire || rreq_fire;
+
+    always_comb begin
+      unique case (ostate)
+        O_WREQ:  dtx_data = build_wreq_flit();
+        O_WDATA: dtx_data = build_wdata_flit();
+        default: dtx_data = build_rreq_flit();
+      endcase
+    end
+
+    // ---- §6 credit next-state ---------------------------------------------
+    // Issue and completion are concurrent here (unlike the in-order FSM), so a
+    // send and a replenish can land in the same cycle: fold both into one
+    // next-value so neither is dropped.
+    logic [CREDIT_W-1:0] rmc;
+    logic [7:0]  n_wreq, n_rreq, n_wdata, n_ret_rdata, n_ret_wresp;
+    logic [15:0] n_rd_out;
+    assign rmc = flit_credit(drx_data);
+
+    // return-credit accumulator, capped at the largest Table-17 bucket
+    function automatic logic [7:0] ret_inc(input logic [7:0] cur,
+                                           input int unsigned add);
+      int unsigned s;
+      begin
+        s = {24'b0, cur} + add;
+        ret_inc = (s > CRED_MAX) ? CRED_MAX[7:0] : s[7:0];
+      end
+    endfunction
+
+    always_comb begin
+      n_wreq  = cr_wreq;
+      n_rreq  = cr_rreq;
+      n_wdata = cr_wdata;
+      if (wreq_fire) n_wreq  = n_wreq  - WRITEREQ_GRAN[7:0];
+      if (rreq_fire) n_rreq  = n_rreq  - READREQ_GRAN[7:0];
+      if (wdat_fire) n_wdata = n_wdata - WRITEDATA_GRAN[7:0];
+      if (drx_valid) begin
+        n_wreq  = sat_add(n_wreq,  cred_decode(mc_wreq (rmc)), LCR_WREQ);
+        n_rreq  = sat_add(n_rreq,  cred_decode(mc_rreq (rmc)), LCR_RREQ);
+        n_wdata = sat_add(n_wdata, cred_decode(mc_wdata(rmc)), CR_WDATA);
+      end
+      // the request flit sent this cycle carried the OLD return-credit totals
+      n_ret_rdata = req_fire ? 8'd0 : ret_rdata;
+      n_ret_wresp = req_fire ? 8'd0 : ret_wresp;
+      if (rsp_rd) n_ret_rdata = ret_inc(n_ret_rdata, READDATA_GRAN);
+      if (rsp_wr) n_ret_wresp = ret_inc(n_ret_wresp, WRITERESP_GRAN);
+      // ReadData granules in flight: charged at issue, released per beat.
+      n_rd_out = rd_out;
+      if (do_pop && !q_is_wr) n_rd_out = n_rd_out + rd_need;
+      if (rsp_rd)             n_rd_out = n_rd_out - 16'(READDATA_GRAN);
+    end
+
+    // ---- sequential --------------------------------------------------------
+    always_ff @(posedge clk or negedge rstn) begin
+      if (!rstn) begin
+        ostate   <= O_IDLE;
+        id_q     <= '0; addr_q <= '0; len_q <= '0; size_q <= '0;
+        burst_q  <= '0; prot_q <= '0; tag_q  <= '0;
+        wdata_q  <= '0; wstrb_q <= '0; wbeat_valid <= 1'b0; wlast_q <= 1'b0;
+        cr_wreq  <= '0; cr_rreq <= '0; cr_wdata <= '0;
+        ret_rdata <= '0; ret_wresp <= '0; rd_out <= '0;
+        cmpr_pend <= 1'b0; cmpr_tag <= '0;
+        cmpw_pend <= 1'b0; cmpw_tag <= '0; cmpw_resp <= '0;
+        r_id_q <= '0; r_vec_q <= '0; r_len_q <= '0; r_beat <= '0; r_busy <= 1'b0;
+        b_id_q <= '0; b_resp_q <= '0; b_busy <= 1'b0;
+        for (int i = 0; i < OOO_DEPTH; i++) begin
+          acc[i]     <= '0;
+          acc_cnt[i] <= '0;
+          acc_len[i] <= '0;
+        end
+      end else begin
+        // §8.2 DISABLED: discard granted credits; §6.4.3 seed re-grants them.
+        if (act_disabled) begin
+          cr_wreq <= '0; cr_rreq <= '0; cr_wdata <= '0;
+        end else if (seed_valid) begin
+          cr_wreq  <= sat_add(cr_wreq,  cred_decode(seed_wreq),  LCR_WREQ);
+          cr_rreq  <= sat_add(cr_rreq,  cred_decode(seed_rreq),  LCR_RREQ);
+          cr_wdata <= sat_add(cr_wdata, cred_decode(seed_wdata), CR_WDATA);
+        end else begin
+          cr_wreq <= n_wreq; cr_rreq <= n_rreq; cr_wdata <= n_wdata;
+        end
+        ret_rdata <= n_ret_rdata;
+        ret_wresp <= n_ret_wresp;
+        rd_out    <= n_rd_out;
+
+        // ---- response collection (concurrent with issue) -------------------
+        cmpr_pend <= 1'b0;
+        cmpw_pend <= 1'b0;
+        if (rsp_rd) begin
+          if (acc_ok) begin
+            acc[rsp_slot][cur_off +: EW] <= {rd_resp(rmsg),
+                                             rd_full[AXI_DATA_W-1:0]};
+            acc_len[rsp_slot] <= cur_cnt;
+          end
+          if (rsp_last) begin
+            acc_cnt[rsp_slot] <= 8'd0;
+            cmpr_pend         <= 1'b1;
+            cmpr_tag          <= rsp_slot;
+          end else if (acc_ok) begin
+            acc_cnt[rsp_slot] <= cur_cnt + 8'd1;
+          end
+        end
+        if (rsp_wr) begin
+          cmpw_pend <= 1'b1;
+          cmpw_tag  <= rsp_slot;
+          cmpw_resp <= wrsp_resp(rmsg);
+        end
+
+        // ---- AXI R output stage ------------------------------------------
+        if (!r_busy) begin
+          if (r_out_valid) begin
+            r_id_q  <= r_out_id;
+            r_vec_q <= r_out_data[RVEC_W-1:0];
+            r_len_q <= r_out_data[RDAT_W-1 -: 8];
+            r_beat  <= 8'd0;
+            r_busy  <= 1'b1;
+          end
+        end else if (s_rready) begin
+          if (r_beat == r_len_q) r_busy <= 1'b0;
+          else                   r_beat <= r_beat + 8'd1;
+        end
+
+        // ---- AXI B output stage ------------------------------------------
+        if (!b_busy) begin
+          if (w_out_valid) begin
+            b_id_q   <= w_out_id;
+            b_resp_q <= w_out_data;
+            b_busy   <= 1'b1;
+          end
+        end else if (s_bready) begin
+          b_busy <= 1'b0;
+        end
+
+        // ---- request FSM: issue and move on (no waiting for a response) ----
+        unique case (ostate)
+          O_IDLE: if (do_pop) begin
+            id_q    <= q_id[q_head];    addr_q  <= q_addr[q_head];
+            len_q   <= q_len[q_head];   size_q  <= q_size[q_head];
+            burst_q <= q_burst[q_head]; prot_q  <= q_prot[q_head];
+            tag_q   <= alloc_tag;
+            if (q_is_wr) begin
+              wbeat_valid <= 1'b0;
+              ostate <= O_WREQ;
+            end else begin
+              ostate <= O_RREQ;
+            end
+          end
+          O_WREQ: if (dtx_fire) ostate <= O_WDATA;
+          O_WDATA: begin
+            if (s_wvalid && s_wready) begin
+              wdata_q <= s_wdata; wstrb_q <= s_wstrb; wlast_q <= s_wlast;
+              wbeat_valid <= 1'b1;
+            end
+            if (dtx_fire) begin
+              wbeat_valid <= 1'b0;
+              if (wlast_q) ostate <= O_IDLE;
+            end
+          end
+          O_RREQ: if (dtx_fire) ostate <= O_IDLE;
+          // verilator coverage_off
+          default: ostate <= O_IDLE;   // unreachable (all states enumerated)
+          // verilator coverage_on
+        endcase
+      end
+    end
+
+  end
+  endgenerate
 
 endmodule
 `endif
@@ -1493,6 +2626,14 @@ endmodule
 // request (burst type in FLEX[1:0]); the {AW,AR}ID tag is echoed into {B,R}ID.
 //
 // Single-outstanding (one burst in flight), matching the initiator bridge.
+//
+// OOO_EN (docs/PLAN.md F2, default 0 = off): when set, the response flit stream
+// leaving this bridge is routed through aou_ooo_resp_src, which may let a later
+// response of a DIFFERENT ID overtake an earlier held one (never same-ID, never
+// splitting a burst).  That is the "OOO source" the initiator's aou_reorder
+// buffer is there to absorb.  With OOO_EN=0 the response path is a plain wire
+// and the module is not elaborated, so the datapath is bit- and cycle-identical
+// to the in-order build.
 // -----------------------------------------------------------------------------
 `ifndef AOU_AXI_TARGET_BRIDGE_SV
 `define AOU_AXI_TARGET_BRIDGE_SV
@@ -1504,11 +2645,19 @@ module aou_axi_target_bridge
     parameter int AXI_DATA_W = 32,
     parameter int AXI_STRB_W = AXI_DATA_W/8,
     parameter int AXI_ID_W   = 4,
+    // Resource plane (§3) this bridge chain serves — see the initiator bridge.
+    // Responses are built with this plane's RP field / FDId, and the credits it
+    // returns carry this plane's MsgCredit RP subfield, so a response and its
+    // credits can only ever reach the plane that made the request.
+    parameter logic [aou_pkg::RP_W-1:0] RP_ID = 2'b00,
     // §6 flow control — granule credits this (target) bridge holds to send each
     // response message type (granted by chiplet A).  ReadData is sized for a
     // full read burst (128 granules = 16 beats).
     parameter int CR_RDATA = 128,               // ReadData  credits (16 beats)
-    parameter int CR_WRESP = WRITERESP_GRAN     // WriteResp credits (1 granule)
+    parameter int CR_WRESP = WRITERESP_GRAN,    // WriteResp credits (1 granule)
+    // Optional out-of-order response source (default OFF -> pass-through).
+    parameter bit OOO_EN       = 1'b0,
+    parameter int OOO_HOLD_CYC = 48
 ) (
     input  logic                    clk,
     input  logic                    rstn,
@@ -1553,6 +2702,9 @@ module aou_axi_target_bridge
   logic [7:0]            len_q, beat_q;    // AxLEN, current beat index
   logic [2:0]            size_q;
   logic [1:0]            burst_q;
+  // AoU transaction tag echoed back to the initiator in FLEX[15:12].  Always 0
+  // in the default (in-order) build, so the response byte map is unchanged.
+  logic [FLEX_TAG_W-1:0] tag_q;
   // write-beat buffer + mem-write handshake
   logic [AXI_DATA_W-1:0] wdata_q;
   logic [AXI_STRB_W-1:0] wstrb_q;
@@ -1594,26 +2746,38 @@ module aou_axi_target_bridge
   wire last_beat = (beat_q == len_q);
 
   // === §8 activation + §6.4.3 reset credit exchange ========================
-  localparam logic [2:0] GR_WREQ  = 3'b010;   // >= WRITEREQ_GRAN  (3)
-  localparam logic [2:0] GR_RREQ  = 3'b010;   // >= READREQ_GRAN   (3)
+  // In OOO mode the initiator keeps several requests in flight before any of
+  // their responses come back, so it must be granted room for more than one
+  // WriteReq/ReadReq message; the default build grants exactly today's values.
+  localparam logic [2:0] GR_WREQ  = OOO_EN ? 3'b100 : 3'b010;  // 16 : 4 granules
+  localparam logic [2:0] GR_RREQ  = OOO_EN ? 3'b100 : 3'b010;  // 16 : 4 granules
   localparam logic [2:0] GR_WDATA = 3'b111;   // 128 granules (16 WriteData beats)
+  // A held WriteResp plus one overtaking it needs more than a single credit.
+  localparam int         LCR_WRESP = OOO_EN ? 8 : CR_WRESP;
 
   logic [PLP_BITS-1:0]   dtx_data, drx_data;
   logic                  dtx_valid, dtx_ready, drx_valid, drx_ready;
+  // Response path as the FSM sees it (may be reordered on the way to dtx_*).
+  logic [PLP_BITS-1:0]   rsp_data;
+  logic                  rsp_valid, rsp_ready;
   logic                  seed_valid, act_disabled;
   logic [2:0]            seed_rdata;
   logic [1:0]            seed_wresp;
   // verilator lint_off UNUSEDSIGNAL
   logic                  act_enabled, act_error;
+  logic                  act_quiescing;   // Opt-2 drain hint, unused (deact tied 0)
   logic [2:0]            seed_wreq, seed_rreq, seed_wdata;
   // verilator lint_on UNUSEDSIGNAL
 
   aou_activation #(
-    .GRANT_WREQ(GR_WREQ), .GRANT_RREQ(GR_RREQ), .GRANT_WDATA(GR_WDATA)
+    .GRANT_WREQ(GR_WREQ), .GRANT_RREQ(GR_RREQ), .GRANT_WDATA(GR_WDATA),
+    .RP_ID(RP_ID)
   ) u_act (
     .clk(clk), .rstn(rstn), .enabled(act_enabled),
     .act_disabled(act_disabled), .error(act_error),
-    .deact_trig(1'b0), .err_clear(1'b0),
+    // deact/quiesce unused here (no SW teardown in the full chain); data_idle
+    // tied high = Option-1 degenerate.  Option 2 is exercised in dv/act.
+    .deact_trig(1'b0), .data_idle(1'b1), .quiescing(act_quiescing), .err_clear(1'b0),
     .tx_data(tx_data),  .tx_valid(tx_valid),  .tx_ready(tx_ready),
     .rx_data(rx_data),  .rx_valid(rx_valid),  .rx_ready(rx_ready),
     .d_tx_data(dtx_data), .d_tx_valid(dtx_valid), .d_tx_ready(dtx_ready),
@@ -1622,9 +2786,24 @@ module aou_axi_target_bridge
     .seed_wdata(seed_wdata), .seed_rdata(seed_rdata), .seed_wresp(seed_wresp)
   );
 
+  // --- optional out-of-order response source (docs/PLAN.md F2) --------------
+  generate
+    if (OOO_EN) begin : g_ooo_src
+      aou_ooo_resp_src #(.AXI_ID_W(AXI_ID_W), .HOLD_CYC(OOO_HOLD_CYC)) u_ooo (
+        .clk(clk), .rstn(rstn),
+        .in_data(rsp_data),  .in_valid(rsp_valid),  .in_ready(rsp_ready),
+        .out_data(dtx_data), .out_valid(dtx_valid), .out_ready(dtx_ready)
+      );
+    end else begin : g_inorder_src
+      assign dtx_data  = rsp_data;
+      assign dtx_valid = rsp_valid;
+      assign rsp_ready = dtx_ready;
+    end
+  endgenerate
+
   // MsgCredit this bridge advertises to A (grants WriteReq/ReadReq/WriteData).
   function automatic logic [CREDIT_W-1:0] return_credit();
-    return_credit = mk_msgcredit(2'b00,
+    return_credit = mk_msgcredit(RP_ID,
                                  cred_encode_ge(ret_wreq),
                                  cred_encode_ge(ret_rreq),
                                  cred_encode_ge(ret_wdata),
@@ -1635,20 +2814,22 @@ module aou_axi_target_bridge
   function automatic flit_t build_wresp_flit();
     msg_t m; payload_t pl;
     begin
-      m  = mk_writeresp(2'b00, '0, {{(AOU_ID_W-AXI_ID_W){1'b0}}, id_q}, bresp_q);
+      m  = mk_writeresp(RP_ID, mk_flex_tag(tag_q),
+                        {{(AOU_ID_W-AXI_ID_W){1'b0}}, id_q}, bresp_q);
       pl = payload_put('0, 0, WRITERESP_GRAN, m);
-      build_wresp_flit = flit_assemble_cr('0, msgstart_t'(1), return_credit(), pl);
+      build_wresp_flit = flit_assemble_cr(RP_ID, msgstart_t'(1), return_credit(), pl);
     end
   endfunction
 
   function automatic flit_t build_rdata_flit();
     msg_t m; payload_t pl;
     begin
-      m  = mk_readdata256(2'b00, '0, {{(AOU_ID_W-AXI_ID_W){1'b0}}, id_q},
+      m  = mk_readdata256(RP_ID, mk_flex_tag(tag_q),
+                          {{(AOU_ID_W-AXI_ID_W){1'b0}}, id_q},
                           rresp_q, last_beat,
                           {{(AOU_DATA_W-AXI_DATA_W){1'b0}}, rdata_q});
       pl = payload_put('0, 0, READDATA_GRAN, m);
-      build_rdata_flit = flit_assemble_cr('0, msgstart_t'(1), return_credit(), pl);
+      build_rdata_flit = flit_assemble_cr(RP_ID, msgstart_t'(1), return_credit(), pl);
     end
   endfunction
 
@@ -1668,6 +2849,8 @@ module aou_axi_target_bridge
   assign in_addr  = (in_mt == MT_WRITEREQ) ? wr_addr(in_msg) : rr_addr(in_msg);
   assign in_id    = (in_mt == MT_WRITEREQ) ? wr_id(in_msg)   : rr_id(in_msg);
   assign in_wdata = wd_data(in_msg);
+  // WriteReq and ReadReq share the FLEX offset, so one getter covers both.
+  wire [FLEX_TAG_W-1:0] in_tag = flex_tag(msg_flex(in_msg));
   assign in_wstrb = wd_strb(in_msg);
 
   // --- combinational outputs ------------------------------------------------
@@ -1686,12 +2869,12 @@ module aou_axi_target_bridge
   assign m_arvalid = (state == S_RBEAT) && !rpending && !ar_done;
   assign m_rready  = (state == S_RBEAT) && !rpending;
   // response send gated by credit (§6.1)
-  assign dtx_valid = ((state == S_WRESP) && (cr_wresp >= WRITERESP_GRAN[7:0])) ||
+  assign rsp_valid = ((state == S_WRESP) && (cr_wresp >= WRITERESP_GRAN[7:0])) ||
                      ((state == S_RBEAT) && rpending && (cr_rdata >= READDATA_GRAN[7:0]));
 
   always_comb begin
-    if (state == S_WRESP) dtx_data = build_wresp_flit();
-    else                  dtx_data = build_rdata_flit();
+    if (state == S_WRESP) rsp_data = build_wresp_flit();
+    else                  rsp_data = build_rdata_flit();
   end
 
   // --- FSM ------------------------------------------------------------------
@@ -1700,6 +2883,7 @@ module aou_axi_target_bridge
       state    <= S_IDLE;
       id_q     <= '0; base_q <= '0; addr_q <= '0;
       len_q    <= '0; beat_q <= '0; size_q <= '0; burst_q <= '0;
+      tag_q    <= '0;
       wdata_q  <= '0; wstrb_q <= '0; wpending <= 1'b0;
       aw_done  <= 1'b0; w_done <= 1'b0; bresp_q <= '0;
       rdata_q  <= '0; rresp_q <= '0; rpending <= 1'b0; ar_done <= 1'b0;
@@ -1711,18 +2895,19 @@ module aou_axi_target_bridge
         cr_rdata <= '0; cr_wresp <= '0;
       end else if (seed_valid) begin
         cr_rdata <= sat_add(cr_rdata, cred_decode(seed_rdata),         CR_RDATA);
-        cr_wresp <= sat_add(cr_wresp, cred_decode({1'b0, seed_wresp}), CR_WRESP);
+        cr_wresp <= sat_add(cr_wresp, cred_decode({1'b0, seed_wresp}), LCR_WRESP);
       end
       unique case (state)
         S_IDLE: if (drx_valid) begin : s_idle_blk
           logic [CREDIT_W-1:0] mc;
           mc = flit_credit(drx_data);
           cr_rdata <= sat_add(cr_rdata, cred_decode(mc_rdata(mc)),          CR_RDATA);
-          cr_wresp <= sat_add(cr_wresp, cred_decode({1'b0, mc_wresp(mc)}), CR_WRESP);
+          cr_wresp <= sat_add(cr_wresp, cred_decode({1'b0, mc_wresp(mc)}), LCR_WRESP);
           id_q    <= in_id[AXI_ID_W-1:0];
           base_q  <= in_addr[AXI_ADDR_W-1:0];
           addr_q  <= in_addr[AXI_ADDR_W-1:0];
           beat_q  <= '0;
+          tag_q   <= in_tag;
           if (in_mt == MT_WRITEREQ) begin
             len_q   <= wr_len(in_msg);
             size_q  <= wr_size(in_msg);
@@ -1758,7 +2943,7 @@ module aou_axi_target_bridge
             if (last_beat) state <= S_WRESP;
           end
         end
-        S_WRESP: if (dtx_valid && dtx_ready) begin
+        S_WRESP: if (rsp_valid && rsp_ready) begin
           cr_wresp  <= cr_wresp - WRITERESP_GRAN[7:0];
           ret_wreq  <= '0; ret_rreq <= '0; ret_wdata <= '0;
           state     <= S_IDLE;
@@ -1772,7 +2957,7 @@ module aou_axi_target_bridge
             rpending <= 1'b1;
           end
           // send the buffered beat as a ReadData flit
-          if (dtx_valid && dtx_ready) begin
+          if (rsp_valid && rsp_ready) begin
             cr_rdata <= cr_rdata - READDATA_GRAN[7:0];
             rpending <= 1'b0; ar_done <= 1'b0;
             addr_q   <= next_addr();
@@ -1807,6 +2992,31 @@ endmodule
 // Flat AXI-Lite ports on the boundary (no SystemVerilog interface) so the same
 // DUT is drivable from cocotb, a portable SV TB, a Verilator SystemC harness,
 // and UVM without wrapper shims.
+//
+// OOO_EN (docs/PLAN.md F2) is the opt-in out-of-order-by-ID mode and defaults to
+// 0.  At 0 the chain is exactly the in-order datapath described above.  At 1 the
+// target bridge gains aou_ooo_resp_src (an OOO response source that may let a
+// later DIFFERENT-ID response overtake an earlier one) and the initiator bridge
+// gains two aou_reorder buffers that restore AXI ordering on R/B.  See
+// dv/ooo/tb_axi_ucie_ooo.sv for the end-to-end proof.
+//
+// NUM_RP (docs/PLAN.md F1) is the opt-in multiple-resource-plane mode and
+// defaults to 1.  Multi-plane wiring choice (the plan offers two): the AXI front
+// end is REPLICATED per plane, and the replicas are flattened into the SAME
+// boundary ports — plane p owns bit slice [p*W +: W] of each AXI port.  At
+// NUM_RP = 1 every port therefore has exactly its historical width and the
+// generate below elaborates the single-plane chain verbatim, so the shipping
+// default is structurally unchanged (no new ports, no new logic, byte-identical
+// flits).  That is smaller and sounder than adding a plane-select side-band:
+// per-plane AXI channels give each plane its own request/response ports, so a
+// response delivered to the wrong plane is directly observable at the boundary.
+//
+// At NUM_RP > 1 each plane gets its own initiator bridge, target bridge and
+// memory image (a resource plane is an independent set of resources, §3) — so
+// its §6 credit counters, its §8 activation FSM and its outstanding tracking are
+// physically its own — and the planes share ONE pair of UCIe links through
+// aou_rp_arb (round-robin egress) / aou_rp_route (FDId ingress + per-plane
+// receive queue).  See rtl/aou_rp_mux.sv.
 // -----------------------------------------------------------------------------
 `ifndef AXI_UCIE_MEM_TOP_SV
 `define AXI_UCIE_MEM_TOP_SV
@@ -1818,43 +3028,58 @@ module axi_ucie_mem_top
     parameter int AXI_DATA_W = 32,
     parameter int AXI_STRB_W = AXI_DATA_W/8,
     parameter int AXI_ID_W   = 4,
-    parameter int MEM_ADDR_W = 16          // memory byte-address width (64 KiB)
+    parameter int MEM_ADDR_W = 16,         // memory byte-address width (64 KiB)
+    // Opt-in out-of-order-by-ID datapath (0 = today's in-order chain).
+    parameter bit OOO_EN     = 1'b0,
+    // Opt-in resource planes (1 = today's RP0-only chain).  1..MAX_RP.
+    parameter int NUM_RP     = 1,
+    // Per-plane receive queue depth, in flits, at each end of the shared link.
+    // Must cover the largest §6 credit grant (128 granules / 8 = 16 messages).
+    parameter int RP_RX_D    = 16
 ) (
-    input  logic                  ACLK,
-    input  logic                  ARESETn,
-    // AXI4 subordinate (TB master side) — INCR/WRAP/FIXED bursts, AxLEN beats
-    input  logic [AXI_ID_W-1:0]   AWID,
-    input  logic [AXI_ADDR_W-1:0] AWADDR,
-    input  logic [7:0]            AWLEN,
-    input  logic [2:0]            AWSIZE,
-    input  logic [1:0]            AWBURST,
-    input  logic [2:0]            AWPROT,
-    input  logic                  AWVALID,
-    output logic                  AWREADY,
-    input  logic [AXI_DATA_W-1:0] WDATA,
-    input  logic [AXI_STRB_W-1:0] WSTRB,
-    input  logic                  WLAST,
-    input  logic                  WVALID,
-    output logic                  WREADY,
-    output logic [AXI_ID_W-1:0]   BID,
-    output logic [1:0]            BRESP,
-    output logic                  BVALID,
-    input  logic                  BREADY,
-    input  logic [AXI_ID_W-1:0]   ARID,
-    input  logic [AXI_ADDR_W-1:0] ARADDR,
-    input  logic [7:0]            ARLEN,
-    input  logic [2:0]            ARSIZE,
-    input  logic [1:0]            ARBURST,
-    input  logic [2:0]            ARPROT,
-    input  logic                  ARVALID,
-    output logic                  ARREADY,
-    output logic [AXI_ID_W-1:0]   RID,
-    output logic [AXI_DATA_W-1:0] RDATA,
-    output logic [1:0]            RRESP,
-    output logic                  RLAST,
-    output logic                  RVALID,
-    input  logic                  RREADY
+    input  logic                         ACLK,
+    input  logic                         ARESETn,
+    // AXI4 subordinate (TB master side) — INCR/WRAP/FIXED bursts, AxLEN beats.
+    // Plane p occupies bit slice [p*W +: W]; at NUM_RP=1 these are exactly the
+    // historical scalar/vector widths.
+    input  logic [NUM_RP*AXI_ID_W-1:0]   AWID,
+    input  logic [NUM_RP*AXI_ADDR_W-1:0] AWADDR,
+    input  logic [NUM_RP*8-1:0]          AWLEN,
+    input  logic [NUM_RP*3-1:0]          AWSIZE,
+    input  logic [NUM_RP*2-1:0]          AWBURST,
+    input  logic [NUM_RP*3-1:0]          AWPROT,
+    input  logic [NUM_RP-1:0]            AWVALID,
+    output logic [NUM_RP-1:0]            AWREADY,
+    input  logic [NUM_RP*AXI_DATA_W-1:0] WDATA,
+    input  logic [NUM_RP*AXI_STRB_W-1:0] WSTRB,
+    input  logic [NUM_RP-1:0]            WLAST,
+    input  logic [NUM_RP-1:0]            WVALID,
+    output logic [NUM_RP-1:0]            WREADY,
+    output logic [NUM_RP*AXI_ID_W-1:0]   BID,
+    output logic [NUM_RP*2-1:0]          BRESP,
+    output logic [NUM_RP-1:0]            BVALID,
+    input  logic [NUM_RP-1:0]            BREADY,
+    input  logic [NUM_RP*AXI_ID_W-1:0]   ARID,
+    input  logic [NUM_RP*AXI_ADDR_W-1:0] ARADDR,
+    input  logic [NUM_RP*8-1:0]          ARLEN,
+    input  logic [NUM_RP*3-1:0]          ARSIZE,
+    input  logic [NUM_RP*2-1:0]          ARBURST,
+    input  logic [NUM_RP*3-1:0]          ARPROT,
+    input  logic [NUM_RP-1:0]            ARVALID,
+    output logic [NUM_RP-1:0]            ARREADY,
+    output logic [NUM_RP*AXI_ID_W-1:0]   RID,
+    output logic [NUM_RP*AXI_DATA_W-1:0] RDATA,
+    output logic [NUM_RP*2-1:0]          RRESP,
+    output logic [NUM_RP-1:0]            RLAST,
+    output logic [NUM_RP-1:0]            RVALID,
+    input  logic [NUM_RP-1:0]            RREADY
 );
+
+  generate
+  // =========================================================================
+  // NUM_RP == 1 : the single-plane chain (SHIPPING DEFAULT), verbatim.
+  // =========================================================================
+  if (NUM_RP == 1) begin : g_rp1
 
   // --- flit links (both directions) -----------------------------------------
   logic [PLP_BITS-1:0] a2b_data, b2a_data;
@@ -1879,7 +3104,7 @@ module axi_ucie_mem_top
   // === Chiplet A: initiator bridge =========================================
   aou_axi_initiator_bridge #(
     .AXI_ADDR_W(AXI_ADDR_W), .AXI_DATA_W(AXI_DATA_W), .AXI_STRB_W(AXI_STRB_W),
-    .AXI_ID_W(AXI_ID_W)
+    .AXI_ID_W(AXI_ID_W), .OOO_EN(OOO_EN)
   ) u_init (
     .clk(ACLK), .rstn(ARESETn),
     .s_awid(AWID), .s_awaddr(AWADDR), .s_awlen(AWLEN), .s_awsize(AWSIZE),
@@ -1917,7 +3142,7 @@ module axi_ucie_mem_top
   // === Chiplet B: target bridge ============================================
   aou_axi_target_bridge #(
     .AXI_ADDR_W(AXI_ADDR_W), .AXI_DATA_W(AXI_DATA_W), .AXI_STRB_W(AXI_STRB_W),
-    .AXI_ID_W(AXI_ID_W)
+    .AXI_ID_W(AXI_ID_W), .OOO_EN(OOO_EN)
   ) u_tgt (
     .clk(ACLK), .rstn(ARESETn),
     .rx_data(tgt_rx_data), .rx_valid(tgt_rx_valid), .rx_ready(tgt_rx_ready),
@@ -1946,6 +3171,156 @@ module axi_ucie_mem_top
   wire _unused_ok = &{1'b0, m_awaddr[AXI_ADDR_W-1:MEM_ADDR_W],
                             m_araddr[AXI_ADDR_W-1:MEM_ADDR_W]};
   // verilator lint_on UNUSEDSIGNAL
+
+  end else begin : g_mrp
+  // =========================================================================
+  // NUM_RP > 1 : one AoU chain per resource plane over one shared link pair.
+  // =========================================================================
+
+    // shared links
+    logic [PLP_BITS-1:0] a2b_data, b2a_data;
+    logic                a2b_valid, a2b_ready, b2a_valid, b2a_ready;
+
+    // per-plane flit streams (plane p in bits [p*PLP_BITS +: PLP_BITS])
+    logic [NUM_RP*PLP_BITS-1:0] itx_data, irx_data, ttx_data, trx_data;
+    logic [NUM_RP-1:0]          itx_valid, itx_ready, irx_valid, irx_ready;
+    logic [NUM_RP-1:0]          ttx_valid, ttx_ready, trx_valid, trx_ready;
+    // per-plane link grants, exported for DV fairness monitoring
+    // verilator lint_off UNUSEDSIGNAL
+    logic [NUM_RP-1:0]          a_grant, b_grant;
+    // verilator lint_on UNUSEDSIGNAL
+
+    genvar p;
+    for (p = 0; p < NUM_RP; p++) begin : g_rp
+
+      // --- chiplet-B AXI-Lite manager <-> this plane's memory image --------
+      logic [AXI_ADDR_W-1:0] m_awaddr, m_araddr;
+      logic [2:0]            m_awprot, m_arprot;
+      logic                  m_awvalid, m_awready, m_wvalid, m_wready;
+      logic [AXI_DATA_W-1:0] m_wdata, m_rdata;
+      logic [AXI_STRB_W-1:0] m_wstrb;
+      logic [1:0]            m_bresp, m_rresp;
+      logic                  m_bvalid, m_bready, m_arvalid, m_arready,
+                             m_rvalid, m_rready;
+
+      aou_axi_initiator_bridge #(
+        .AXI_ADDR_W(AXI_ADDR_W), .AXI_DATA_W(AXI_DATA_W), .AXI_STRB_W(AXI_STRB_W),
+        .AXI_ID_W(AXI_ID_W), .RP_ID(RP_W'(p)), .OOO_EN(OOO_EN)
+      ) u_init (
+        .clk(ACLK), .rstn(ARESETn),
+        .s_awid   (AWID   [p*AXI_ID_W   +: AXI_ID_W]),
+        .s_awaddr (AWADDR [p*AXI_ADDR_W +: AXI_ADDR_W]),
+        .s_awlen  (AWLEN  [p*8 +: 8]),
+        .s_awsize (AWSIZE [p*3 +: 3]),
+        .s_awburst(AWBURST[p*2 +: 2]),
+        .s_awprot (AWPROT [p*3 +: 3]),
+        .s_awvalid(AWVALID[p]), .s_awready(AWREADY[p]),
+        .s_wdata  (WDATA  [p*AXI_DATA_W +: AXI_DATA_W]),
+        .s_wstrb  (WSTRB  [p*AXI_STRB_W +: AXI_STRB_W]),
+        .s_wlast  (WLAST[p]), .s_wvalid(WVALID[p]), .s_wready(WREADY[p]),
+        .s_bid    (BID    [p*AXI_ID_W +: AXI_ID_W]),
+        .s_bresp  (BRESP  [p*2 +: 2]),
+        .s_bvalid (BVALID[p]), .s_bready(BREADY[p]),
+        .s_arid   (ARID   [p*AXI_ID_W   +: AXI_ID_W]),
+        .s_araddr (ARADDR [p*AXI_ADDR_W +: AXI_ADDR_W]),
+        .s_arlen  (ARLEN  [p*8 +: 8]),
+        .s_arsize (ARSIZE [p*3 +: 3]),
+        .s_arburst(ARBURST[p*2 +: 2]),
+        .s_arprot (ARPROT [p*3 +: 3]),
+        .s_arvalid(ARVALID[p]), .s_arready(ARREADY[p]),
+        .s_rid    (RID    [p*AXI_ID_W   +: AXI_ID_W]),
+        .s_rdata  (RDATA  [p*AXI_DATA_W +: AXI_DATA_W]),
+        .s_rresp  (RRESP  [p*2 +: 2]),
+        .s_rlast  (RLAST[p]), .s_rvalid(RVALID[p]), .s_rready(RREADY[p]),
+        .tx_data (itx_data[p*PLP_BITS +: PLP_BITS]),
+        .tx_valid(itx_valid[p]), .tx_ready(itx_ready[p]),
+        .rx_data (irx_data[p*PLP_BITS +: PLP_BITS]),
+        .rx_valid(irx_valid[p]), .rx_ready(irx_ready[p])
+      );
+
+      aou_axi_target_bridge #(
+        .AXI_ADDR_W(AXI_ADDR_W), .AXI_DATA_W(AXI_DATA_W), .AXI_STRB_W(AXI_STRB_W),
+        .AXI_ID_W(AXI_ID_W), .RP_ID(RP_W'(p)), .OOO_EN(OOO_EN)
+      ) u_tgt (
+        .clk(ACLK), .rstn(ARESETn),
+        .rx_data (trx_data[p*PLP_BITS +: PLP_BITS]),
+        .rx_valid(trx_valid[p]), .rx_ready(trx_ready[p]),
+        .tx_data (ttx_data[p*PLP_BITS +: PLP_BITS]),
+        .tx_valid(ttx_valid[p]), .tx_ready(ttx_ready[p]),
+        .m_awaddr(m_awaddr), .m_awprot(m_awprot), .m_awvalid(m_awvalid), .m_awready(m_awready),
+        .m_wdata(m_wdata),   .m_wstrb(m_wstrb),   .m_wvalid(m_wvalid),   .m_wready(m_wready),
+        .m_bresp(m_bresp),   .m_bvalid(m_bvalid), .m_bready(m_bready),
+        .m_araddr(m_araddr), .m_arprot(m_arprot), .m_arvalid(m_arvalid), .m_arready(m_arready),
+        .m_rdata(m_rdata),   .m_rresp(m_rresp),   .m_rvalid(m_rvalid),   .m_rready(m_rready)
+      );
+
+      // Each resource plane owns an independent memory image (§3: a plane is an
+      // independent set of resources).  It also makes cross-plane leakage
+      // directly observable: two planes may write the SAME address with
+      // DIFFERENT data and each must read back its own.
+      axi_lite_mem #(
+        .ADDR_W(MEM_ADDR_W), .DATA_W(AXI_DATA_W), .STRB_W(AXI_STRB_W)
+      ) u_mem (
+        .ACLK(ACLK), .ARESETn(ARESETn),
+        .AWADDR(m_awaddr[MEM_ADDR_W-1:0]), .AWPROT(m_awprot), .AWVALID(m_awvalid), .AWREADY(m_awready),
+        .WDATA(m_wdata), .WSTRB(m_wstrb), .WVALID(m_wvalid), .WREADY(m_wready),
+        .BRESP(m_bresp), .BVALID(m_bvalid), .BREADY(m_bready),
+        .ARADDR(m_araddr[MEM_ADDR_W-1:0]), .ARPROT(m_arprot), .ARVALID(m_arvalid), .ARREADY(m_arready),
+        .RDATA(m_rdata), .RRESP(m_rresp), .RVALID(m_rvalid), .RREADY(m_rready)
+      );
+
+      // verilator lint_off UNUSEDSIGNAL
+      wire _unused_ok = &{1'b0, m_awaddr[AXI_ADDR_W-1:MEM_ADDR_W],
+                                m_araddr[AXI_ADDR_W-1:MEM_ADDR_W]};
+      // verilator lint_on UNUSEDSIGNAL
+    end
+
+    // === A->B: plane arbiter -> shared link -> per-plane FDId route ==========
+    logic [PLP_BITS-1:0] a_arb_data;  logic a_arb_valid, a2b_link_ready;
+
+    aou_rp_arb #(.W(PLP_BITS), .NUM_RP(NUM_RP)) u_arb_a (
+      .clk(ACLK), .rstn(ARESETn),
+      .in_data(itx_data), .in_valid(itx_valid), .in_ready(itx_ready),
+      .out_data(a_arb_data), .out_valid(a_arb_valid), .out_ready(a2b_link_ready),
+      .grant(a_grant)
+    );
+
+    ucie_stream_link #(.W(PLP_BITS)) u_link_a2b (
+      .clk(ACLK), .rstn(ARESETn),
+      .in_data(a_arb_data), .in_valid(a_arb_valid), .in_ready(a2b_link_ready),
+      .out_data(a2b_data),  .out_valid(a2b_valid),  .out_ready(a2b_ready)
+    );
+
+    aou_rp_route #(.NUM_RP(NUM_RP), .RX_D(RP_RX_D)) u_route_b (
+      .clk(ACLK), .rstn(ARESETn),
+      .in_data(a2b_data), .in_valid(a2b_valid), .in_ready(a2b_ready),
+      .out_data(trx_data), .out_valid(trx_valid), .out_ready(trx_ready)
+    );
+
+    // === B->A: same structure for the response direction =====================
+    logic [PLP_BITS-1:0] b_arb_data;  logic b_arb_valid, b2a_link_ready;
+
+    aou_rp_arb #(.W(PLP_BITS), .NUM_RP(NUM_RP)) u_arb_b (
+      .clk(ACLK), .rstn(ARESETn),
+      .in_data(ttx_data), .in_valid(ttx_valid), .in_ready(ttx_ready),
+      .out_data(b_arb_data), .out_valid(b_arb_valid), .out_ready(b2a_link_ready),
+      .grant(b_grant)
+    );
+
+    ucie_stream_link #(.W(PLP_BITS)) u_link_b2a (
+      .clk(ACLK), .rstn(ARESETn),
+      .in_data(b_arb_data), .in_valid(b_arb_valid), .in_ready(b2a_link_ready),
+      .out_data(b2a_data),  .out_valid(b2a_valid),  .out_ready(b2a_ready)
+    );
+
+    aou_rp_route #(.NUM_RP(NUM_RP), .RX_D(RP_RX_D)) u_route_a (
+      .clk(ACLK), .rstn(ARESETn),
+      .in_data(b2a_data), .in_valid(b2a_valid), .in_ready(b2a_ready),
+      .out_data(irx_data), .out_valid(irx_valid), .out_ready(irx_ready)
+    );
+
+  end
+  endgenerate
 
 endmodule
 `endif
