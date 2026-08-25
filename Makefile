@@ -48,6 +48,7 @@ PACK_DIR   := dv/pack
 ACT_DIR    := dv/act
 REORDER_DIR := dv/reorder
 OOO_DIR     := dv/ooo
+MRP_DIR     := dv/mrp
 SC_DIR     := dv/systemc
 UVM_DIR    := uvm
 TB_RESULTS := $(TB_DIR)/results.xml
@@ -93,7 +94,7 @@ endif
 .PHONY: default help \
 	test test-all test-write-read test-random test-walking test-burst \
 	test-outstanding test-coverage fcov-reset \
-	sv vlt pack act reorder ooo systemc uvm coverage formal waves wave check regress ci \
+	sv vlt pack act reorder ooo mrp systemc uvm coverage formal waves wave check regress ci \
 	lint _lint_iverilog _lint_verilator clean
 
 default: help
@@ -119,6 +120,7 @@ help:
 	@echo "    make act               # §8 activation FSM unit test: deactivate/re-activate/ERROR (Icarus+Verilator)"
 	@echo "    make reorder           # per-ID response reorder buffer: out-of-order-by-ID completion (Icarus+Verilator)"
 	@echo "    make ooo               # END-TO-END out-of-order-by-ID chain (OOO_EN=1): real different-ID overtake (Icarus+Verilator)"
+	@echo "    make mrp               # END-TO-END multiple resource planes (NUM_RP=2): per-plane credits/routing, arbiter fairness (Icarus+Verilator)"
 	@echo "    make systemc           # SystemC TB (Verilator --sc model + sc_main)"
 	@echo "    make uvm               # SystemVerilog UVM TB (license-gated; skips if no VCS/Xcelium/Questa)"
 	@echo "    make coverage          # Verilator --coverage -> sim/coverage.info (floor COV_MIN=$(COV_MIN)%)"
@@ -128,7 +130,7 @@ help:
 	@echo ""
 	@echo "  Gates:"
 	@echo "    make lint              # iverilog -Wall + Verilator RTL lint"
-	@echo "    make check             # lint + cocotb + SV(Icarus+Verilator) + pack + act + reorder + ooo + SystemC"
+	@echo "    make check             # lint + cocotb + SV(Icarus+Verilator) + pack + act + reorder + ooo + mrp + SystemC"
 	@echo "    make regress           # check + coverage + formal (CI-style pass/fail)"
 	@echo "    make ci                # regress"
 	@echo ""
@@ -259,6 +261,17 @@ ooo:
 	$(MAKE) -C $(OOO_DIR) icarus
 	$(MAKE) -C $(OOO_DIR) verilator
 
+# End-to-end multiple-resource-plane proof: axi_ucie_mem_top with NUM_RP=2 —
+# two AoU chains (own §8 activation, own §6 credit banks, own outstanding
+# tracking) sharing one link pair through the round-robin plane arbiter and the
+# FDId router.  Checks per-plane routing, no cross-plane credit leakage (idle
+# plane's credit bank never moves; a jammed plane never stalls the other),
+# arbiter fairness under contention, and that every transaction completes.
+# See docs/PLAN.md F1.
+mrp:
+	$(MAKE) -C $(MRP_DIR) icarus
+	$(MAKE) -C $(MRP_DIR) verilator
+
 # SystemC TB: Verilator --sc model of the DUT + hand-written sc_main driver.
 # Degrades gracefully (skip, exit 0) if Verilator or SystemC is absent.
 systemc:
@@ -348,13 +361,13 @@ formal:
 	echo "[FORMAL] PASS: $(words $(FORMAL_SBY)) proofs, gating tasks: $$gating"
 
 # --- gates -------------------------------------------------------------------
-check: lint test-all sv vlt pack act reorder ooo systemc
+check: lint test-all sv vlt pack act reorder ooo mrp systemc
 
 # regress is the single signoff gate: everything `check` runs, plus the coverage
 # floor and the formal tier.  `formal` is kept OUT of the lighter `check` so the
 # quick loop stays quick; only regress/ci pay the prover time.
 regress: check coverage formal
-	@echo "[REGRESS] lint + cocotb + SV(Icarus+Verilator) + pack + act + reorder + ooo + SystemC + coverage + formal PASSED"
+	@echo "[REGRESS] lint + cocotb + SV(Icarus+Verilator) + pack + act + reorder + ooo + mrp + SystemC + coverage + formal PASSED"
 
 ci: regress
 	@echo "[CI] full regression PASSED"
@@ -367,6 +380,7 @@ clean:
 	$(MAKE) -C $(ACT_DIR) clean 2>/dev/null || true
 	$(MAKE) -C $(REORDER_DIR) clean 2>/dev/null || true
 	$(MAKE) -C $(OOO_DIR) clean 2>/dev/null || true
+	$(MAKE) -C $(MRP_DIR) clean 2>/dev/null || true
 	$(MAKE) -C $(SC_DIR) clean 2>/dev/null || true
 	$(MAKE) -C $(UVM_DIR) clean 2>/dev/null || true
 	rm -f $(FCOV_DB)
