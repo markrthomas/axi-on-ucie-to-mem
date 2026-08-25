@@ -94,7 +94,7 @@ endif
 .PHONY: default help \
 	test test-all test-write-read test-random test-walking test-burst \
 	test-outstanding test-coverage fcov-reset \
-	sv vlt pack act reorder ooo mrp systemc uvm coverage formal waves wave check regress ci \
+	sv vlt pack act reorder ooo mrp systemc uvm eda-check coverage formal waves wave check regress ci \
 	lint _lint_iverilog _lint_verilator clean
 
 default: help
@@ -130,7 +130,8 @@ help:
 	@echo ""
 	@echo "  Gates:"
 	@echo "    make lint              # iverilog -Wall + Verilator RTL lint"
-	@echo "    make check             # lint + cocotb + SV(Icarus+Verilator) + pack + act + reorder + ooo + mrp + SystemC"
+	@echo "    make eda-check         # verify the EDA Playground design.sv is current (drift-guard)"
+	@echo "    make check             # lint + eda-check + cocotb + SV(Icarus+Verilator) + pack + act + reorder + ooo + mrp + SystemC"
 	@echo "    make regress           # check + coverage + formal (CI-style pass/fail)"
 	@echo "    make ci                # regress"
 	@echo ""
@@ -360,8 +361,15 @@ formal:
 	done; \
 	echo "[FORMAL] PASS: $(words $(FORMAL_SBY)) proofs, gating tasks: $$gating"
 
+# EDA Playground drift-guard: fail if the committed single design file
+# (eda/vcs_uvm/design.sv) or testbench.sv is stale vs rtl/ + the UVM TB.  Cheap
+# (concat + diff), so it rides in the light `check` loop and keeps the pasteable
+# EDA Playground design current with zero manual steps.
+eda-check:
+	@$(MAKE) --no-print-directory -C uvm eda-check
+
 # --- gates -------------------------------------------------------------------
-check: lint test-all sv vlt pack act reorder ooo mrp systemc
+check: lint eda-check test-all sv vlt pack act reorder ooo mrp systemc
 
 # regress is the single signoff gate: everything `check` runs, plus the coverage
 # floor and the formal tier.  `formal` is kept OUT of the lighter `check` so the

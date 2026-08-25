@@ -63,7 +63,7 @@ else
     SOURCES := $(MULTI_SRC)
 endif
 
-.PHONY: default help test single eda vcs xcelium questa clean
+.PHONY: default help test single eda eda-check vcs xcelium questa clean
 
 default: test
 
@@ -118,6 +118,25 @@ eda:
 	@cp axi_ucie_tb_single.sv $(EDA_TB)
 	@echo "[EDA] regenerated $(EDA_DESIGN)"
 	@echo "[EDA] regenerated $(EDA_TB) (verbatim axi_ucie_tb_single.sv)"
+
+# Drift-guard: regenerate the two-pane files into a scratch dir and diff them
+# against the committed copies, failing if they are stale.  Reuses the `eda`
+# recipe verbatim (single source of truth) by overriding EDA_DIR, so the check
+# can never disagree with the generator.  Wired into the root `check` gate so
+# CI / Docker / Railway all catch a forgotten `make -C uvm eda` after an rtl/
+# change — the committed EDA Playground design file stays current automatically.
+eda-check:
+	@tmp=`mktemp -d`; rc=0; \
+	$(MAKE) --no-print-directory eda EDA_DIR=$$tmp >/dev/null; \
+	if ! diff -q $$tmp/design.sv $(EDA_DESIGN) >/dev/null 2>&1; then \
+	  echo "[EDA] DRIFT: $(EDA_DESIGN) is stale — run 'make -C uvm eda' and commit."; rc=1; \
+	fi; \
+	if ! diff -q $$tmp/testbench.sv $(EDA_TB) >/dev/null 2>&1; then \
+	  echo "[EDA] DRIFT: $(EDA_TB) is stale — run 'make -C uvm eda' and commit."; rc=1; \
+	fi; \
+	rm -rf $$tmp; \
+	[ $$rc -eq 0 ] && echo "[EDA] PASS: design.sv + testbench.sv in sync with rtl/ + the TB"; \
+	exit $$rc
 
 vcs:
 	@echo "[UVM] VCS: $(TEST)"

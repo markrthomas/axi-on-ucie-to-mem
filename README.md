@@ -383,12 +383,17 @@ interface + UVM package + the bound `axi_lite_sva` / `aou_flit_sva` checkers, an
 runs `+UVM_TESTNAME=<test>`.
 
 **On [EDA Playground](https://www.edaplayground.com)** (free UVM-capable
-simulators): paste `uvm/axi_ucie_tb_single.sv` into `testbench.sv`, and the
-**concatenated** DUT RTL — `rtl/aou_pkg.sv`, `ucie_stream_link.sv`,
-`axi_lite_mem.sv`, `aou_axi_initiator_bridge.sv`, `aou_axi_target_bridge.sv`,
-`axi_ucie_mem_top.sv`, in that order — into `design.sv`. Tick **UVM 1.2**, pick a
-simulator, and add `+UVM_TESTNAME=axi_write_read_test` (or `axi_random_test` /
-`axi_walking_test`) to the run options.
+simulators): the two panes are **pre-assembled for you** in `eda/vcs_uvm/` — no
+manual file-juggling. Paste `eda/vcs_uvm/design.sv` (the whole DUT RTL as one
+file) into the **design** pane and `eda/vcs_uvm/testbench.sv` into the
+**testbench** pane. Tick **UVM 1.2**, pick a simulator, and add
+`+UVM_TESTNAME=axi_write_read_test` (or `axi_random_test` / `axi_walking_test`)
+to the run options.
+
+Both files are **auto-generated** from `rtl/` + `uvm/axi_ucie_tb_single.sv` by
+`make -C uvm eda`, and `make check` runs a drift-guard (`make eda-check`) that
+fails CI if they fall out of sync — so the pasteable single design file is always
+current with the RTL. Regenerate after any `rtl/` change and commit.
 
 ### 7. Formal proofs (gating)
 
