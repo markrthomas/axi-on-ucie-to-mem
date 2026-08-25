@@ -42,6 +42,20 @@ A green run ends with:
 
 and exit status `0`. Any failing environment stops the gate and returns non-zero.
 
+The cocotb leg additionally prints the PyUVM **functional**-coverage report and
+gates on it, so the gate covers both coverage flavours:
+
+```
+[COV-FUNC] overall: 26/26 goal bins = 100.0% (floor 100.0%)
+[COV-FUNC] PASS: functional coverage 100.0% meets the 100.0% floor
+[COVERAGE] line coverage: 92.9% (floor 85%)
+```
+
+The functional model (`dv/cocotb/axi_coverage.py`) is stdlib-only — **no extra
+pip package**, so the container and CI need no new install step and cannot
+silently skip it. Floors: `FCOV_MIN` (functional, default 100) and `COV_MIN`
+(line, default 85); both can be overridden on the `make` command line.
+
 > The examples say `docker`; this repo is also tested under **podman** via its
 > `docker` CLI shim — the commands are identical.
 
@@ -625,5 +639,6 @@ The GitHub Actions workflow (`.github/workflows/ci.yml`) and this image install
 the **same tools the same way** and run the **same `make ci` gate**. CI does not
 build the Dockerfile — it's a parallel, equivalent recipe. Keep the two in sync:
 if you bump a tool version or add an apt/pip dependency in one, mirror it in the
-other. Both are validated by the same green gate (cocotb 5/5, SV 134 reads,
-pack 63, act 30, reorder 76, SystemC 145, coverage 92.9%).
+other. Both are validated by the same green gate (cocotb 6/6 with functional
+coverage 26/26 bins, SV 134 reads, pack 63, act 30, reorder 76, SystemC 145,
+line coverage 92.9%).

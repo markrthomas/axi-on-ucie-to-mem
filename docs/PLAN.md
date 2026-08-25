@@ -117,12 +117,20 @@ cross-check the same DUT and the same reference-memory scoreboard.
    scoreboard/env, sequences (write-read, constrained-random, walking edge
    cases), `@cocotb.test` entries. Mirrors `../uvm_review/tb/` structure. One sim
    per test (fresh memory), pass/fail gated on `results.xml`. Runs on Icarus.
+   Carries the repo's **functional** coverage model (`dv/cocotb/axi_coverage.py`)
+   — a stdlib-only covergroup helper sampled by a `uvm_subscriber` off the
+   monitor's analysis port, merged across the per-test sims of one `make test`
+   run, printed as a `[COV-FUNC]` table and gated on `FCOV_MIN` (default 100%).
+   So the repo now has **both** coverage flavours: Verilator *line* coverage
+   (`make coverage`, `COV_MIN`) and PyUVM *functional* coverage (`make test`,
+   `FCOV_MIN`).
 2. **Icarus SV** (`dv/sv/`) — a self-checking **SystemVerilog** directed TB (AXI
    master tasks + reference-memory checker) runnable under `iverilog`+`vvp`,
    independent of cocotb.
 3. **Verilator** (`dv/verilator/` + `sim/`) — the same portable SV TB run under
-   Verilator, **plus** a C++ coverage harness (`sim/sim_main.cpp`, modeled on
-   `../uvm_review/sim/`) → `sim/coverage.info` (lcov) with a `COV_MIN` floor.
+   Verilator, **plus** a C++ *line*-coverage harness (`sim/sim_main.cpp`, modeled
+   on `../uvm_review/sim/`) → `sim/coverage.info` (lcov) with a `COV_MIN` floor.
+   (Functional coverage lives in the PyUVM env — see 1 above.)
 4. **SystemC** (`dv/systemc/`) — `verilator --sc` generates a SystemC model of
    the DUT; a hand-written `sc_main` testbench drives AXI-Lite + scoreboards
    reads. (Verilator-SystemC is the pragmatic OSS path; SystemC headers confirmed
@@ -298,8 +306,35 @@ in-order completion** (initiator request queue) already in place.
   memory through the 2000-bit flit path) is still simulation-only; the memory
   target, packing map, flow control and interface state machine are all formal.
 
+### F5 — PyUVM functional-coverage closure — DONE
+- **Spec:** n/a (methodology).
+- **DONE.** The PyUVM env now carries the repo's functional coverage model,
+  `dv/cocotb/axi_coverage.py`: a stdlib-only covergroup helper (no new pip
+  dependency) with eight coverpoints — direction, address partition (derived from
+  the DUT's `MEM_ADDR_W`, not a hardcoded size), first/last-word boundary,
+  payload pattern (zero / all-ones / walking-1 / walking-0 / alternating /
+  other), observed `BRESP`/`RRESP` encoding, burst-length bucket, outstanding
+  depth, and the direction × address-region cross. `AxiCoverageCollector`
+  (a `uvm_subscriber`) hangs off the **monitor's** analysis port, so only traffic
+  the DUT actually completed on the bus is credited — never stimulus, never RTL
+  internals. Because `make test-all` runs each test in its own simulation, the
+  model merges through a small JSON database (`FCOV_DB`), prints a `[COV-FUNC]`
+  table per test, and the new `coverage_test` — which runs last and whose
+  `AxiCoverageCloseSeq` closes every bin on its own — gates the merged result
+  against `FCOV_MIN` (default **100%**) with a `[COV-FUNC] PASS/FAIL` banner.
+- **Verify (done):** `make test` → 26/26 goal bins = 100.0%, `[COV-FUNC] PASS`;
+  the floor really gates (`make test-coverage FCOV_MIN=101` fails the sim).
+- **NOT REACHABLE HERE:** the `EXOKAY`/`SLVERR`/`DECERR` response encodings are
+  kept as *excluded* bins with a recorded reason rather than deleted —
+  `rtl/axi_lite_mem.sv` ties `BRESP`/`RRESP` to `RESP_OKAY` and the bridges
+  transport that value verbatim, so hitting them needs an RTL behaviour change
+  (out of scope for an additive-DV task). AoU-protocol state (message type,
+  credits, activation) is not observable at this env's AXI interface; it stays
+  covered by `dv/pack`, `dv/act`, `dv/reorder` and the formal tier.
+
 ## Verification (how to check end-to-end)
-- `make test` — three cocotb/PyUVM tests PASS (fresh memory per test).
+- `make test` — six cocotb/PyUVM tests PASS (fresh memory per test), ending with
+  the `[COV-FUNC]` functional-coverage report and its `FCOV_MIN` floor.
 - `make sv` / `make vlt` — SV directed TB self-checks under Icarus / Verilator.
 - `make systemc` — SystemC TB reports 0 mismatches.
 - `make coverage` — Verilator lcov ≥ `COV_MIN` floor.

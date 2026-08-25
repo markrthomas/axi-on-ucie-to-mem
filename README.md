@@ -151,8 +151,8 @@ Everything runs from the repo root and degrades gracefully if a tool is absent.
 
 | Flow | Command | What it does |
 |------|---------|--------------|
-| Full regression | `make test` | all five cocotb tests (write-read, random, walking, burst, multi-outstanding) |
-| Directed | `make test-write-read` / `test-random` / `test-walking` / `test-burst` / `test-outstanding` | one cocotb test |
+| Full regression | `make test` | all six cocotb tests (write-read, random, walking, burst, multi-outstanding, coverage closure); ends with the `[COV-FUNC]` functional-coverage report + floor |
+| Directed | `make test-write-read` / `test-random` / `test-walking` / `test-burst` / `test-outstanding` / `test-coverage` | one cocotb test |
 | SV (Icarus) | `make sv` | portable SV directed TB under Icarus |
 | SV (Verilator) | `make vlt` | same TB under Verilator + bound SVA assertions |
 | Packing | `make pack` | §4.3/§5.8 byte-exact packing conformance, incl. 512b/1024b data (Icarus + Verilator) |
@@ -162,7 +162,8 @@ Everything runs from the repo root and degrades gracefully if a tool is absent.
 | SV/UVM | `make uvm` | UVM TB (VCS/Xcelium/Questa); skips cleanly if unlicensed |
 | Waves | `make waves` / `make wave` | dump / open GTKWave |
 | Lint | `make lint` | `iverilog -Wall` + Verilator RTL lint |
-| Coverage | `make coverage` | Verilator `--coverage` → `sim/coverage.info` (floor `COV_MIN`, default 85%; ~90–94% achieved) |
+| Line coverage | `make coverage` | Verilator `--coverage` → `sim/coverage.info` (floor `COV_MIN`, default 85%; ~90–94% achieved) |
+| Functional coverage | `make test` | PyUVM covergroup model (`dv/cocotb/axi_coverage.py`) sampled from the monitor → `[COV-FUNC]` report (floor `FCOV_MIN`, default 100%; 26/26 bins achieved) |
 | Formal | `make formal` | SymbiYosys proofs of `axi_lite_mem`, the §4.3 flit header, §6 credit flow and the §8 activation FSM (`bmc` + `cover` gate, unbounded `prove` best-effort); `SBY=<path>` for an out-of-PATH prover, skips cleanly if `sby` absent |
 | Gate | `make check` | lint + cocotb + SV(both sims) + pack + act + reorder + SystemC |
 | CI | `make ci` | `check` + coverage + formal as one pass/fail gate |
@@ -207,11 +208,13 @@ is built against the same Python that imports the testbench.
 ### 2. Run the regression
 
 ```bash
-make test        # three cocotb PASS lines, exit 0
+make test        # six cocotb PASS lines + the [COV-FUNC] report, exit 0
 ```
 
 Each test builds the env, pulses reset via the BFM, runs its sequence, and the
-scoreboard asserts `errors == 0` in its check phase.
+scoreboard asserts `errors == 0` in its check phase.  Every test also feeds a
+functional coverage model, and the last one (`coverage_test`) gates the merged
+result — see [Functional coverage](#functional-coverage) below.
 
 ### 3. The other environments
 
@@ -236,6 +239,48 @@ make ci          # lint + cocotb + SV(both) + SystemC + coverage, one gate
 ```
 
 Lower the coverage bar for a quick look with `make coverage COV_MIN=80`.
+
+#### Functional coverage
+
+`make coverage` measures **line** coverage of the RTL. The PyUVM env measures
+**functional** coverage of the traffic: `dv/cocotb/axi_coverage.py` is a small,
+stdlib-only covergroup model (no extra pip dependency) sampled by a
+`uvm_subscriber` hung off the **monitor's** analysis port — the same observed
+stream the scoreboard checks, so a bin is never credited for stimulus the DUT did
+not actually complete on the bus. Eight coverpoints:
+
+| Coverpoint | Bins |
+|------------|------|
+| `direction` | read, write |
+| `addr_region` | low / mid / high thirds of the memory map (derived from the DUT's `MEM_ADDR_W`) |
+| `addr_boundary` | first word, interior, last word |
+| `data_pattern` | zero, all-ones, walking-1, walking-0, alternating, other |
+| `resp` | observed `BRESP`/`RRESP` (`OKAY`; `EXOKAY`/`SLVERR`/`DECERR` are kept as *excluded* bins — `rtl/axi_lite_mem.sv` ties the response to `OKAY`, so they cannot be reached without an RTL change) |
+| `burst_len` | 1 beat, 2–8 beats, >8 beats |
+| `outstanding` | one transfer open, more than one |
+| `dir_x_region` | cross of direction × address region |
+
+`make test` runs each cocotb test in its own simulation (fresh memory), so the
+model merges its bins through a small JSON database and prints a `[COV-FUNC]`
+table after every test. The last test, `coverage_test`, drives
+`AxiCoverageCloseSeq` — directed stimulus that closes every bin on its own — and
+then **gates** the merged result against `FCOV_MIN` (default 100%):
+
+```
+[COV-FUNC] AXI functional coverage — 474 observed transfers from: write_read_test, …
+[COV-FUNC]   direction       2/2   100.0%
+[COV-FUNC]   data_pattern    6/6   100.0%
+[COV-FUNC]   resp            1/1   100.0%  EXCLUDED: decerr, exokay, slverr (…)
+[COV-FUNC]   dir_x_region    6/6   100.0%
+[COV-FUNC] overall: 26/26 goal bins = 100.0% (floor 100.0%)
+[COV-FUNC] PASS: functional coverage 100.0% meets the 100.0% floor
+```
+
+An unhit bin prints `MISSING: <bin>` on its group line and fails the cocotb test,
+so `make test` / `make ci` fail on a functional-coverage regression. Override the
+floor with `make test FCOV_MIN=<pct>`. AoU-protocol state (message type, credit
+flow, activation) is not observable at this env's AXI interface and is covered
+instead by `make pack` / `make act` / `make reorder` and the formal tier.
 
 ### 5. Waveforms
 
