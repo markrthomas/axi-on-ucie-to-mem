@@ -54,8 +54,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 # UTF-8-capable sink; it only stops the crash on an ASCII one.
 #
 # PYTHONUNBUFFERED makes cocotb/pyuvm output stream live rather than block-buffer
-# when stdout is a pipe (the cloud captures logs off a pipe) — see the stdbuf
-# wrapper in docker/entrypoint.sh. Flush timing only; output bytes unchanged.
+# when stdout is a pipe (the cloud captures logs off a pipe). Python-only on
+# purpose: a libc-level line-buffer (stdbuf/LD_PRELOAD) can't be used here — it
+# crashes the pinned oss-cad-suite tools on a bundled-glibc clash (see the note
+# in docker/entrypoint.sh). Flush timing only; output bytes unchanged.
 ENV LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONIOENCODING=UTF-8 PYTHONUTF8=1 PYTHONUNBUFFERED=1
 
 # --- RTL tools (Icarus + SystemC) + build/runtime deps, from apt --------------

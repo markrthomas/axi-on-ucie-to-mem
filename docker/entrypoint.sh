@@ -19,16 +19,18 @@ MAKE_ARGS=(
   "SBY=${OSS}/bin/sby"
 )
 
-# Stream the gate's output LIVE instead of block-buffering it.  When stdout is a
-# pipe (the cloud captures logs off a pipe, not a TTY), glibc full-buffers each
-# process, so a long `make ci` shows *nothing* until it exits — a running gate is
-# indistinguishable from a hung one in the Railway/CI log viewer.  `stdbuf -oL -eL`
-# forces line-buffering, and because stdbuf works via LD_PRELOAD (libstdbuf.so) +
-# env, it propagates to the child tools too (Verilator/Icarus/sby/gcc).  Python
-# ignores libc stdio buffering, so PYTHONUNBUFFERED=1 (set in the Dockerfile ENV)
-# covers cocotb/pyuvm.  Timing only — output bytes are unchanged, so the gate's
-# banners/baselines (incl. the SystemC sc.log diff) stay byte-identical.
-STREAM=( stdbuf -oL -eL )
+# NB: do NOT wrap the gate in `stdbuf`/`unbuffer` to force line-buffering.  stdbuf
+# works by LD_PRELOAD-ing the *system* libstdbuf.so (built against this image's
+# glibc 2.38) into every child — but the pinned oss-cad-suite tools (Verilator,
+# sby) run against their OWN bundled, older glibc, which lacks GLIBC_2.38, so the
+# preload fails to resolve and the tool dies:
+#   verilator_bin: /opt/oss-cad-suite/lib/libc.so.6: version `GLIBC_2.38' not
+#   found (required by /usr/libexec/coreutils/libstdbuf.so)
+# It breaks `make lint` immediately (see docs/DOCKER.md / CLAUDE.md).  Python is
+# the one leg where live streaming matters (cocotb), and it bypasses libc stdio
+# buffering anyway, so PYTHONUNBUFFERED=1 in the Dockerfile ENV covers it without
+# any preload.  The C toolchain block-buffers when stdout is a pipe; that is a
+# cosmetic log-latency tradeoff, accepted to keep the pinned tools working.
 
 # Headless Claude Code agent mode (layered ON TOP of the DV gate — it is only
 # reached when explicitly requested; the default and `make …` paths below are
@@ -49,10 +51,10 @@ if [ "${1:-}" = "swarm" ]; then
 fi
 
 if [ "$#" -eq 0 ]; then
-  exec "${STREAM[@]}" make ci "${MAKE_ARGS[@]}"
+  exec make ci "${MAKE_ARGS[@]}"
 elif [ "$1" = "make" ]; then
   shift
-  exec "${STREAM[@]}" make "$@" "${MAKE_ARGS[@]}"
+  exec make "$@" "${MAKE_ARGS[@]}"
 else
   exec "$@"
 fi
