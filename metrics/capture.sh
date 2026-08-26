@@ -48,11 +48,11 @@ if command -v /usr/bin/time >/dev/null 2>&1; then
     | python3 -u "$here/stamp.py" \
     | tee "$log"
 else
-  echo "[METRICS] note: /usr/bin/time not found — no wall/RSS capture for '$label'" >&2
+  echo "[METRICS] note: /usr/bin/time not found - no wall/RSS capture for '$label'" >&2
   rm -f "$tim"
   "$@" 2>&1 | python3 -u "$here/stamp.py" | tee "$log"
 fi
 
 rc=("${PIPESTATUS[@]}")
-echo "[METRICS] '$label' exited ${rc[0]} — artifacts: $log $( [ -f "$tim" ] && echo "$tim" )" >&2
+echo "[METRICS] '$label' exited ${rc[0]} - artifacts: $log $( [ -f "$tim" ] && echo "$tim" )" >&2
 exit "${rc[0]}"

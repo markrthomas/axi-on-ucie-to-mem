@@ -50,6 +50,29 @@ if [ "${1:-}" = "swarm" ]; then
   exec /usr/local/bin/swarm.sh "$@"
 fi
 
+# Optional POST-GATE metrics step (SWARM_PLAN F3).  OFF by default, so the
+# default `docker run aou-dv` path below is byte-identical to before.  With
+# AOU_POST_METRICS=1 the container runs the gate through metrics/capture.sh
+# (which only wraps it in /usr/bin/time -v + a timestamped tee — no work is
+# added inside any timed DV run) and then collects a metrics row and
+# regenerates the dashboard.
+#
+# The collection step is ADDITIVE and CANNOT change the verdict: the gate's exit
+# status is captured first and is what the container exits with; a failing
+# collector only prints.  See docs/DOCKER.md -> "Post-gate metrics step".
+if [ "${AOU_POST_METRICS:-0}" = "1" ] && { [ "$#" -eq 0 ] || [ "$1" = "make" ]; }; then
+  if [ "$#" -eq 0 ]; then set -- make ci; fi
+  shift                                   # drop the literal "make"
+  set +e
+  metrics/capture.sh gate make "$@" "${MAKE_ARGS[@]}"
+  gate_rc=$?
+  set -e
+  echo "[METRICS] gate exited ${gate_rc}; collecting (additive -- cannot change that verdict)"
+  make metrics VERILATOR="${OSS}/bin/verilator" || echo "[METRICS] collection failed (ignored)"
+  make dashboard || echo "[DASH] render failed (ignored)"
+  exit "$gate_rc"
+fi
+
 if [ "$#" -eq 0 ]; then
   exec make ci "${MAKE_ARGS[@]}"
 elif [ "$1" = "make" ]; then

@@ -148,11 +148,15 @@ def parse_time_v(path):
     for line in txt.splitlines():
         line = line.strip()
         if line.startswith("Elapsed (wall clock) time"):
-            val = line.split(":", 1)[1].strip()
-            parts = [float(p) for p in val.split(":")]
+            # The LABEL contains colons too ("... time (h:mm:ss or m:ss): 0:01.00"),
+            # so anchor on the trailing h:mm:ss / m:ss value instead of splitting
+            # on the first colon.
+            m = re.search(r":\s*(\d+(?::\d+)*(?:\.\d+)?)\s*$", line)
+            if not m:
+                continue
             secs = 0.0
-            for p in parts:
-                secs = secs * 60 + p
+            for p in m.group(1).split(":"):
+                secs = secs * 60 + float(p)
             out["wall_s"] = secs
         elif line.startswith("User time (seconds):"):
             out["user_s"] = float(line.split(":", 1)[1])
@@ -1017,7 +1021,8 @@ def collect_ai_from_stream(rows, stream_path, coeff, quiet):
     # Disambiguate repeated agent types (three dv-env-testers etc.).
     used = {}
     spans = []
-    for name, rec in recs:
+    for pos, (name, rec) in enumerate(recs):
+        is_root = pos == 0
         n = used.get(name, 0)
         used[name] = n + 1
         agent = name if n == 0 else "%s#%d" % (name, n + 1)
@@ -1033,7 +1038,11 @@ def collect_ai_from_stream(rows, stream_path, coeff, quiet):
             rows.ai_row(agent, "", "wall_s", round(wall, 2), "s", MEASURED,
                         src + "; span = first-to-last event timestamp injected by "
                               "docker/render-metrics.py --stream-out")
-            spans.append((rec["t0"], rec["t1"]))
+            # The manager's span covers the whole run by construction, so it is
+            # excluded from the parallelism figure (which asks how many SUBagents
+            # were in flight at once).
+            if not is_root:
+                spans.append((rec["t0"], rec["t1"]))
         else:
             rows.ai_row(agent, "", "wall_s", None, "s", GAP,
                         "stream capture carries no per-event timestamps "

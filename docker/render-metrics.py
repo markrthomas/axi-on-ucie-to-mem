@@ -13,15 +13,23 @@ NOT emitted by Claude Code — only whole-run duration/turns — so we report to
 API time + turns + our own wall-clock and do not invent a per-model split. Cost
 is a client-side estimate from Anthropic's price table (unreliable for Kimi).
 
+--stream-out PATH additionally tees the raw event stream to a JSONL file, adding
+one key (`_ts_epoch`) per event. That timestamp is what lets metrics/collect.py
+reconstruct PER-AGENT numbers: `modelUsage` is per-MODEL and aggregates
+subagents, so the only per-agent view is the Task/sidechain spans in the stream.
+The injected key is additive — every other field is passed through untouched.
+
 Usage:
   claude -p … --output-format stream-json --verbose \
     | render-metrics.py --emit {text,json,stream-json} \
-        [--provider NAME] [--json-out PATH] [--wall-start EPOCH_SECONDS]
+        [--provider NAME] [--json-out PATH] [--wall-start EPOCH_SECONDS] \
+        [--stream-out PATH]
 
 Exit status mirrors the result: 0 on subtype "success", 1 otherwise / no result.
 """
 import argparse
 import json
+import os
 import sys
 import time
 
@@ -105,6 +113,10 @@ def main():
     ap.add_argument("--emit", choices=["text", "json", "stream-json"], default="text")
     ap.add_argument("--provider", default="")
     ap.add_argument("--json-out", default="")
+    ap.add_argument("--stream-out", default="",
+                    help="tee the raw event stream to this JSONL file, each event "
+                         "given an extra `_ts_epoch` key (metrics/collect.py reads it "
+                         "to reconstruct per-agent spans)")
     ap.add_argument("--wall-start", type=float, default=0.0)
     ap.add_argument("--no-metrics", action="store_true")
     ap.add_argument("--result-file", default="",
@@ -126,6 +138,17 @@ def main():
     result = None
     printed_text = False
 
+    # Optional raw-stream capture for metrics/collect.py.  Best-effort: if the
+    # path is not writable we warn once and carry on — a metrics capture must
+    # never take down the run it is observing.
+    stream_fh = None
+    if args.stream_out:
+        try:
+            os.makedirs(os.path.dirname(args.stream_out) or ".", exist_ok=True)
+            stream_fh = open(args.stream_out, "w")
+        except OSError as e:
+            print(f"render-metrics: cannot write {args.stream_out}: {e}", file=sys.stderr)
+
     for line in sys.stdin:
         line = line.rstrip("\n")
         if not line.strip():
@@ -136,6 +159,12 @@ def main():
             evt = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if stream_fh is not None:
+            try:
+                evt["_ts_epoch"] = time.time()
+                stream_fh.write(json.dumps(evt) + "\n")
+            except (OSError, TypeError, ValueError):
+                pass
         etype = evt.get("type")
         if etype == "result":
             result = evt
@@ -144,6 +173,9 @@ def main():
                 if chunk:
                     print(chunk, flush=True)
                     printed_text = True
+
+    if stream_fh is not None:
+        stream_fh.close()
 
     # Fallbacks for the final visible output.
     if result is not None:

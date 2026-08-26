@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""Prefix every stdin line with "[+SS.mmm] " (seconds since this filter started).
+"""Prefix every stdin line with "[+SSSS.mmm] " (seconds since this filter began).
 
 Used by metrics/capture.sh so metrics/collect.py can derive per-step wall time
 from a gate log.  Deliberately a pure stdin->stdout filter: it adds no work to
 the wrapped process and, unlike `stdbuf`, LD_PRELOADs nothing into the pinned
 oss-cad-suite tools (see CLAUDE.md, "Never stdbuf/unbuffer the gate").
 
+Byte-oriented on purpose.  A gate log carries whatever the tools emit -- an
+invalid UTF-8 byte from a simulator would abort a text-mode filter and take the
+gate's log (and, through pipefail, the gate) with it.  Bytes in, bytes out.
+
 Timestamps are when this filter READ the line, which for the block-buffered C
-tools is when their stdout was flushed, not when they printed.  collect.py
+tools is when their stdout was FLUSHED, not when they printed.  collect.py
 records every number derived from these as `estimated` and says so.
 """
 import sys
@@ -16,10 +20,12 @@ import time
 
 def main():
     t0 = time.monotonic()
-    out = sys.stdout
-    for line in sys.stdin:
-        out.write("[+%08.3f] %s" % (time.monotonic() - t0, line))
-        out.flush()
+    src = sys.stdin.buffer
+    dst = sys.stdout.buffer
+    for line in src:
+        dst.write(("[+%08.3f] " % (time.monotonic() - t0)).encode("ascii"))
+        dst.write(line)
+        dst.flush()
     return 0
 
 
