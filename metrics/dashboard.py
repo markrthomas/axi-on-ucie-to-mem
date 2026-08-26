@@ -134,21 +134,30 @@ def regression_policy(coeff):
 
 
 def verdict(name, cur, prev, direction, tol):
-    """-> ('better'|'worse'|'flat'|'', delta, pct) for the latest step."""
-    if cur is None or prev is None or prev == 0:
+    """-> ('better'|'worse'|'flat'|'', delta, pct) for the latest step.
+
+    `pct` is None when the previous value was 0 (no meaningful percentage) --
+    but the verdict is still computed, because 0 -> 5 new Verilator warnings is
+    exactly the kind of regression this is here to catch.
+    """
+    if cur is None or prev is None:
         return "", None, None
     delta = cur - prev
-    pct = 100.0 * delta / abs(prev)
+    pct = (100.0 * delta / abs(prev)) if prev else None
     want = direction.get(name)
     if want is None:
         for key, d in direction.items():
             if name.endswith(key):
                 want = d
                 break
-    if want is None or abs(pct) < tol:
+    if want is None or delta == 0 or (pct is not None and abs(pct) < tol):
         return "flat", delta, pct
     good = (delta > 0) if want == "up" else (delta < 0)
     return ("better" if good else "worse"), delta, pct
+
+
+def pct_txt(pct):
+    return ("%+.1f%%" % pct) if pct is not None else "from 0"
 
 
 # --------------------------------------------------------------------------- #
@@ -348,8 +357,8 @@ def build_html(runs, series, coeff, db_path):
                 delta_txt = ""
                 if dlt is not None and v:
                     arrow = "&#9650;" if dlt > 0 else ("&#9660;" if dlt < 0 else "&#8722;")
-                    delta_txt = ('<span class="%s">%s %s (%+.1f%%)%s</span>'
-                                 % (v, arrow, fmt(abs(dlt), cur[1]), pct,
+                    delta_txt = ('<span class="%s">%s %s (%s)%s</span>'
+                                 % (v, arrow, fmt(abs(dlt), cur[1]), pct_txt(pct),
                                     " regression" if v == "worse" else ""))
                 elif prev is None:
                     delta_txt = '<span class="flat">first run</span>'
@@ -380,7 +389,7 @@ def build_html(runs, series, coeff, db_path):
                 regressions.append((title, key[1], key[2], cur[0], pv[0], pct, cur[1]))
             dcell = "&mdash;"
             if dlt is not None and v:
-                dcell = '<span class="%s">%+.1f%%</span>' % (v, pct)
+                dcell = '<span class="%s">%s</span>' % (v, pct_txt(pct))
             parts.append(
                 '<tr class="%s"><td>%s</td><td>%s</td><td class="num">%s</td>'
                 '<td class="num">%s</td><td><span class="badge %s">%s</span></td>'
@@ -397,9 +406,9 @@ def build_html(runs, series, coeff, db_path):
                   '(<code>make metrics</code>) and the charts start trending.</div>')
     elif regressions:
         items = "".join(
-            "<li><b>%s</b> &middot; %s%s: %s &rarr; %s (%+.1f%%)</li>"
+            "<li><b>%s</b> &middot; %s%s: %s &rarr; %s (%s)</li>"
             % (esc(sec), esc(scope + " / ") if scope else "", esc(name),
-               fmt(pvv, unit), fmt(cv, unit), pc)
+               fmt(pvv, unit), fmt(cv, unit), pct_txt(pc))
             for sec, scope, name, cv, pvv, pc, unit in regressions)
         banner = ('<div class="flags"><b>%d regression(s) vs the previous run</b> '
                   '(dead-band %.1f%%, direction policy in '
