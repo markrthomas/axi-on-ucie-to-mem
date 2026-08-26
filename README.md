@@ -177,22 +177,59 @@ Everything runs from the repo root and degrades gracefully if a tool is absent.
 | Gate | `make check` | lint + cocotb + SV(both sims) + pack + act + reorder + ooo + mrp + SystemC |
 | CI | `make ci` | `check` + coverage + formal as one pass/fail gate |
 | Container | `docker run --rm aou-dv` | the whole `make ci` gate in a reproducible image ([`docs/DOCKER.md`](docs/DOCKER.md)) |
-| Trace | `make <target> VERBOSE=1` | per-beat AXI transaction traces in each env's log |
+| Debug logging | `make <target> VERBOSE=1\|2` | decoded AoU flit trace (L1) / + internal DUT state (L2), per-test files under `logs/` |
 
 Run `make help` for the full list.
 
-**Transaction tracing.** Add `VERBOSE=1` to any target (it exports `AOU_VERBOSE`
-to the sub-makes) to log every AW/W/B/AR/R beat — address, data, id, burst,
-resp, last — for debugging. The SV directed TB and SystemC TB tag their lines
-`[SV-TB][T]` / `[SC-TB][T]`, the coverage harness `[sim_cov][T]`, and the cocotb
-BFM raises its `axi.bfm` logger to `DEBUG`. Off by default, so normal runs (and
-CI) stay byte-identical:
+### Debug logging
+
+One knob, three levels, every DV environment. `VERBOSE=<lvl>` on any target
+exports `AOU_VERBOSE` to the sub-makes, which pass it on as `+verbose=<lvl>`
+(SV under Icarus/Verilator) or as an environment variable (cocotb, SystemC):
+
+| Level | Name | What it adds |
+|-------|------|--------------|
+| `0` | off (**default**) | nothing — every env's stdout is byte-identical to a build without the facility, so CI banners, the committed `dv/systemc/sc.log` and the coverage ratio are unaffected |
+| `1` | packet | one **decoded AoU flit** line per UCIe link handshake (msgtype, FDId/plane, MsgStart, MsgCredit incl. the RP subfield, granule count and the per-type fields) in the envs that carry real flits — cocotb, `sv`, `systemc`, `ooo`, `mrp` — plus the per-check detail of the unit envs (`pack`, `act`, `reorder`) and the existing per-beat AXI transaction trace |
+| `2` | full debug | level 1 plus internal DUT state: §8 activation FSMs, bridge FSMs, §6 per-message-type credit counters, initiator request-queue occupancy, reorder-buffer slot state, RP arbiter grants + per-plane RX-queue depth, and the OOO hold state |
+
+Every level also writes a **per-test log file** under `logs/` (gitignored, swept
+by `make clean`) so a failing run stays inspectable afterwards:
+
+| Env | File(s) |
+|-----|---------|
+| cocotb | `logs/cocotb_<testcase>.log` |
+| `sv` / `ooo` / `mrp` / `pack` / `act` / `reorder` | `logs/<env>_icarus.log`, `logs/<env>_verilator.log` |
+| `systemc` | `logs/systemc.log` |
 
 ```bash
-make sv VERBOSE=1        # SV directed TB, per-beat traces to dv/sv/sim_build/icarus.log
-make systemc VERBOSE=1   # SystemC TB, traces to dv/systemc/sc.log
-make test-burst VERBOSE=1
+make sv VERBOSE=1          # decoded flits + AXI beats -> logs/sv_icarus.log
+make test-burst VERBOSE=1  # cocotb  -> logs/cocotb_burst_test.log
+make ooo VERBOSE=2         # + OOO hold state and reorder-buffer slots
+make systemc VERBOSE=1     # -> logs/systemc.log (sc.log itself stays unchanged)
 ```
+
+A decoded flit line looks like this (the same rendering in every environment —
+one decoder per language, `dv/common/aou_flit_log.{svh,py,h}`, kept
+field-for-field identical):
+
+```
+[SV-TB][F] t=115 A->B fdid=0 crd=0x0000(rp=0 wreq=0 rreq=0 wdata=0 rdata=0 wresp=0) ms=0x000000000001 g=0 WriteReq gran=3 id=0 addr=0x000000000000d490 len=0 size=2 burst=INCR flex=0x0001
+[SV-TB][F] t=195 B->A fdid=0 crd=0x00c2(rp=0 wreq=4 rreq=0 wdata=8 rdata=0 wresp=0) ms=0x000000000001 g=0 WriteResp gran=1 id=0 resp=0 flex=0x0000
+[SV-TB][D] t=125 init.fsm S_WDATA
+[SV-TB][D] t=125 init.credits held(wreq=0 rreq=3 wdata=128) owed(rdata=0 wresp=0)
+```
+
+Line tags: `[V]` level banner, `[T]` AXI transaction, `[C]` unit-env check,
+`[F]` decoded flit, `[D]` internal state.
+
+The logging is **additive DV only** — no RTL was changed and no signal is ever
+driven. The SV and cocotb environments observe the DUT through read-only
+hierarchical references; the SystemC verbose build additionally compiles
+`dv/systemc/aou_sc_dbg_top.sv`, a DV-only wrapper that re-exports those same
+reads as ports (a Verilator `--sc` model exposes only its ports to `sc_main`).
+The default `VERBOSE=0` SystemC build verilates `axi_ucie_mem_top` directly, as
+before. The log files are for humans; **CI runs at `VERBOSE=0`**.
 
 ## Tutorial
 
