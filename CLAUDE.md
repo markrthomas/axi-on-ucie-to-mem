@@ -107,6 +107,14 @@ license-gated flow degrades gracefully (prints a skip, exits 0). See
   must bound them against the granted ceiling (a lone transaction must always pass).
 - **`sc.log` baseline:** the SystemC env diffs a committed golden log — any change
   to its stdout (even a new print) fails it. Gate new prints behind `VERBOSE`.
+- **ASCII-stdout crash in the cloud (locale trap):** the cloud (Railway/CI Docker
+  image) starts under a bare `C`/POSIX locale, so Python's stdout falls back to the
+  **ASCII** codec — `print()` of any non-ASCII byte then raises `UnicodeEncodeError`
+  and aborts the run. It never reproduces on a dev host (already UTF-8). Bit us via
+  the em-dash in `[COV-FUNC] AXI functional coverage —`. Fixed **once, at the root**
+  in the `Dockerfile` (`ENV LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONIOENCODING=UTF-8
+  PYTHONUTF8=1`), so all envs are covered — don't chase individual characters. Keep
+  that ENV; if you add a non-Docker cloud path, set the same there.
 
 ## Conventions
 
