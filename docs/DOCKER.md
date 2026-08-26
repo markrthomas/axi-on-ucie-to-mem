@@ -198,6 +198,33 @@ Note that `make systemc VERBOSE=1|2` builds a *second* Verilator model (the
 DV-only observation wrapper `dv/systemc/aou_sc_dbg_top.sv`, into `obj_dir_dbg`)
 so it costs one more compile; `VL_JOBS` bounds it the same way.
 
+### UTF-8 locale (why the image forces it)
+
+The image sets **`ENV LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONIOENCODING=UTF-8
+PYTHONUTF8=1 PYTHONUNBUFFERED=1`**. The cloud (Railway/CI) starts a container under a bare
+`C`/POSIX locale, which makes Python's stdout fall back to the **ASCII** codec.
+Any non-ASCII byte then raises `UnicodeEncodeError` and aborts the run — e.g. the
+em-dash in the cocotb `[COV-FUNC] AXI functional coverage —` banner did exactly
+that on Railway (`write_read_test FAIL`, `'ascii' codec can't encode character
+'—'`), even though the DV logic was fine. Forcing a UTF-8 locale +
+Python I/O encoding makes stdout byte-identical to a dev host and stops the crash.
+`ubuntu:24.04` ships `C.UTF-8` built in, so no `locale-gen` is needed. Local runs
+outside the container inherit the host's already-UTF-8 locale, which is why this
+never reproduced on a dev machine.
+
+### Live log streaming (why the gate is line-buffered)
+
+When stdout is a **pipe** (the cloud captures logs off a pipe, not a TTY), glibc
+**full-buffers** each process, so a long `make ci` can print *nothing* until it
+exits — in the Railway/CI log viewer a running gate is then indistinguishable from
+a hung one. To stream output live, `docker/entrypoint.sh` wraps the gate in
+**`stdbuf -oL -eL`** (line-buffer stdout+stderr). Because `stdbuf` works via an
+`LD_PRELOAD` shim + env vars, it propagates to the child tools too
+(Verilator/Icarus/`sby`/gcc). Python bypasses libc stdio buffering, so
+**`PYTHONUNBUFFERED=1`** (in the ENV above) covers cocotb/pyuvm. This is **flush
+timing only** — the output bytes are unchanged, so every banner/baseline (incl.
+the SystemC `sc.log` diff) stays byte-identical.
+
 ---
 
 ## Headless Claude Code agent mode
