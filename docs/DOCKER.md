@@ -180,6 +180,20 @@ make systemc VL_JOBS=4                   # locally, cap to 4 jobs
 Rule of thumb: keep `VL_JOBS × ~0.5 GB` under the instance's RAM. `VL_JOBS=2`
 runs the full gate green under a **2 GB** cap.
 
+### UTF-8 locale (why the image forces it)
+
+The image sets **`ENV LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONIOENCODING=UTF-8
+PYTHONUTF8=1`**. The cloud (Railway/CI) starts a container under a bare
+`C`/POSIX locale, which makes Python's stdout fall back to the **ASCII** codec.
+Any non-ASCII byte then raises `UnicodeEncodeError` and aborts the run — e.g. the
+em-dash in the cocotb `[COV-FUNC] AXI functional coverage —` banner did exactly
+that on Railway (`write_read_test FAIL`, `'ascii' codec can't encode character
+'—'`), even though the DV logic was fine. Forcing a UTF-8 locale +
+Python I/O encoding makes stdout byte-identical to a dev host and stops the crash.
+`ubuntu:24.04` ships `C.UTF-8` built in, so no `locale-gen` is needed. Local runs
+outside the container inherit the host's already-UTF-8 locale, which is why this
+never reproduced on a dev machine.
+
 ---
 
 ## Headless Claude Code agent mode
