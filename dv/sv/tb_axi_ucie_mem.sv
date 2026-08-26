@@ -17,7 +17,14 @@
 `ifndef TB_AXI_UCIE_MEM_SV
 `define TB_AXI_UCIE_MEM_SV
 
-module tb_axi_ucie_mem;
+module tb_axi_ucie_mem
+  import aou_pkg::*;
+;
+
+  // Shared DV-only flit decoder + VERBOSE=0|1|2 logging helpers.  Included here
+  // (never in rtl/), so at VERBOSE=0 it emits nothing and the design is
+  // untouched.
+  `include "aou_flit_log.svh"
 
   localparam int AW         = 32;
   localparam int DW         = 32;
@@ -62,11 +69,13 @@ module tb_axi_ucie_mem;
   logic [DW-1:0] ref_mem [0:WORDS-1];
   int            errors, reads;
 
-  // Opt-in per-beat transaction tracing.  Enabled with the +verbose plusarg
-  // (the dv/sv Makefile passes it when AOU_VERBOSE is set, i.e. `make ...
-  // VERBOSE=1` at the repo root).  Trace lines carry the [SV-TB][T] tag so they
-  // are greppable and never collide with the PASS/FAIL or MISMATCH banners;
-  // default (plusarg absent) leaves the log byte-identical.
+  // Opt-in debug logging, driven by +verbose=<lvl> / +logfile=<path> (the dv/sv
+  // Makefile passes both when AOU_VERBOSE is set, i.e. `make ... VERBOSE=1|2` at
+  // the repo root).  `verbose` keeps the level-1 AXI transaction trace exactly
+  // as before ([SV-TB][T] lines); level 2 adds [SV-TB][D] internal state and
+  // level >=1 adds [SV-TB][F] decoded flit lines (see the monitors below).
+  // With no plusarg the level is 0 and every line below is suppressed, so the
+  // log stays byte-identical.
   bit verbose;
 
   // independent AXI next-beat address (mirror of the spec rule)
@@ -100,8 +109,8 @@ module tb_axi_ucie_mem;
       AWID = id; AWADDR = addr; AWLEN = len; AWSIZE = SZ4; AWBURST = bt;
       AWPROT = 3'b000; AWVALID = 1'b1;
       @(posedge ACLK); while (!AWREADY) @(posedge ACLK);
-      if (verbose) $display("[SV-TB][T] AW  id=%0d addr=0x%05h len=%0d burst=%0d",
-                            id, addr, len, bt);
+      if (verbose) aou_emit($sformatf("[SV-TB][T] AW  id=%0d addr=0x%05h len=%0d burst=%0d",
+                                      id, addr, len, bt));
       @(negedge ACLK); AWVALID = 1'b0;
       a = addr;
       for (k = 0; k <= len; k++) begin
@@ -109,14 +118,14 @@ module tb_axi_ucie_mem;
         WDATA = d0 + k*dstep; WSTRB = {SW{1'b1}};
         WLAST = (k == int'(len)); WVALID = 1'b1;
         @(posedge ACLK); while (!WREADY) @(posedge ACLK);
-        if (verbose) $display("[SV-TB][T] W   beat %0d addr=0x%05h data=0x%08h last=%0b",
-                              k, a, WDATA, WLAST);
+        if (verbose) aou_emit($sformatf("[SV-TB][T] W   beat %0d addr=0x%05h data=0x%08h last=%0b",
+                                        k, a, WDATA, WLAST));
         ref_mem[a[MEM_ADDR_W-1:2]] = d0 + k*dstep;
         a = nxt_addr(a, addr, bt, SZ4, len);
         @(negedge ACLK); WVALID = 1'b0; WLAST = 1'b0;
       end
       @(posedge ACLK); while (!BVALID) @(posedge ACLK);
-      if (verbose) $display("[SV-TB][T] B   id=%0d resp=%0d", BID, BRESP);
+      if (verbose) aou_emit($sformatf("[SV-TB][T] B   id=%0d resp=%0d", BID, BRESP));
       if (BRESP !== 2'b00) begin errors++; $display("[SV-TB] bad BRESP=%b", BRESP); end
       if (BID   !== id)    begin errors++; $display("[SV-TB] BID got %0d exp %0d", BID, id); end
     end
@@ -131,15 +140,15 @@ module tb_axi_ucie_mem;
       ARID = id; ARADDR = addr; ARLEN = len; ARSIZE = SZ4; ARBURST = bt;
       ARPROT = 3'b000; ARVALID = 1'b1;
       @(posedge ACLK); while (!ARREADY) @(posedge ACLK);
-      if (verbose) $display("[SV-TB][T] AR  id=%0d addr=0x%05h len=%0d burst=%0d",
-                            id, addr, len, bt);
+      if (verbose) aou_emit($sformatf("[SV-TB][T] AR  id=%0d addr=0x%05h len=%0d burst=%0d",
+                                      id, addr, len, bt));
       @(negedge ACLK); ARVALID = 1'b0;
       a = addr;
       for (k = 0; k <= len; k++) begin
         @(posedge ACLK); while (!RVALID) @(posedge ACLK);
         reads++;
-        if (verbose) $display("[SV-TB][T] R   beat %0d addr=0x%05h data=0x%08h resp=%0d id=%0d last=%0b",
-                              k, a, RDATA, RRESP, RID, RLAST);
+        if (verbose) aou_emit($sformatf("[SV-TB][T] R   beat %0d addr=0x%05h data=0x%08h resp=%0d id=%0d last=%0b",
+                                        k, a, RDATA, RRESP, RID, RLAST));
         if (RDATA !== ref_mem[a[MEM_ADDR_W-1:2]]) begin
           errors++;
           $display("[SV-TB] MISMATCH beat %0d @0x%05h: got 0x%08h exp 0x%08h",
@@ -175,8 +184,8 @@ module tb_axi_ucie_mem;
     ARID = '0; ARADDR = '0; ARLEN = '0; ARSIZE = '0; ARBURST = '0; ARPROT = '0;
     BREADY = 1'b1; RREADY = 1'b1;
     errors = 0; reads = 0;
-    verbose = ($test$plusargs("verbose") != 0);
-    if (verbose) $display("[SV-TB][T] verbose transaction tracing enabled");
+    aou_log_init("[SV-TB]");
+    verbose = (aou_lvl >= 1);
     for (i = 0; i < WORDS; i++) ref_mem[i] = '0;
     repeat (3) @(negedge ACLK);
     ARESETn = 1'b1;
@@ -242,8 +251,8 @@ module tb_axi_ucie_mem;
         ARID = oid[m]; ARADDR = oa[m]; ARLEN = ol[m]; ARSIZE = SZ4;
         ARBURST = BI; ARPROT = 3'b000; ARVALID = 1'b1;
         @(posedge ACLK); while (!ARREADY) @(posedge ACLK);
-        if (verbose) $display("[SV-TB][T] AR  (mo) id=%0d addr=0x%05h len=%0d",
-                              oid[m], oa[m], ol[m]);
+        if (verbose) aou_emit($sformatf("[SV-TB][T] AR  (mo) id=%0d addr=0x%05h len=%0d",
+                                        oid[m], oa[m], ol[m]));
         @(negedge ACLK); ARVALID = 1'b0;
       end
       // Phase 2: drain in issue order (in-order completion) and self-check.
@@ -253,8 +262,8 @@ module tb_axi_ucie_mem;
         for (k = 0; k <= int'(ol[m]); k++) begin
           @(posedge ACLK); while (!RVALID) @(posedge ACLK);
           reads++;
-          if (verbose) $display("[SV-TB][T] R   (mo) req %0d beat %0d addr=0x%05h data=0x%08h id=%0d last=%0b",
-                                m, k, ca, RDATA, RID, RLAST);
+          if (verbose) aou_emit($sformatf("[SV-TB][T] R   (mo) req %0d beat %0d addr=0x%05h data=0x%08h id=%0d last=%0b",
+                                          m, k, ca, RDATA, RID, RLAST));
           if (RDATA !== ref_mem[ca[MEM_ADDR_W-1:2]]) begin
             errors++;
             $display("[SV-TB] MO MISMATCH req %0d beat %0d @0x%05h: got 0x%08h exp 0x%08h",
@@ -287,13 +296,92 @@ module tb_axi_ucie_mem;
       $display("[SV-TB] PASS: %0d reads checked, 0 errors", reads);
     else
       $display("[SV-TB] FAIL: %0d reads checked, %0d errors", reads, errors);
+    aou_log_close();
     $finish;
+  end
+
+  // --- level 1: decoded AoU flit trace at the UCIe link boundary -------------
+  // Passive TB-side observation of the initiator's TX/RX flit handshakes (both
+  // directions of the link pair) — no RTL edit, no datapath influence.  Guarded
+  // by aou_lvl so nothing is evaluated at VERBOSE=0.
+  always @(posedge ACLK) begin
+    if ((aou_lvl >= 1) && ARESETn) begin
+      if (dut.g_rp1.init_tx_valid && dut.g_rp1.init_tx_ready)
+        aou_log_flit("A->B", dut.g_rp1.init_tx_data);
+      if (dut.g_rp1.init_rx_valid && dut.g_rp1.init_rx_ready)
+        aou_log_flit("B->A", dut.g_rp1.init_rx_data);
+    end
+  end
+
+  // --- level 2: internal DUT state ------------------------------------------
+  // Hierarchical (read-only) references to the §8 activation FSMs, the bridge
+  // FSMs, the §6 credit counters and the initiator request-queue occupancy.
+  // Reported on change, so the log shows transitions rather than a line/cycle.
+  logic [2:0] p_iact, p_tact, p_istate, p_tstate;
+  logic [7:0] p_qcount, p_cwreq, p_crreq, p_cwdata, p_rrdata, p_rwresp;
+  logic [7:0] p_tcrdata, p_tcwresp, p_twreq, p_trreq, p_twdata;
+  bit         dbg_armed;
+
+  always @(posedge ACLK) begin
+    if (aou_lvl >= 2) begin
+      if (!ARESETn) begin
+        dbg_armed <= 1'b0;
+      end else begin
+        if (!dbg_armed || (dut.g_rp1.u_init.u_act.state !== p_iact))
+          aou_dbg($sformatf("init.act %s", aou_act_state_name(dut.g_rp1.u_init.u_act.state)));
+        if (!dbg_armed || (dut.g_rp1.u_tgt.u_act.state !== p_tact))
+          aou_dbg($sformatf("tgt.act  %s", aou_act_state_name(dut.g_rp1.u_tgt.u_act.state)));
+        if (!dbg_armed || (dut.g_rp1.u_init.g_inorder.state !== p_istate))
+          aou_dbg($sformatf("init.fsm %s", aou_init_state_name(dut.g_rp1.u_init.g_inorder.state)));
+        if (!dbg_armed || (dut.g_rp1.u_tgt.state !== p_tstate))
+          aou_dbg($sformatf("tgt.fsm  %s", aou_tgt_state_name(dut.g_rp1.u_tgt.state)));
+        if (!dbg_armed || (dut.g_rp1.u_init.q_count !== p_qcount))
+          aou_dbg($sformatf("init.reqq occupancy=%0d", dut.g_rp1.u_init.q_count));
+        if (!dbg_armed ||
+            (dut.g_rp1.u_init.cr_wreq   !== p_cwreq)  ||
+            (dut.g_rp1.u_init.cr_rreq   !== p_crreq)  ||
+            (dut.g_rp1.u_init.cr_wdata  !== p_cwdata) ||
+            (dut.g_rp1.u_init.ret_rdata !== p_rrdata) ||
+            (dut.g_rp1.u_init.ret_wresp !== p_rwresp))
+          aou_dbg($sformatf("init.credits held(wreq=%0d rreq=%0d wdata=%0d) owed(rdata=%0d wresp=%0d)",
+                            dut.g_rp1.u_init.cr_wreq, dut.g_rp1.u_init.cr_rreq,
+                            dut.g_rp1.u_init.cr_wdata, dut.g_rp1.u_init.ret_rdata,
+                            dut.g_rp1.u_init.ret_wresp));
+        if (!dbg_armed ||
+            (dut.g_rp1.u_tgt.cr_rdata !== p_tcrdata) ||
+            (dut.g_rp1.u_tgt.cr_wresp !== p_tcwresp) ||
+            (dut.g_rp1.u_tgt.ret_wreq !== p_twreq)   ||
+            (dut.g_rp1.u_tgt.ret_rreq !== p_trreq)   ||
+            (dut.g_rp1.u_tgt.ret_wdata !== p_twdata))
+          aou_dbg($sformatf("tgt.credits  held(rdata=%0d wresp=%0d) owed(wreq=%0d rreq=%0d wdata=%0d)",
+                            dut.g_rp1.u_tgt.cr_rdata, dut.g_rp1.u_tgt.cr_wresp,
+                            dut.g_rp1.u_tgt.ret_wreq, dut.g_rp1.u_tgt.ret_rreq,
+                            dut.g_rp1.u_tgt.ret_wdata));
+        dbg_armed <= 1'b1;
+      end
+      p_iact    <= dut.g_rp1.u_init.u_act.state;
+      p_tact    <= dut.g_rp1.u_tgt.u_act.state;
+      p_istate  <= dut.g_rp1.u_init.g_inorder.state;
+      p_tstate  <= dut.g_rp1.u_tgt.state;
+      p_qcount  <= 8'(dut.g_rp1.u_init.q_count);
+      p_cwreq   <= dut.g_rp1.u_init.cr_wreq;
+      p_crreq   <= dut.g_rp1.u_init.cr_rreq;
+      p_cwdata  <= dut.g_rp1.u_init.cr_wdata;
+      p_rrdata  <= dut.g_rp1.u_init.ret_rdata;
+      p_rwresp  <= dut.g_rp1.u_init.ret_wresp;
+      p_tcrdata <= dut.g_rp1.u_tgt.cr_rdata;
+      p_tcwresp <= dut.g_rp1.u_tgt.cr_wresp;
+      p_twreq   <= dut.g_rp1.u_tgt.ret_wreq;
+      p_trreq   <= dut.g_rp1.u_tgt.ret_rreq;
+      p_twdata  <= dut.g_rp1.u_tgt.ret_wdata;
+    end
   end
 
   // watchdog
   initial begin
     #2000000;
     $display("[SV-TB] FAIL: timeout");
+    aou_log_close();
     $finish;
   end
 

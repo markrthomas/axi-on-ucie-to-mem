@@ -80,15 +80,40 @@ export FCOV_MIN
 # (each test runs in its own sim, so no single process sees the whole run).
 FCOV_DB := $(TB_DIR)/fcov.json
 
-# Transaction tracing (opt-in, off by default).  `make <target> VERBOSE=1`
-# exports AOU_VERBOSE to every sub-make, turning on per-beat AXI traces in each
-# environment's log: the SV directed TB and the SystemC TB print [SV-TB][T] /
-# [SC-TB][T] lines, the coverage harness prints [sim_cov][T], and the cocotb BFM
-# raises its "axi.bfm" logger to DEBUG.  Leaving VERBOSE unset keeps all output
-# byte-identical, so CI banners, log baselines, and the coverage ratio are
-# unaffected.  (AOU_VERBOSE can also be exported directly.)
-ifeq ($(VERBOSE),1)
-export AOU_VERBOSE := 1
+# --- debug logging (VERBOSE=0|1|2) -------------------------------------------
+# ONE knob for the whole DV gate, threaded into every environment (see README
+# "Debug logging" and docs/DOCKER.md).  `make <target> VERBOSE=<lvl>` exports
+# AOU_VERBOSE to every sub-make, which passes it on as `+verbose=<lvl>` (SV /
+# Icarus / Verilator), AOU_VERBOSE in the environment (cocotb, SystemC):
+#
+#   0  off      — DEFAULT.  No extra output anywhere; every env's stdout is
+#                 byte-identical to a build without the logging facility, so CI
+#                 banners, the committed dv/systemc/sc.log and the coverage
+#                 ratio are unaffected.
+#   1  packet   — one decoded AoU flit line per link handshake in the envs that
+#                 carry real flits (cocotb, sv, systemc, ooo, mrp), the unit
+#                 envs' per-check detail (pack, act, reorder), plus the existing
+#                 per-beat AXI transaction trace.
+#   2  debug    — level 1 plus internal DUT state: bridge FSMs, §6 credit
+#                 counters, initiator request-queue occupancy, reorder-buffer
+#                 slots, RP arbiter grants / per-plane RX depth, OOO hold state.
+#
+# Every level also writes a per-test file under $(LOG_DIR) (gitignored) so a
+# failing run stays inspectable after the fact.  (AOU_VERBOSE can be exported
+# directly instead; a bare `+verbose` still means level 1.)
+LOG_DIR ?= $(CURDIR)/logs
+export AOU_LOG_DIR := $(LOG_DIR)
+
+VERBOSE ?= 0
+AOU_LVL := $(strip $(VERBOSE))
+ifeq ($(AOU_LVL),)
+AOU_LVL := 0
+endif
+ifeq ($(filter 0 1 2,$(AOU_LVL)),)
+$(error VERBOSE must be 0, 1 or 2 (got '$(VERBOSE)'))
+endif
+ifneq ($(AOU_LVL),0)
+export AOU_VERBOSE := $(AOU_LVL)
 endif
 
 .PHONY: default help \
@@ -135,9 +160,12 @@ help:
 	@echo "    make regress           # check + coverage + formal (CI-style pass/fail)"
 	@echo "    make ci                # regress"
 	@echo ""
-	@echo "  Tracing:"
-	@echo "    VERBOSE=1               # add to any target for per-beat AXI transaction traces"
-	@echo "                           #   (e.g. make sv VERBOSE=1 / make systemc VERBOSE=1)"
+	@echo "  Debug logging (one knob, every env — see README 'Debug logging'):"
+	@echo "    VERBOSE=0               # default: no extra output (byte-identical stdout)"
+	@echo "    VERBOSE=1               # decoded AoU flit trace + per-beat AXI transactions"
+	@echo "    VERBOSE=2               # + internal state (FSMs, credits, queues, arbiter)"
+	@echo "                           #   (e.g. make sv VERBOSE=1 / make ooo VERBOSE=2)"
+	@echo "                           #   logs land in $(LOG_DIR)/<env>[_<test>].log"
 	@echo ""
 	@echo "  Other: make clean"
 
@@ -392,6 +420,7 @@ clean:
 	$(MAKE) -C $(SC_DIR) clean 2>/dev/null || true
 	$(MAKE) -C $(UVM_DIR) clean 2>/dev/null || true
 	rm -f $(FCOV_DB)
+	rm -rf $(LOG_DIR)
 	rm -rf $(TB_DIR)/sim_build $(TB_DIR)/__pycache__ __pycache__ \
 		results.xml dump.fst dump.vcd obj_dir \
 		$(COV_DIR) sim/coverage.info sim/coverage.dat sim/annotated

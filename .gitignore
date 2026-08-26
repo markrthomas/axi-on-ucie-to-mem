@@ -51,3 +51,6 @@ docker/last-run-metrics.json
 
 # Pinned OSS CAD Suite unpacked in-tree by the container image (never committed)
 oss-cad-suite/
+
+# Per-test debug logs written by `make <env> VERBOSE=1|2` (see README)
+logs/
