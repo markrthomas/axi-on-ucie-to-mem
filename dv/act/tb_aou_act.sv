@@ -22,6 +22,10 @@
 module tb_aou_act
   import aou_pkg::*;
 ;
+  // Shared DV-only flit decoder + VERBOSE=0|1|2 logging helpers.  Included in
+  // the TB only (never in rtl/); at VERBOSE=0 nothing is emitted.
+  `include "aou_flit_log.svh"
+
   logic clk;
   logic rstn;
   initial clk = 1'b0;
@@ -77,6 +81,10 @@ module tb_aou_act
       errors++;
       $display("[ACT-TB] CHECK FAILED: %s", what);
     end
+    // level 1: per-check detail behind the [ACT-TB] PASS count.
+    if (aou_lvl >= 1)
+      aou_emit($sformatf("[ACT-TB][C] %s check %0d: %s",
+                         (cond === 1'b1) ? "ok  " : "FAIL", checks, what));
   endtask
 
   function automatic logic [PLP_BITS-1:0] mkflit(input msg_t m, input int gran);
@@ -119,7 +127,31 @@ module tb_aou_act
     chk(enabled === 1'b1 && error === 1'b0 && act_disabled === 1'b0, "reaches ENABLED");
   endtask
 
+  // --- level 1: decode every §5.6 Misc flit crossing the activation link -----
+  // (tx_ready is tied high and rx is consumed while not ENABLED, so a valid on
+  // either side is a transfer.)  Level 2 adds the §8 FSM state on change.
+  logic [2:0] p_state;
+  bit         dbg_armed;
+  always @(posedge clk) begin
+    if ((aou_lvl >= 1) && rstn) begin
+      if (tx_valid && tx_ready) aou_log_flit("DUT->peer", tx_data);
+      if (rx_valid && rx_ready) aou_log_flit("peer->DUT", rx_data);
+    end
+    if (aou_lvl >= 2) begin
+      if (!rstn) dbg_armed <= 1'b0;
+      else begin
+        if (!dbg_armed || (dut.state !== p_state))
+          aou_dbg($sformatf("act.fsm %s (enabled=%0b disabled=%0b error=%0b quiescing=%0b)",
+                            aou_act_state_name(dut.state), enabled, act_disabled,
+                            error, quiescing));
+        dbg_armed <= 1'b1;
+      end
+      p_state <= dut.state;
+    end
+  end
+
   initial begin
+    aou_log_init("[ACT-TB]");
     rstn       = 1'b0;
     deact_trig = 1'b0;
     data_idle  = 1'b1;                 // Option-1 default: link pre-quiesced
@@ -203,6 +235,7 @@ module tb_aou_act
 
     if (errors == 0) $display("[ACT-TB] PASS: %0d checks, 0 errors", checks);
     else             $display("[ACT-TB] FAIL: %0d checks, %0d errors", checks, errors);
+    aou_log_close();
     $finish;
   end
 
@@ -210,6 +243,7 @@ module tb_aou_act
   initial begin
     #200000;
     $display("[ACT-TB] FAIL: timeout (checks=%0d errors=%0d)", checks, errors);
+    aou_log_close();
     $finish;
   end
 endmodule

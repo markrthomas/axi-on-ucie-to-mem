@@ -36,6 +36,20 @@ docker run --rm aou-dv make check      # the gate without coverage
 docker run --rm -it --entrypoint bash aou-dv
 ```
 
+To get a debug log out of a container run, add `VERBOSE=1` (decoded AoU flit
+trace) or `VERBOSE=2` (plus internal DUT state) and mount `logs/` so the
+per-test files survive the container (see "Debug logging" in the README for the
+level definitions and the log-file names):
+
+```bash
+docker run --rm -v "$PWD/logs:/work/logs" aou-dv make ooo VERBOSE=2
+docker run --rm -v "$PWD/logs:/work/logs" aou-dv make check VERBOSE=1
+```
+
+The default is `VERBOSE=0` and the image's entrypoint never sets it, so **the
+containerized gate and CI always run at level 0** — byte-identical stdout, so
+the banners this document quotes are stable.
+
 A green run ends with:
 
 ```
@@ -179,6 +193,10 @@ make systemc VL_JOBS=4                   # locally, cap to 4 jobs
 
 Rule of thumb: keep `VL_JOBS × ~0.5 GB` under the instance's RAM. `VL_JOBS=2`
 runs the full gate green under a **2 GB** cap.
+
+Note that `make systemc VERBOSE=1|2` builds a *second* Verilator model (the
+DV-only observation wrapper `dv/systemc/aou_sc_dbg_top.sv`, into `obj_dir_dbg`)
+so it costs one more compile; `VL_JOBS` bounds it the same way.
 
 ### UTF-8 locale (why the image forces it)
 

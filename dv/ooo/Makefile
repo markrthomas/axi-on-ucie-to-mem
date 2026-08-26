@@ -27,7 +27,17 @@ TOP := tb_axi_ucie_ooo
 
 PASS_RE := \[OOO-TB\] PASS
 
-PLUSARGS := $(if $(AOU_VERBOSE),+verbose,)
+# Shared, DV-only flit decoder + logging helpers (dv/common/), `include`d by the TB.
+INC_DIR := ../common
+
+# Debug logging: the repo root exports AOU_VERBOSE=<lvl> for `make ... VERBOSE=
+# 1|2` and AOU_LOG_DIR for the per-test log files.  The level rides in as
+# +verbose=<lvl> and the log path as +logfile=<path>; Icarus (vvp) and Verilator
+# (--binary) both honour $value$plusargs.  With AOU_VERBOSE unset NOTHING is
+# passed, so the run stays byte-identical.
+AOU_LOG_DIR ?= $(abspath ../../logs)
+LOGARGS  = $(if $(AOU_VERBOSE),+verbose=$(AOU_VERBOSE) +logfile=$(AOU_LOG_DIR)/ooo_$(1).log,)
+MKLOGDIR = $(if $(AOU_VERBOSE),mkdir -p $(AOU_LOG_DIR),true)
 
 .PHONY: all icarus verilator clean
 all: icarus verilator
@@ -35,8 +45,9 @@ all: icarus verilator
 # --- Icarus ------------------------------------------------------------------
 icarus:
 	@mkdir -p sim_build
-	$(IVERILOG) -g2012 -s $(TOP) -o sim_build/ooo.vvp $(RTL) $(TB)
-	@$(VVP) sim_build/ooo.vvp $(PLUSARGS) 2>&1 | tee sim_build/icarus.log
+	$(IVERILOG) -g2012 -I$(INC_DIR) -s $(TOP) -o sim_build/ooo.vvp $(RTL) $(TB)
+	@$(MKLOGDIR)
+	@$(VVP) sim_build/ooo.vvp $(call LOGARGS,icarus) 2>&1 | tee sim_build/icarus.log
 	@grep -q "$(PASS_RE)" sim_build/icarus.log || { echo "[OOO] Icarus run FAILED"; exit 1; }
 	@echo "[OOO] Icarus PASSED"
 
@@ -47,11 +58,11 @@ verilator:
 	maj=$$($(VERILATOR) --version 2>/dev/null | grep -oE 'Verilator [0-9]+' | grep -oE '[0-9]+'); \
 	if [ -z "$$maj" ] || [ "$$maj" -lt 5 ]; then \
 		echo "[OOO] Verilator < 5 (no --binary/--timing) — skipping"; exit 0; fi; \
-	mkdir -p sim_build; \
+	mkdir -p sim_build; $(MKLOGDIR); \
 	$(VERILATOR) --binary --timing -j $(VL_JOBS) -Wall -Wno-DECLFILENAME \
 		-Wno-SYNCASYNCNET -Wno-BLKSEQ \
-		--top-module $(TOP) --Mdir obj_dir $(RTL) $(TB) -o vooo; \
-	./obj_dir/vooo $(PLUSARGS) 2>&1 | tee sim_build/verilator.log; \
+		+incdir+$(INC_DIR) --top-module $(TOP) --Mdir obj_dir $(RTL) $(TB) -o vooo; \
+	./obj_dir/vooo $(call LOGARGS,verilator) 2>&1 | tee sim_build/verilator.log; \
 	grep -q "$(PASS_RE)" sim_build/verilator.log || { echo "[OOO] Verilator run FAILED"; exit 1; }; \
 	echo "[OOO] Verilator PASSED"
 

@@ -17,6 +17,7 @@ from cocotb.triggers import ClockCycles, FallingEdge, RisingEdge
 
 from pyuvm import utility_classes
 
+import aou_debug
 from axi_seq_item import BURST_INCR, SIZE_4B, next_addr
 
 
@@ -26,18 +27,23 @@ class AxiLiteBfm(metaclass=utility_classes.Singleton):
         self.driver_queue = Queue()        # command items handed to the driver
         self.result_queue = Queue()        # (rdata, resp) returned to the driver
         self.monitor_queue = Queue()       # completed transfers seen on the bus
-        # Opt-in per-beat transaction tracing.  Setting AOU_VERBOSE (the repo-root
-        # `make ... VERBOSE=1` exports it) raises this BFM's logger to DEBUG so
-        # every AW/W/B/AR/R beat is logged with sim time; default (unset) leaves
-        # the log unchanged.
+        # Opt-in per-beat transaction tracing.  Level >= 1 (the repo-root
+        # `make ... VERBOSE=1|2` exports AOU_VERBOSE) raises this BFM's logger to
+        # DEBUG so every AW/W/B/AR/R beat is logged with sim time, and routes it
+        # into the per-test log file alongside the decoded-flit trace; level 0
+        # (default) leaves the log unchanged.
         self.log = logging.getLogger("axi.bfm")
-        if os.environ.get("AOU_VERBOSE"):
+        if aou_debug.level() >= 1:
             self.log.setLevel(logging.DEBUG)
+            aou_debug.get_logger()
             self.log.debug("verbose transaction tracing enabled")
 
     # -- clock / reset --------------------------------------------------------
     async def start_clock(self, period_ns=10):
         cocotb.start_soon(Clock(self.dut.ACLK, period_ns, units="ns").start())
+        # Decoded-flit (level 1) and internal-state (level 2) monitors; a no-op
+        # at the default VERBOSE=0, so nothing is started and nothing is logged.
+        aou_debug.start(self.dut)
 
     async def reset(self):
         d = self.dut

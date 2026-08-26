@@ -27,10 +27,22 @@
 static Vaxi_ucie_mem_top* dut = nullptr;
 
 // Opt-in per-beat transaction tracing (parity with the SV/SystemC/cocotb TBs).
-// Set when the AOU_VERBOSE env var is present (`make ... VERBOSE=1` exports it);
-// prints carry the [sim_cov][T] tag.  Default (unset) leaves output unchanged
-// and never affects coverage (measured on RTL, not this harness).
+// On at level >= 1 of the shared VERBOSE=0|1|2 knob (`make ... VERBOSE=1|2`
+// exports AOU_VERBOSE; see README "Debug logging"); prints carry the
+// [sim_cov][T] tag.  Level 0 leaves output unchanged and never affects coverage
+// (which is measured on the RTL, not on this harness).
 static bool g_verbose = false;
+
+// The shared level mapping: 0 = off, 1 = packet + txn, 2 = + internal state.
+// This harness only has a transaction trace, so 1 and 2 behave alike.
+static int aou_level() {
+    const char* v = std::getenv("AOU_VERBOSE");
+    if (v == nullptr || *v == 0) return 0;
+    char* end = nullptr;
+    long l = std::strtol(v, &end, 10);
+    if (end == v) return 1;                 // set but non-numeric == "verbose"
+    return (l < 0) ? 0 : static_cast<int>(l);
+}
 
 // AXI burst-type encodings (AoU carries these in FLEX[1:0]; the boundary AXI
 // interface uses the standard AxBURST values).
@@ -150,7 +162,7 @@ static void axi_read_pipe(int n, const uint32_t* ids, const uint32_t* addrs,
 
 int main(int argc, char** argv) {
     Verilated::commandArgs(argc, argv);
-    g_verbose = (std::getenv("AOU_VERBOSE") != nullptr);
+    g_verbose = (aou_level() >= 1);
     if (g_verbose) printf("[sim_cov][T] verbose transaction tracing enabled\n");
     dut = new Vaxi_ucie_mem_top;
 

@@ -18,6 +18,10 @@ module tb_aou_pack
   import aou_pkg::*;
 ;
 
+  // Shared DV-only flit decoder + VERBOSE=0|1|2 logging helpers.  Included in
+  // the TB only (never in rtl/); at VERBOSE=0 nothing is emitted.
+  `include "aou_flit_log.svh"
+
   int errors = 0;
   int checks = 0;
 
@@ -28,6 +32,11 @@ module tb_aou_pack
         errors = errors + 1;
         $display("[PACK-TB] MISMATCH: %s", what);
       end
+      // level 1: the per-check detail behind the [PACK-TB] PASS count, so a
+      // conformance failure can be located without re-running.
+      if (aou_lvl >= 1)
+        aou_emit($sformatf("[PACK-TB][C] %s check %0d: %s",
+                           cond ? "ok  " : "FAIL", checks, what));
     end
   endtask
 
@@ -68,6 +77,8 @@ module tb_aou_pack
     logic [AOU_STRB512_W-1:0]  ws512;
     logic [AOU_DATA1024_W-1:0] wd1024, rdd1024;
     logic [AOU_STRB1024_W-1:0] ws1024;
+
+    aou_log_init("[PACK-TB]");
 
     // --- stimulus: values chosen to light up every scattered header byte ----
     fdid = 2'b01;                       // FDId[0]=1, FDId[1]=0
@@ -293,6 +304,7 @@ module tb_aou_pack
       $display("[PACK-TB] PASS: %0d checks, 0 errors", checks);
     else
       $display("[PACK-TB] FAIL: %0d checks, %0d errors", checks, errors);
+    aou_log_close();
     $finish;
   end
 

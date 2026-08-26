@@ -28,7 +28,15 @@
 `ifndef TB_AXI_UCIE_OOO_SV
 `define TB_AXI_UCIE_OOO_SV
 
-module tb_axi_ucie_ooo;
+module tb_axi_ucie_ooo
+  import aou_pkg::*;
+;
+
+  // Shared DV-only flit decoder + VERBOSE=0|1|2 logging helpers.  Included in
+  // the TB only (never in rtl/), so VERBOSE=0 emits nothing and the OOO
+  // datapath is untouched.
+  `include "aou_flit_log.svh"
+
 
   localparam int AW         = 32;
   localparam int DW         = 32;
@@ -74,6 +82,8 @@ module tb_axi_ucie_ooo;
   initial ACLK = 1'b0;
   always #5 ACLK = ~ACLK;
 
+  // Level >= 1 ([OOO-TB][T] transaction trace + [OOO-TB][F] decoded flits);
+  // level 2 adds [OOO-TB][D] internal state (see the monitors at the bottom).
   bit verbose;
   int errors, beats, r_overtakes, b_overtakes;
 
@@ -154,7 +164,8 @@ module tb_axi_ucie_ooo;
           // issue order per ID
           pw[w_id[ai]][pw_tail[w_id[ai]]] = ai;
           pw_tail[w_id[ai]]++;
-          if (verbose) $display("[OOO-TB][T] AW  txn %0d id=%0d addr=0x%05h", ai, w_id[ai], w_addr[ai]);
+          if (verbose) aou_emit($sformatf("[OOO-TB][T] AW  txn %0d id=%0d addr=0x%05h",
+                                          ai, w_id[ai], w_addr[ai]));
           ai++;
         end
         if (WVALID && WREADY) wi++;
@@ -168,8 +179,8 @@ module tb_axi_ucie_ooo;
             chk(BRESP === 2'b00, $sformatf("BRESP txn %0d", g));
             if (overtook_w(g)) b_overtakes++;
             w_done[g] = 1'b1;
-            if (verbose) $display("[OOO-TB][T] B   txn %0d id=%0d (issue #%0d, delivery #%0d)",
-                                  g, id, g, bi);
+            if (verbose) aou_emit($sformatf("[OOO-TB][T] B   txn %0d id=%0d (issue #%0d, delivery #%0d)",
+                                            g, id, g, bi));
           end
           bi++;
         end
@@ -195,8 +206,8 @@ module tb_axi_ucie_ooo;
         if (ARVALID && ARREADY) begin
           pr[r_id[ai]][pr_tail[r_id[ai]]] = ai;
           pr_tail[r_id[ai]]++;
-          if (verbose) $display("[OOO-TB][T] AR  txn %0d id=%0d addr=0x%05h len=%0d",
-                                ai, r_id[ai], r_addr[ai], r_len[ai]);
+          if (verbose) aou_emit($sformatf("[OOO-TB][T] AR  txn %0d id=%0d addr=0x%05h len=%0d",
+                                          ai, r_id[ai], r_addr[ai], r_len[ai]));
           ai++;
         end
         if (RVALID && RREADY) begin
@@ -213,8 +224,8 @@ module tb_axi_ucie_ooo;
                           g, id, r_beat_of[id], ea, RDATA, ref_mem[ea[MEM_ADDR_W-1:2]]));
             chk(RLAST === (r_beat_of[id] == int'(r_len[g])),
                 $sformatf("RLAST txn %0d beat %0d", g, r_beat_of[id]));
-            if (verbose) $display("[OOO-TB][T] R   txn %0d id=%0d beat %0d data=0x%08h last=%0b",
-                                  g, id, r_beat_of[id], RDATA, RLAST);
+            if (verbose) aou_emit($sformatf("[OOO-TB][T] R   txn %0d id=%0d beat %0d data=0x%08h last=%0b",
+                                            g, id, r_beat_of[id], RDATA, RLAST));
             if (RLAST) begin
               pr_head[id]++;
               r_beat_of[id] = 0;
@@ -239,8 +250,8 @@ module tb_axi_ucie_ooo;
     ARID = '0; ARADDR = '0; ARLEN = '0; ARSIZE = '0; ARBURST = '0; ARPROT = '0;
     BREADY = 1'b1; RREADY = 1'b1;
     errors = 0; beats = 0; r_overtakes = 0; b_overtakes = 0;
-    verbose = ($test$plusargs("verbose") != 0);
-    if (verbose) $display("[OOO-TB][T] verbose transaction tracing enabled");
+    aou_log_init("[OOO-TB]");
+    verbose = (aou_lvl >= 1);
 
     for (i = 0; i < WORDS; i++) ref_mem[i] = '0;
     for (i = 0; i < NIDS; i++) begin
@@ -312,13 +323,89 @@ module tb_axi_ucie_ooo;
     else
       $display("[OOO-TB] FAIL: %0d read beats checked, %0d R + %0d B different-ID overtakes, %0d errors",
                beats, r_overtakes, b_overtakes, errors);
+    aou_log_close();
     $finish;
+  end
+
+  // --- level 1: decoded AoU flit trace at the UCIe link boundary -------------
+  // Passive observation of the initiator's TX/RX handshakes; no RTL edit.
+  always @(posedge ACLK) begin
+    if ((aou_lvl >= 1) && ARESETn) begin
+      if (dut.g_rp1.init_tx_valid && dut.g_rp1.init_tx_ready)
+        aou_log_flit("A->B", dut.g_rp1.init_tx_data);
+      if (dut.g_rp1.init_rx_valid && dut.g_rp1.init_rx_ready)
+        aou_log_flit("B->A", dut.g_rp1.init_rx_data);
+    end
+  end
+
+  // --- level 2: OOO internal state ------------------------------------------
+  // The two pieces the F2 datapath is debugged from: the target-side OOO
+  // response source's HOLD state (which response is being held back, for how
+  // long, and whether something overtook it) and the initiator-side reorder
+  // buffers' slot occupancy / completion bitmaps.  Read-only hierarchical
+  // references; reported on change.
+  logic       p_hv, p_fs, p_fl;
+  logic [3:0] p_hid;
+  logic [7:0] p_roccr, p_rdoner, p_roccw, p_rdonew;
+  logic [1:0] p_istate;             // ostate_e is 2 bits (rtl initiator bridge)
+  bit         dbg_armed;
+
+  always @(posedge ACLK) begin
+    if (aou_lvl >= 2) begin
+      if (!ARESETn) begin
+        dbg_armed <= 1'b0;
+      end else begin
+        if (!dbg_armed || (dut.g_rp1.u_init.g_ooo.ostate !== p_istate))
+          aou_dbg($sformatf("init.fsm %s",
+                            aou_oinit_state_name(dut.g_rp1.u_init.g_ooo.ostate)));
+        if (!dbg_armed ||
+            (dut.g_rp1.u_tgt.g_ooo_src.u_ooo.h_valid  !== p_hv) ||
+            (dut.g_rp1.u_tgt.g_ooo_src.u_ooo.h_id     !== p_hid) ||
+            (dut.g_rp1.u_tgt.g_ooo_src.u_ooo.fwd_seen !== p_fs) ||
+            (dut.g_rp1.u_tgt.g_ooo_src.u_ooo.flushing !== p_fl))
+          aou_dbg($sformatf("tgt.ooo hold=%0b id=%0d timer=%0d overtaken=%0b flushing=%0b",
+                            dut.g_rp1.u_tgt.g_ooo_src.u_ooo.h_valid,
+                            dut.g_rp1.u_tgt.g_ooo_src.u_ooo.h_id,
+                            dut.g_rp1.u_tgt.g_ooo_src.u_ooo.h_timer,
+                            dut.g_rp1.u_tgt.g_ooo_src.u_ooo.fwd_seen,
+                            dut.g_rp1.u_tgt.g_ooo_src.u_ooo.flushing));
+        if (!dbg_armed ||
+            (8'(dut.g_rp1.u_init.g_ooo.u_rob_r.occ)  !== p_roccr) ||
+            (8'(dut.g_rp1.u_init.g_ooo.u_rob_r.done) !== p_rdoner))
+          aou_dbg($sformatf("init.rob_r occ=0x%02h done=0x%02h head=%0d tail=%0d count=%0d",
+                            dut.g_rp1.u_init.g_ooo.u_rob_r.occ,
+                            dut.g_rp1.u_init.g_ooo.u_rob_r.done,
+                            dut.g_rp1.u_init.g_ooo.u_rob_r.head,
+                            dut.g_rp1.u_init.g_ooo.u_rob_r.tail,
+                            dut.g_rp1.u_init.g_ooo.u_rob_r.count));
+        if (!dbg_armed ||
+            (8'(dut.g_rp1.u_init.g_ooo.u_rob_w.occ)  !== p_roccw) ||
+            (8'(dut.g_rp1.u_init.g_ooo.u_rob_w.done) !== p_rdonew))
+          aou_dbg($sformatf("init.rob_w occ=0x%02h done=0x%02h head=%0d tail=%0d count=%0d",
+                            dut.g_rp1.u_init.g_ooo.u_rob_w.occ,
+                            dut.g_rp1.u_init.g_ooo.u_rob_w.done,
+                            dut.g_rp1.u_init.g_ooo.u_rob_w.head,
+                            dut.g_rp1.u_init.g_ooo.u_rob_w.tail,
+                            dut.g_rp1.u_init.g_ooo.u_rob_w.count));
+        dbg_armed <= 1'b1;
+      end
+      p_istate <= dut.g_rp1.u_init.g_ooo.ostate;
+      p_hv     <= dut.g_rp1.u_tgt.g_ooo_src.u_ooo.h_valid;
+      p_hid    <= dut.g_rp1.u_tgt.g_ooo_src.u_ooo.h_id;
+      p_fs     <= dut.g_rp1.u_tgt.g_ooo_src.u_ooo.fwd_seen;
+      p_fl     <= dut.g_rp1.u_tgt.g_ooo_src.u_ooo.flushing;
+      p_roccr  <= 8'(dut.g_rp1.u_init.g_ooo.u_rob_r.occ);
+      p_rdoner <= 8'(dut.g_rp1.u_init.g_ooo.u_rob_r.done);
+      p_roccw  <= 8'(dut.g_rp1.u_init.g_ooo.u_rob_w.occ);
+      p_rdonew <= 8'(dut.g_rp1.u_init.g_ooo.u_rob_w.done);
+    end
   end
 
   // watchdog — also catches a lost/never-delivered response
   initial begin
     #2000000;
     $display("[OOO-TB] FAIL: timeout (errors=%0d beats=%0d)", errors, beats);
+    aou_log_close();
     $finish;
   end
 

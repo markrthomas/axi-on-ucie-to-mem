@@ -13,8 +13,10 @@ dv/cocotb/fcov.json
 *.fst
 *.vcd
 obj_dir/
+obj_dir_dbg/
 dv/verilator/obj_dir/
 dv/systemc/obj_dir/
+dv/systemc/obj_dir_dbg/
 sim/obj_dir_cov/
 sim/coverage.info
 sim/coverage.dat
@@ -51,3 +53,6 @@ docker/last-run-metrics.json
 
 # Pinned OSS CAD Suite unpacked in-tree by the container image (never committed)
 oss-cad-suite/
+
+# Per-test debug logs written by `make <env> VERBOSE=1|2` (see README)
+logs/
