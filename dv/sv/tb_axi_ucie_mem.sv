@@ -335,7 +335,7 @@ module tb_axi_ucie_mem
           aou_dbg($sformatf("init.fsm %s", aou_init_state_name(dut.g_rp1.u_init.g_inorder.state)));
         if (!dbg_armed || (dut.g_rp1.u_tgt.state !== p_tstate))
           aou_dbg($sformatf("tgt.fsm  %s", aou_tgt_state_name(dut.g_rp1.u_tgt.state)));
-        if (!dbg_armed || (dut.g_rp1.u_init.q_count !== p_qcount))
+        if (!dbg_armed || (8'(dut.g_rp1.u_init.q_count) !== p_qcount))
           aou_dbg($sformatf("init.reqq occupancy=%0d", dut.g_rp1.u_init.q_count));
         if (!dbg_armed ||
             (dut.g_rp1.u_init.cr_wreq   !== p_cwreq)  ||

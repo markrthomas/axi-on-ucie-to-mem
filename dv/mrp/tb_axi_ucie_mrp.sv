@@ -99,6 +99,14 @@ module tb_axi_ucie_mrp
   initial ACLK = 1'b0;
   always #5 ACLK = ~ACLK;
 
+  // Shared DV-only flit decoder + VERBOSE=0|1|2 logging helpers.  Included in
+  // the TB only (never in rtl/), so VERBOSE=0 emits nothing and the multi-plane
+  // datapath is untouched.
+  `include "aou_flit_log.svh"
+
+  // Level >= 1 ([MRP-TB][T] transaction trace + [MRP-TB][F] decoded flits at the
+  // SHARED link, which is where the plane interleaving is visible); level 2 adds
+  // [MRP-TB][D] arbiter grants and per-plane RX-queue depth.
   bit verbose;
   int errors, beats;
 
@@ -155,7 +163,40 @@ module tb_axi_ucie_mrp
         for (int p = 0; p < NP; p++)
           if (dut.g_mrp.u_arb_a.grant[p]) con_grant[p]++;
     end
+    // level 1: decode every flit crossing the SHARED link pair — this is where
+    // the per-plane interleaving the arbiter produces is visible, and the FDId
+    // in each line names the plane the flit belongs to.
+    if (aou_lvl >= 1) begin
+      if (a_fire) aou_log_flit("A->B", dut.g_mrp.u_link_a2b.in_data);
+      if (b_fire) aou_log_flit("B->A", dut.g_mrp.u_link_b2a.in_data);
+    end
+    // level 2: which plane the round-robin arbiter granted, and how deep each
+    // plane's receive queue is at the far end of each link.
+    if (aou_lvl >= 2) begin
+      for (int p = 0; p < NP; p++) begin
+        if (dut.g_mrp.u_arb_a.grant[p] && dut.g_mrp.a2b_link_ready)
+          aou_dbg($sformatf("arb_a grant rp%0d (ready=%b)", p, dut.g_mrp.itx_valid));
+        if (dut.g_mrp.u_arb_b.grant[p] && dut.g_mrp.b2a_link_ready)
+          aou_dbg($sformatf("arb_b grant rp%0d (ready=%b)", p, dut.g_mrp.ttx_valid));
+      end
+      if (dut.g_mrp.u_route_b.g_q[0].u_q.count !== q_b0 ||
+          dut.g_mrp.u_route_b.g_q[1].u_q.count !== q_b1 ||
+          dut.g_mrp.u_route_a.g_q[0].u_q.count !== q_a0 ||
+          dut.g_mrp.u_route_a.g_q[1].u_q.count !== q_a1)
+        aou_dbg($sformatf("rxq depth  B-side rp0=%0d rp1=%0d  A-side rp0=%0d rp1=%0d",
+                          dut.g_mrp.u_route_b.g_q[0].u_q.count,
+                          dut.g_mrp.u_route_b.g_q[1].u_q.count,
+                          dut.g_mrp.u_route_a.g_q[0].u_q.count,
+                          dut.g_mrp.u_route_a.g_q[1].u_q.count));
+      q_b0 <= dut.g_mrp.u_route_b.g_q[0].u_q.count;
+      q_b1 <= dut.g_mrp.u_route_b.g_q[1].u_q.count;
+      q_a0 <= dut.g_mrp.u_route_a.g_q[0].u_q.count;
+      q_a1 <= dut.g_mrp.u_route_a.g_q[1].u_q.count;
+    end
   end
+
+  // previous per-plane RX-queue occupancies (level-2 change detection)
+  logic [4:0] q_b0, q_b1, q_a0, q_a1;
 
   // (a)/(b) per-plane delivery: every flit handed to a plane's bridge must carry
   // that plane's FDId, and every DATA flit's MsgCredit word must be tagged with
@@ -274,8 +315,8 @@ module tb_axi_ucie_mrp
         @(posedge ACLK);
         for (p = 0; p < NP; p++) begin
           if (AWVALID[p] && AWREADY[p]) begin
-            if (verbose) $display("[MRP-TB][T] rp%0d AW  txn %0d addr=0x%05h", p, ai[p],
-                                  t_addr[p][ai[p]]);
+            if (verbose) aou_emit($sformatf("[MRP-TB][T] rp%0d AW  txn %0d addr=0x%05h",
+                                            p, ai[p], t_addr[p][ai[p]]));
             ai[p]++;
           end
           if (WVALID[p] && WREADY[p]) begin
@@ -288,7 +329,7 @@ module tb_axi_ucie_mrp
             chk(BID[p*IW +: IW] === t_id[p][bi[p]],
                 $sformatf("rp%0d BID txn %0d: got %0d exp %0d", p, bi[p],
                           BID[p*IW +: IW], t_id[p][bi[p]]));
-            if (verbose) $display("[MRP-TB][T] rp%0d B   txn %0d", p, bi[p]);
+            if (verbose) aou_emit($sformatf("[MRP-TB][T] rp%0d B   txn %0d", p, bi[p]));
             bi[p]++;
           end
         end
@@ -332,8 +373,8 @@ module tb_axi_ucie_mrp
                 $sformatf("rp%0d txn %0d beat %0d @0x%05h: got 0x%08h exp 0x%08h (cross-plane data leak?)",
                           p, ri[p], rb[p], ea, RDATA[p*DW +: DW],
                           ref_mem[p][ea[MEM_ADDR_W-1:2]]));
-            if (verbose) $display("[MRP-TB][T] rp%0d R   txn %0d beat %0d data=0x%08h",
-                                  p, ri[p], rb[p], RDATA[p*DW +: DW]);
+            if (verbose) aou_emit($sformatf("[MRP-TB][T] rp%0d R   txn %0d beat %0d data=0x%08h",
+                                            p, ri[p], rb[p], RDATA[p*DW +: DW]));
             if (rb[p] == len) begin rb[p] = 0; ri[p]++; end
             else                    rb[p]++;
           end
@@ -447,8 +488,8 @@ module tb_axi_ucie_mrp
     for (p = 0; p < NP; p++) con_grant[p] = 0;
     cr_watch = 1'b0; cr_moves = 0;
     for (p = 0; p < NP; p++) begin tx_cnt[p] = 0; rx_cnt[p] = 0; end
-    verbose = ($test$plusargs("verbose") != 0);
-    if (verbose) $display("[MRP-TB][T] verbose transaction tracing enabled");
+    aou_log_init("[MRP-TB]");
+    verbose = (aou_lvl >= 1);
 
     for (p = 0; p < NP; p++)
       for (i = 0; i < WORDS; i++) ref_mem[p][i] = '0;
@@ -542,6 +583,7 @@ module tb_axi_ucie_mrp
       $display("[MRP-TB] FAIL: %0d planes, %0d read beats checked, A->B flits rp0=%0d rp1=%0d (%0d interleavings), %0d contended cycles won rp0=%0d rp1=%0d, %0d errors",
                NP, beats, tx_cnt[0], tx_cnt[1], a_switch, contend_cyc,
                con_grant[0], con_grant[1], errors);
+    aou_log_close();
     $finish;
   end
 
@@ -550,6 +592,7 @@ module tb_axi_ucie_mrp
     #4000000;
     $display("[MRP-TB] FAIL: timeout (errors=%0d beats=%0d rp0_flits=%0d rp1_flits=%0d)",
              errors, beats, tx_cnt[0], tx_cnt[1]);
+    aou_log_close();
     $finish;
   end
 

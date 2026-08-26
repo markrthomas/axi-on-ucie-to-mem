@@ -16,6 +16,12 @@
 // -----------------------------------------------------------------------------
 `timescale 1ns/1ps
 module tb_aou_reorder;
+
+  // Shared DV-only VERBOSE=0|1|2 logging plumbing (no flit decoder needed here:
+  // aou_reorder carries responses, not flits).  TB-only; at VERBOSE=0 nothing
+  // is emitted.
+  `include "aou_log.svh"
+
   localparam int DEPTH  = 8;
   localparam int ID_W   = 4;
   localparam int DATA_W = 32;
@@ -50,6 +56,10 @@ module tb_aou_reorder;
       errors++;
       $display("[ROB-TB] CHECK FAILED: %s", what);
     end
+    // level 1: per-check detail behind the [ROB-TB] PASS count.
+    if (aou_lvl >= 1)
+      aou_emit($sformatf("[ROB-TB][C] %s check %0d: %s",
+                         (cond === 1'b1) ? "ok  " : "FAIL", checks, what));
   endtask
 
   // issue one transaction (id), returning the tag the DUT allocated
@@ -100,11 +110,30 @@ module tb_aou_reorder;
     rf_tail[id]++;
   endtask
 
+  // --- level 2: reorder-buffer slot state (allocated / completed window) -----
+  logic [DEPTH-1:0] p_occ, p_done;
+  bit               dbg_armed;
+  always @(posedge clk) begin
+    if (aou_lvl >= 2) begin
+      if (!rstn) dbg_armed <= 1'b0;
+      else begin
+        if (!dbg_armed || (dut.occ !== p_occ) || (dut.done !== p_done))
+          aou_dbg($sformatf("rob occ=0x%02h done=0x%02h head=%0d tail=%0d count=%0d out_valid=%0b out_id=%0d",
+                            dut.occ, dut.done, dut.head, dut.tail, dut.count,
+                            out_valid, out_id));
+        dbg_armed <= 1'b1;
+      end
+      p_occ  <= dut.occ;
+      p_done <= dut.done;
+    end
+  end
+
   logic [TAGW-1:0] ta, tb, tc, td, te, tf, tg, th;
   logic [TAGW-1:0] tmp;
   int popped;
 
   initial begin
+    aou_log_init("[ROB-TB]");
     rstn = 1'b0;
     iss_valid = 1'b0; iss_id = '0;
     cmp_valid = 1'b0; cmp_tag = '0; cmp_data = '0;
@@ -184,6 +213,7 @@ module tb_aou_reorder;
 
     if (errors == 0) $display("[ROB-TB] PASS: %0d checks, 0 errors", checks);
     else             $display("[ROB-TB] FAIL: %0d checks, %0d errors", checks, errors);
+    aou_log_close();
     $finish;
   end
 
@@ -191,6 +221,7 @@ module tb_aou_reorder;
   initial begin
     #200000;
     $display("[ROB-TB] FAIL: timeout (checks=%0d errors=%0d)", checks, errors);
+    aou_log_close();
     $finish;
   end
 endmodule
