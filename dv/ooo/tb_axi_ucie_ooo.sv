@@ -347,7 +347,7 @@ module tb_axi_ucie_ooo
   logic       p_hv, p_fs, p_fl;
   logic [3:0] p_hid;
   logic [7:0] p_roccr, p_rdoner, p_roccw, p_rdonew;
-  logic [2:0] p_istate;
+  logic [1:0] p_istate;             // ostate_e is 2 bits (rtl initiator bridge)
   bit         dbg_armed;
 
   always @(posedge ACLK) begin
