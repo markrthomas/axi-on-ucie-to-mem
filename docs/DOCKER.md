@@ -236,6 +236,22 @@ log-latency tradeoff to keep the pinned tools working. Output bytes are unchange
 either way, so every banner/baseline (incl. the SystemC `sc.log` diff) stays
 byte-identical.
 
+### Log-volume filtering on Railway (rate-limit safe)
+
+`make ci` is very chatty — Verilator's generated build echoes a ~500-char `g++`
+command **per source file** across the ~7 Verilator-building envs. Railway
+rate-limits log **ingestion** (~500 lines/s + a volume cap), so an unfiltered gate
+**maxes the limit**, drops lines, and buries the useful banners. So on Railway
+(auto-detected via the injected `RAILWAY_*` env vars) `docker/entrypoint.sh`
+forwards only the **signal** — `[BRACKET]` banners, warnings, errors, `PASS`/`FAIL`
+— to the log stream, while the **full** transcript is tee'd to `/tmp/aou-ci-full.log`
+and, on a non-zero exit, the last 200 lines are dumped so a red run stays
+debuggable. Everywhere else (local `docker run`, GitHub CI — which doesn't use the
+entrypoint anyway) the gate streams **verbatim**, unchanged. Override with
+`AOU_CI_QUIET=1|0`. The exit status is always `make`'s (via `PIPESTATUS`), never
+`grep`'s, so filtering can't mask a failure. The gate itself is untouched — this
+only changes what is *forwarded* to a rate-limited sink.
+
 ---
 
 ## Headless Claude Code agent mode
