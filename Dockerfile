@@ -45,6 +45,15 @@ ARG PYUVM_VERSION=4.0.1
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Force a UTF-8 locale + Python I/O encoding. The cloud (Railway/CI) starts the
+# container under a C/POSIX locale, which makes Python's stdout fall back to the
+# ASCII codec. Printing any non-ASCII char then raises UnicodeEncodeError and
+# aborts the run — e.g. the em-dash in the cocotb "[COV-FUNC] AXI functional
+# coverage —" banner (crashed the write_read_test on Railway). ubuntu:24.04 ships
+# C.UTF-8 built in, so this needs no locale-gen. Byte-identical output on a
+# UTF-8-capable sink; it only stops the crash on an ASCII one.
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONIOENCODING=UTF-8 PYTHONUTF8=1
+
 # --- RTL tools (Icarus + SystemC) + build/runtime deps, from apt --------------
 # iverilog: cocotb VPI + the Icarus directed/pack/act/reorder flows.
 # libsystemc-dev: SystemC 2.3.3 headers + libsystemc.so for the SystemC TB.
