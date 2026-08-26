@@ -13,8 +13,10 @@ dv/cocotb/fcov.json
 *.fst
 *.vcd
 obj_dir/
+obj_dir_dbg/
 dv/verilator/obj_dir/
 dv/systemc/obj_dir/
+dv/systemc/obj_dir_dbg/
 sim/obj_dir_cov/
 sim/coverage.info
 sim/coverage.dat

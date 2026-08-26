@@ -29,7 +29,14 @@ SIM_CMD_PREFIX    := env -u VIRTUAL_ENV -u PYTHONHOME
 export PYGPI_PYTHON_BIN := $(shell cocotb-config --python-bin)
 export PYTHON_BIN       := $(shell cocotb-config --python-bin)
 
-export PYTHONPATH := $(PWD):$(PYTHONPATH)
+# dv/common holds the shared flit decoder (aou_flit_log.py), the Python mirror
+# of dv/common/aou_flit_log.svh used by the VERBOSE=1|2 packet trace.
+export PYTHONPATH := $(PWD):$(PWD)/../common:$(PYTHONPATH)
+
+# Per-test debug log location (repo root exports it; keep a default so this
+# Makefile also works when invoked directly).
+AOU_LOG_DIR ?= $(abspath ../../logs)
+export AOU_LOG_DIR
 
 # Icarus needs SystemVerilog turned on explicitly.
 COMPILE_ARGS += -g2012

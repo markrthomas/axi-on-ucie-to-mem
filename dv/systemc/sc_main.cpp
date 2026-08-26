@@ -7,16 +7,81 @@
 // testbenches so all environments cross-check the same design.  Exits non-zero
 // (and prints "[SC-TB] FAIL") on any mismatch; the Makefile also greps for the
 // PASS banner.
+//
+// Debug logging (VERBOSE=0|1|2, see README "Debug logging").  Unlike the SV /
+// cocotb environments, the SystemC verbose lines go to the per-test log file
+// ONLY, never to stdout: dv/systemc/sc.log is a COMMITTED baseline, so keeping
+// stdout free of trace lines leaves it byte-identical at every level.
+//   * level 1 — decoded AoU flit lines + the per-beat AXI transaction trace,
+//   * level 2 — plus internal DUT state (bridge/activation FSMs, §6 credits,
+//     initiator request-queue occupancy).
+// Levels 1 and 2 need to see inside the DUT, which a Verilator --sc model does
+// not expose, so that build verilates the DV-only observation wrapper
+// dv/systemc/aou_sc_dbg_top.sv instead (AOU_SC_DBG).  The default VERBOSE=0
+// build is unchanged: plain axi_ucie_mem_top, no wrapper, no log file.
 // -----------------------------------------------------------------------------
+#ifdef AOU_SC_DBG
+#include "Vaou_sc_dbg_top.h"
+typedef Vaou_sc_dbg_top Vdut;
+#else
 #include "Vaxi_ucie_mem_top.h"
+typedef Vaxi_ucie_mem_top Vdut;
+#endif
 #include <systemc.h>
 
 #include <cstdint>
 #include <cstdlib>
+#include <fstream>
 #include <map>
+#include <string>
+
+#ifdef AOU_SC_DBG
+#include "aou_flit_log.h"
+#endif
 
 static const int      MEM_ADDR_W = 16;
 static const uint32_t WORDS      = 1u << (MEM_ADDR_W - 2);
+
+// --- verbosity level + per-test log file -------------------------------------
+namespace dbg {
+
+inline int level() {
+  const char* v = std::getenv("AOU_VERBOSE");
+  if (v == nullptr || *v == 0) return 0;
+  char* end = nullptr;
+  long l = std::strtol(v, &end, 10);
+  if (end == v) return 1;                 // set but non-numeric == "verbose"
+  return (l < 0) ? 0 : (int)l;
+}
+
+inline std::string path() {
+  const char* f = std::getenv("AOU_LOG_FILE");
+  if (f != nullptr && *f != 0) return f;
+  const char* d = std::getenv("AOU_LOG_DIR");
+  return std::string(d != nullptr && *d != 0 ? d : "../../logs") + "/systemc.log";
+}
+
+// The log file, opened on first use (only ever reached at level >= 1), and a
+// discarding sink used when it could not be opened.
+inline std::ostream& out() {
+  static std::ofstream fs;
+  static std::ostream null_sink(nullptr);
+  static bool tried = false;
+  if (!tried) {
+    tried = true;
+    fs.open(path().c_str(), std::ios::out | std::ios::trunc);
+    if (fs.is_open())
+      fs << "[SC-TB][V] verbose level " << level() << ", log file '"
+         << path() << "'\n";
+  }
+  return fs.is_open() ? static_cast<std::ostream&>(fs) : null_sink;
+}
+
+inline long t_ns() {
+  return (long)(sc_time_stamp() / sc_time(1, SC_NS));
+}
+
+}  // namespace dbg
 
 SC_MODULE(Stim) {
   sc_in<bool>      clk;
@@ -38,11 +103,11 @@ SC_MODULE(Stim) {
   int                        reads  = 0;
   std::map<uint32_t, uint32_t> ref;
 
-  // Opt-in per-beat transaction tracing into sc.log; enabled when the
-  // AOU_VERBOSE env var is set (the repo-root `make ... VERBOSE=1` exports it).
-  // Trace lines carry the [SC-TB][T] tag; default (unset) leaves sc.log
-  // byte-identical.
-  bool verbose = (std::getenv("AOU_VERBOSE") != nullptr);
+  // Opt-in per-beat transaction tracing; enabled at VERBOSE>=1 (the repo-root
+  // `make ... VERBOSE=1|2` exports AOU_VERBOSE).  Trace lines carry the
+  // [SC-TB][T] tag and go to the per-test log file, so sc.log stays
+  // byte-identical at every level.
+  bool verbose = (dbg::level() >= 1);
 
   SC_CTOR(Stim) { SC_THREAD(run); sensitive << clk.pos(); }
 
@@ -61,7 +126,7 @@ SC_MODULE(Stim) {
     }
     do { wait(); } while (!BVALID.read());
     if (verbose)
-      std::cout << "[SC-TB][T] W   addr=0x" << std::hex << addr << " data=0x"
+      dbg::out() << "[SC-TB][T] W   addr=0x" << std::hex << addr << " data=0x"
                 << data << " resp=" << std::dec << BRESP.read() << "\n";
     if (BRESP.read() != 0) { errors++; std::cout << "[SC-TB] bad BRESP\n"; }
     wait();
@@ -77,7 +142,7 @@ SC_MODULE(Stim) {
     do { wait(); } while (!RVALID.read());
     uint32_t d = RDATA.read();
     if (verbose)
-      std::cout << "[SC-TB][T] R   addr=0x" << std::hex << addr << " data=0x"
+      dbg::out() << "[SC-TB][T] R   addr=0x" << std::hex << addr << " data=0x"
                 << d << " resp=" << std::dec << RRESP.read() << "\n";
     if (RRESP.read() != 0) { errors++; std::cout << "[SC-TB] bad RRESP\n"; }
     wait();
@@ -109,7 +174,7 @@ SC_MODULE(Stim) {
     AWBURST.write(burst); AWPROT.write(0); AWVALID.write(true); BREADY.write(true);
     do { wait(); } while (!AWREADY.read());
     if (verbose)
-      std::cout << "[SC-TB][T] AW  id=" << id << " addr=0x" << std::hex << addr
+      dbg::out() << "[SC-TB][T] AW  id=" << id << " addr=0x" << std::hex << addr
                 << std::dec << " len=" << len << " burst=" << burst << "\n";
     AWVALID.write(false);
     uint32_t a = addr;
@@ -118,7 +183,7 @@ SC_MODULE(Stim) {
       WDATA.write(dv); WSTRB.write(0xF); WLAST.write(k == len); WVALID.write(true);
       do { wait(); } while (!WREADY.read());
       if (verbose)
-        std::cout << "[SC-TB][T] W   beat " << k << " addr=0x" << std::hex << a
+        dbg::out() << "[SC-TB][T] W   beat " << k << " addr=0x" << std::hex << a
                   << " data=0x" << dv << std::dec << " last=" << (k == len) << "\n";
       ref[a] = dv;
       a = next_addr(a, addr, burst, SZ4, len);
@@ -126,7 +191,7 @@ SC_MODULE(Stim) {
     }
     do { wait(); } while (!BVALID.read());
     if (verbose)
-      std::cout << "[SC-TB][T] B   id=" << BID.read() << " resp=" << BRESP.read() << "\n";
+      dbg::out() << "[SC-TB][T] B   id=" << BID.read() << " resp=" << BRESP.read() << "\n";
     if (BRESP.read() != 0) { errors++; std::cout << "[SC-TB] bad BRESP\n"; }
     if (BID.read() != id)  { errors++; std::cout << "[SC-TB] BID mismatch\n"; }
     wait();
@@ -140,7 +205,7 @@ SC_MODULE(Stim) {
     ARBURST.write(burst); ARPROT.write(0); ARVALID.write(true); RREADY.write(true);
     do { wait(); } while (!ARREADY.read());
     if (verbose)
-      std::cout << "[SC-TB][T] AR  id=" << id << " addr=0x" << std::hex << addr
+      dbg::out() << "[SC-TB][T] AR  id=" << id << " addr=0x" << std::hex << addr
                 << std::dec << " len=" << len << " burst=" << burst << "\n";
     ARVALID.write(false);
     uint32_t a = addr;
@@ -148,7 +213,7 @@ SC_MODULE(Stim) {
       do { wait(); } while (!RVALID.read());
       uint32_t exp = ref.count(a) ? ref[a] : 0;
       if (verbose)
-        std::cout << "[SC-TB][T] R   beat " << k << " addr=0x" << std::hex << a
+        dbg::out() << "[SC-TB][T] R   beat " << k << " addr=0x" << std::hex << a
                   << " data=0x" << RDATA.read() << std::dec << " resp=" << RRESP.read()
                   << " id=" << RID.read() << " last=" << RLAST.read() << "\n";
       check(a, RDATA.read(), exp);
@@ -174,7 +239,7 @@ SC_MODULE(Stim) {
       ARVALID.write(true);
       do { wait(); } while (!ARREADY.read());
       if (verbose)
-        std::cout << "[SC-TB][T] AR  (mo) id=" << ids[i] << " addr=0x" << std::hex
+        dbg::out() << "[SC-TB][T] AR  (mo) id=" << ids[i] << " addr=0x" << std::hex
                   << addrs[i] << std::dec << " len=" << lens[i] << "\n";
       ARVALID.write(false);
       wait();                              // gap cycle between handshakes
@@ -186,7 +251,7 @@ SC_MODULE(Stim) {
         do { wait(); } while (!RVALID.read());
         uint32_t exp = ref.count(a) ? ref[a] : 0;
         if (verbose)
-          std::cout << "[SC-TB][T] R   (mo) req " << i << " beat " << k << " addr=0x"
+          dbg::out() << "[SC-TB][T] R   (mo) req " << i << " beat " << k << " addr=0x"
                     << std::hex << a << " data=0x" << RDATA.read() << std::dec
                     << " id=" << RID.read() << " last=" << RLAST.read() << "\n";
         check(a, RDATA.read(), exp);
@@ -211,7 +276,7 @@ SC_MODULE(Stim) {
 
   void run() {
     if (verbose)
-      std::cout << "[SC-TB][T] verbose transaction tracing enabled\n";
+      dbg::out() << "[SC-TB][T] verbose transaction tracing enabled\n";
     // idle + reset
     ARESETn.write(false);
     AWVALID.write(false); WVALID.write(false); ARVALID.write(false);
@@ -286,6 +351,121 @@ SC_MODULE(Stim) {
   }
 };
 
+#ifdef AOU_SC_DBG
+// -----------------------------------------------------------------------------
+// Mon : the level-1 / level-2 observer.  Reads ONLY the dbg_* observation ports
+// that dv/systemc/aou_sc_dbg_top.sv re-exports (each one a hierarchical read of
+// a signal the design already drives), decodes flits with the shared
+// dv/common/aou_flit_log.h renderer, and writes to the per-test log file.
+// -----------------------------------------------------------------------------
+SC_MODULE(Mon) {
+  sc_in<bool>      clk;
+  sc_in<bool>      ARESETn;
+  sc_in<bool>      a2b_fire;   sc_in<sc_bv<aou::PLP_BITS> > a2b_data;
+  sc_in<bool>      b2a_fire;   sc_in<sc_bv<aou::PLP_BITS> > b2a_data;
+  sc_in<uint32_t>  i_act, t_act, i_fsm, t_fsm, i_qcount;
+  sc_in<uint32_t>  i_cr_wreq, i_cr_rreq, i_cr_wdata, i_ret_rdata, i_ret_wresp;
+  sc_in<uint32_t>  t_cr_rdata, t_cr_wresp, t_ret_wreq, t_ret_rreq, t_ret_wdata;
+
+  int  lvl;
+  bool armed = false;
+  uint32_t p_iact = 0, p_tact = 0, p_ifsm = 0, p_tfsm = 0, p_q = 0;
+  uint32_t p_icr[5] = {0, 0, 0, 0, 0};
+  uint32_t p_tcr[5] = {0, 0, 0, 0, 0};
+
+  SC_CTOR(Mon) : lvl(dbg::level()) { SC_THREAD(run); sensitive << clk.pos(); }
+
+  // rtl/aou_axi_initiator_bridge.sv state_e / aou_axi_target_bridge.sv state_e /
+  // aou_activation.sv act_e — the same names the SV and cocotb envs print.
+  static const char* init_state(uint32_t s) {
+    static const char* n[] = {"S_IDLE", "S_WREQ", "S_WDATA", "S_WWAIT", "S_B",
+                              "S_RREQ", "S_RDATA"};
+    return (s < 7) ? n[s] : "S_?";
+  }
+  static const char* tgt_state(uint32_t s) {
+    static const char* n[] = {"S_IDLE", "S_WBEAT", "S_WRESP", "S_RBEAT"};
+    return (s < 4) ? n[s] : "S_?";
+  }
+  static const char* act_state(uint32_t s) {
+    static const char* n[] = {"ACT_DISABLED", "ACT_ACTIVATE", "ACT_ENABLED",
+                              "ACT_DEACTIVATE", "ACT_ERROR"};
+    return (s < 5) ? n[s] : "ACT_?";
+  }
+
+  static aou::Flit to_flit(const sc_bv<aou::PLP_BITS>& v) {
+    aou::Flit f;
+    for (int i = 0; i < aou::PLP_BYTES; i++) {
+      uint8_t byte = 0;
+      for (int k = 0; k < 8; k++)
+        byte = (uint8_t)((byte << 1) | (v[aou::PLP_BITS - 1 - (i * 8 + k)].to_bool() ? 1 : 0));
+      f.b[i] = byte;
+    }
+    return f;
+  }
+
+  void emit_flit(const char* dir, const sc_bv<aou::PLP_BITS>& v) {
+    aou::Flit f = to_flit(v);
+    std::vector<std::string> lines = aou::decode_flit(f);
+    for (size_t i = 0; i < lines.size(); i++)
+      dbg::out() << "[SC-TB][F] t=" << dbg::t_ns() << " " << dir << " "
+                 << lines[i] << "\n";
+  }
+
+  void dbg_line(const std::string& s) {
+    dbg::out() << "[SC-TB][D] t=" << dbg::t_ns() << " " << s << "\n";
+  }
+
+  void run() {
+    char buf[256];
+    while (true) {
+      wait();
+      if (lvl < 1 || !ARESETn.read()) continue;
+      if (a2b_fire.read()) emit_flit("A->B", a2b_data.read());
+      if (b2a_fire.read()) emit_flit("B->A", b2a_data.read());
+      if (lvl < 2) continue;
+      uint32_t icr[5] = {i_cr_wreq.read(), i_cr_rreq.read(), i_cr_wdata.read(),
+                         i_ret_rdata.read(), i_ret_wresp.read()};
+      uint32_t tcr[5] = {t_cr_rdata.read(), t_cr_wresp.read(), t_ret_wreq.read(),
+                         t_ret_rreq.read(), t_ret_wdata.read()};
+      if (!armed || i_act.read() != p_iact)
+        dbg_line(std::string("init.act ") + act_state(i_act.read()));
+      if (!armed || t_act.read() != p_tact)
+        dbg_line(std::string("tgt.act  ") + act_state(t_act.read()));
+      if (!armed || i_fsm.read() != p_ifsm)
+        dbg_line(std::string("init.fsm ") + init_state(i_fsm.read()));
+      if (!armed || t_fsm.read() != p_tfsm)
+        dbg_line(std::string("tgt.fsm  ") + tgt_state(t_fsm.read()));
+      if (!armed || i_qcount.read() != p_q) {
+        std::snprintf(buf, sizeof(buf), "init.reqq occupancy=%u", i_qcount.read());
+        dbg_line(buf);
+      }
+      bool icr_ch = !armed;
+      bool tcr_ch = !armed;
+      for (int k = 0; k < 5; k++) {
+        if (icr[k] != p_icr[k]) icr_ch = true;
+        if (tcr[k] != p_tcr[k]) tcr_ch = true;
+      }
+      if (icr_ch) {
+        std::snprintf(buf, sizeof(buf),
+                      "init.credits held(wreq=%u rreq=%u wdata=%u) owed(rdata=%u wresp=%u)",
+                      icr[0], icr[1], icr[2], icr[3], icr[4]);
+        dbg_line(buf);
+      }
+      if (tcr_ch) {
+        std::snprintf(buf, sizeof(buf),
+                      "tgt.credits  held(rdata=%u wresp=%u) owed(wreq=%u rreq=%u wdata=%u)",
+                      tcr[0], tcr[1], tcr[2], tcr[3], tcr[4]);
+        dbg_line(buf);
+      }
+      p_iact = i_act.read(); p_tact = t_act.read();
+      p_ifsm = i_fsm.read(); p_tfsm = t_fsm.read(); p_q = i_qcount.read();
+      for (int k = 0; k < 5; k++) { p_icr[k] = icr[k]; p_tcr[k] = tcr[k]; }
+      armed = true;
+    }
+  }
+};
+#endif  // AOU_SC_DBG
+
 int sc_main(int, char**) {
   sc_clock clk("clk", 10, SC_NS);
   sc_signal<bool>     ARESETn, AWVALID, AWREADY, WLAST, WVALID, WREADY,
@@ -295,7 +475,7 @@ int sc_main(int, char**) {
                       ARID, ARADDR, ARLEN, ARSIZE, ARBURST, ARPROT,
                       RID, RDATA, RRESP;
 
-  Vaxi_ucie_mem_top dut("dut");
+  Vdut dut("dut");
   dut.ACLK(clk);       dut.ARESETn(ARESETn);
   dut.AWID(AWID); dut.AWADDR(AWADDR); dut.AWLEN(AWLEN); dut.AWSIZE(AWSIZE);
   dut.AWBURST(AWBURST); dut.AWPROT(AWPROT); dut.AWVALID(AWVALID); dut.AWREADY(AWREADY);
@@ -305,6 +485,42 @@ int sc_main(int, char**) {
   dut.ARBURST(ARBURST); dut.ARPROT(ARPROT); dut.ARVALID(ARVALID); dut.ARREADY(ARREADY);
   dut.RID(RID); dut.RDATA(RDATA); dut.RRESP(RRESP); dut.RLAST(RLAST);
   dut.RVALID(RVALID);  dut.RREADY(RREADY);
+
+#ifdef AOU_SC_DBG
+  // DV-only observation ports of aou_sc_dbg_top (see that file's header).
+  sc_signal<bool>                    dbg_a2b_fire, dbg_b2a_fire;
+  sc_signal<sc_bv<aou::PLP_BITS> >   dbg_a2b_data, dbg_b2a_data;
+  sc_signal<uint32_t> dbg_i_act, dbg_t_act, dbg_i_fsm, dbg_t_fsm, dbg_i_qcount,
+                      dbg_i_cr_wreq, dbg_i_cr_rreq, dbg_i_cr_wdata,
+                      dbg_i_ret_rdata, dbg_i_ret_wresp,
+                      dbg_t_cr_rdata, dbg_t_cr_wresp,
+                      dbg_t_ret_wreq, dbg_t_ret_rreq, dbg_t_ret_wdata;
+  dut.dbg_a2b_fire(dbg_a2b_fire);   dut.dbg_a2b_data(dbg_a2b_data);
+  dut.dbg_b2a_fire(dbg_b2a_fire);   dut.dbg_b2a_data(dbg_b2a_data);
+  dut.dbg_i_act(dbg_i_act);         dut.dbg_t_act(dbg_t_act);
+  dut.dbg_i_fsm(dbg_i_fsm);         dut.dbg_t_fsm(dbg_t_fsm);
+  dut.dbg_i_qcount(dbg_i_qcount);
+  dut.dbg_i_cr_wreq(dbg_i_cr_wreq); dut.dbg_i_cr_rreq(dbg_i_cr_rreq);
+  dut.dbg_i_cr_wdata(dbg_i_cr_wdata);
+  dut.dbg_i_ret_rdata(dbg_i_ret_rdata); dut.dbg_i_ret_wresp(dbg_i_ret_wresp);
+  dut.dbg_t_cr_rdata(dbg_t_cr_rdata);   dut.dbg_t_cr_wresp(dbg_t_cr_wresp);
+  dut.dbg_t_ret_wreq(dbg_t_ret_wreq);   dut.dbg_t_ret_rreq(dbg_t_ret_rreq);
+  dut.dbg_t_ret_wdata(dbg_t_ret_wdata);
+
+  Mon mon("mon");
+  mon.clk(clk);                     mon.ARESETn(ARESETn);
+  mon.a2b_fire(dbg_a2b_fire);       mon.a2b_data(dbg_a2b_data);
+  mon.b2a_fire(dbg_b2a_fire);       mon.b2a_data(dbg_b2a_data);
+  mon.i_act(dbg_i_act);             mon.t_act(dbg_t_act);
+  mon.i_fsm(dbg_i_fsm);             mon.t_fsm(dbg_t_fsm);
+  mon.i_qcount(dbg_i_qcount);
+  mon.i_cr_wreq(dbg_i_cr_wreq);     mon.i_cr_rreq(dbg_i_cr_rreq);
+  mon.i_cr_wdata(dbg_i_cr_wdata);
+  mon.i_ret_rdata(dbg_i_ret_rdata); mon.i_ret_wresp(dbg_i_ret_wresp);
+  mon.t_cr_rdata(dbg_t_cr_rdata);   mon.t_cr_wresp(dbg_t_cr_wresp);
+  mon.t_ret_wreq(dbg_t_ret_wreq);   mon.t_ret_rreq(dbg_t_ret_rreq);
+  mon.t_ret_wdata(dbg_t_ret_wdata);
+#endif
 
   Stim stim("stim");
   stim.clk(clk);       stim.ARESETn(ARESETn);
