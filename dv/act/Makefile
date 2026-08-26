@@ -26,7 +26,12 @@ AOU_LOG_DIR ?= $(abspath ../../logs)
 LOGARGS  = $(if $(AOU_VERBOSE),+verbose=$(AOU_VERBOSE) +logfile=$(AOU_LOG_DIR)/act_$(1).log,)
 MKLOGDIR = $(if $(AOU_VERBOSE),mkdir -p $(AOU_LOG_DIR),true)
 
-.PHONY: all icarus verilator clean
+# Dev-only waveform dump (see dv/common/aou_wave_dump.svh and dv/waves/).  The
+# dump hook is compiled ONLY under -DAOU_WAVES, so every gate target below
+# builds the very same TB without a single dump statement elaborated.
+WAVE_FST := $(CURDIR)/sim_build/tb_aou_act.fst
+
+.PHONY: all icarus verilator waves clean
 all: icarus verilator
 
 icarus:
@@ -50,6 +55,16 @@ verilator:
 	./obj_dir/vact $(call LOGARGS,verilator) 2>&1 | tee sim_build/verilator.log; \
 	grep -q "$(PASS_RE)" sim_build/verilator.log || { echo "[ACT] Verilator run FAILED"; exit 1; }; \
 	echo "[ACT] Verilator PASSED"
+
+# --- waves (Icarus + FST; dev-only, never part of a gate) --------------------
+# vvp picks the FST writer at RUN time through its `-fst` extended argument.
+waves:
+	@mkdir -p sim_build
+	$(IVERILOG) -g2012 -I$(INC_DIR) -DAOU_WAVES -DAOU_WAVE_FILE='"$(WAVE_FST)"' \
+		-s $(TOP) -o sim_build/act_waves.vvp $(RTL) $(TB)
+	@$(MKLOGDIR)
+	@$(VVP) sim_build/act_waves.vvp -fst $(call LOGARGS,waves)
+	@echo "[WAVES] wrote $(WAVE_FST)"
 
 clean:
 	rm -rf sim_build obj_dir

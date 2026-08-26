@@ -1,0 +1,166 @@
+[*] AoU layout : cocotb write_read_test - one write, then the read-back.
+[*]
+[*] Emphasis: the WRITE half of the chain end to end (AW/W -> WriteReq/WriteData
+[*] flit -> memory write -> WriteResp flit -> B), then the READ that must return
+[*] the same word.  The memory's captured write address/data/strobe sit next to
+[*] the AXI beat so a wrong-word write is one glance.
+[*]
+[*] wave-check: env=cocotb
+[dumpfile] "dv/cocotb/sim_build/axi_ucie_mem_top.fst"
+[timestart] 0
+[sst_width] 300
+[signals_width] 380
+[pane_width] 1240
+[treeopen] axi_ucie_mem_top.
+[treeopen] axi_ucie_mem_top.g_rp1.
+[pattern_trace] 1
+[pattern_trace] 0
+@800200
+-Clock / Reset
+@28
+axi_ucie_mem_top.ACLK
+axi_ucie_mem_top.ARESETn
+@1000200
+-Clock / Reset
+@800200
+-AXI front door : write address + data
+@22
+axi_ucie_mem_top.AWID[3:0]
+axi_ucie_mem_top.AWADDR[31:0]
+@28
+axi_ucie_mem_top.AWVALID
+axi_ucie_mem_top.AWREADY
+@22
+axi_ucie_mem_top.WDATA[31:0]
+axi_ucie_mem_top.WSTRB[3:0]
+@28
+axi_ucie_mem_top.WLAST
+axi_ucie_mem_top.WVALID
+axi_ucie_mem_top.WREADY
+@1000200
+-AXI front door : write address + data
+@800200
+-AXI front door : write response
+@22
+axi_ucie_mem_top.BID[3:0]
+axi_ucie_mem_top.BRESP[1:0]
+@28
+axi_ucie_mem_top.BVALID
+axi_ucie_mem_top.BREADY
+@1000200
+-AXI front door : write response
+@800200
+-AXI front door : read address + data
+@22
+axi_ucie_mem_top.ARID[3:0]
+axi_ucie_mem_top.ARADDR[31:0]
+@28
+axi_ucie_mem_top.ARVALID
+axi_ucie_mem_top.ARREADY
+@22
+axi_ucie_mem_top.RID[3:0]
+axi_ucie_mem_top.RDATA[31:0]
+axi_ucie_mem_top.RRESP[1:0]
+@28
+axi_ucie_mem_top.RLAST
+axi_ucie_mem_top.RVALID
+axi_ucie_mem_top.RREADY
+@1000200
+-AXI front door : read address + data
+@800200
+-AoU initiator bridge (chiplet A)
+@22
++{init FSM state} axi_ucie_mem_top.g_rp1.u_init.g_inorder.state[2:0]
++{queued addr} axi_ucie_mem_top.g_rp1.u_init.addr_q[31:0]
++{queued ID} axi_ucie_mem_top.g_rp1.u_init.id_q[3:0]
++{queued WDATA} axi_ucie_mem_top.g_rp1.u_init.wdata_q[31:0]
++{queued WSTRB} axi_ucie_mem_top.g_rp1.u_init.wstrb_q[3:0]
+@28
++{WReq funded} axi_ucie_mem_top.g_rp1.u_init.wreq_ok
++{WData funded} axi_ucie_mem_top.g_rp1.u_init.wdata_ok
++{RReq funded} axi_ucie_mem_top.g_rp1.u_init.rreq_ok
++{link ENABLED} axi_ucie_mem_top.g_rp1.u_init.act_enabled
+@1000200
+-AoU initiator bridge (chiplet A)
+@800200
+-UCIe flit link : A -> B (requests)
+@28
+axi_ucie_mem_top.g_rp1.init_tx_valid
+axi_ucie_mem_top.g_rp1.init_tx_ready
+axi_ucie_mem_top.g_rp1.a2b_valid
+axi_ucie_mem_top.g_rp1.a2b_ready
+@22
++{rx MsgType} axi_ucie_mem_top.g_rp1.u_tgt.in_mt[3:0]
++{rx Tag} axi_ucie_mem_top.g_rp1.u_tgt.in_tag[3:0]
++{rx Addr} axi_ucie_mem_top.g_rp1.u_tgt.in_addr[63:0]
++{rx WData} axi_ucie_mem_top.g_rp1.u_tgt.in_wdata[255:0]
++{rx WStrb} axi_ucie_mem_top.g_rp1.u_tgt.in_wstrb[31:0]
+@1000200
+-UCIe flit link : A -> B (requests)
+@800200
+-UCIe flit link : B -> A (responses)
+@28
+axi_ucie_mem_top.g_rp1.tgt_tx_valid
+axi_ucie_mem_top.g_rp1.tgt_tx_ready
+axi_ucie_mem_top.g_rp1.b2a_valid
+axi_ucie_mem_top.g_rp1.b2a_ready
+@22
++{tgt rsp RDATA} axi_ucie_mem_top.g_rp1.u_tgt.rdata_q[31:0]
++{tgt rsp BRESP} axi_ucie_mem_top.g_rp1.u_tgt.bresp_q[1:0]
+@1000200
+-UCIe flit link : B -> A (responses)
+@800200
+-Sec 6 credits
+@24
++{A: WReq crd} axi_ucie_mem_top.g_rp1.u_init.cr_wreq[7:0]
++{A: WData crd} axi_ucie_mem_top.g_rp1.u_init.cr_wdata[7:0]
++{A: RReq crd} axi_ucie_mem_top.g_rp1.u_init.cr_rreq[7:0]
++{B: WResp crd} axi_ucie_mem_top.g_rp1.u_tgt.cr_wresp[7:0]
++{B: RData crd} axi_ucie_mem_top.g_rp1.u_tgt.cr_rdata[7:0]
+@1000200
+-Sec 6 credits
+@800200
+-AoU target bridge (chiplet B)
+@22
++{tgt FSM state} axi_ucie_mem_top.g_rp1.u_tgt.state[2:0]
+axi_ucie_mem_top.g_rp1.u_tgt.addr_q[31:0]
+axi_ucie_mem_top.g_rp1.u_tgt.id_q[3:0]
+axi_ucie_mem_top.g_rp1.u_tgt.tag_q[3:0]
+@28
+axi_ucie_mem_top.g_rp1.u_tgt.wpending
+axi_ucie_mem_top.g_rp1.u_tgt.rpending
+@1000200
+-AoU target bridge (chiplet B)
+@800200
+-Memory AXI-Lite port + array write
+@22
+axi_ucie_mem_top.g_rp1.m_awaddr[31:0]
+@28
+axi_ucie_mem_top.g_rp1.m_awvalid
+axi_ucie_mem_top.g_rp1.m_awready
+@22
+axi_ucie_mem_top.g_rp1.m_wdata[31:0]
+axi_ucie_mem_top.g_rp1.m_wstrb[3:0]
+@28
+axi_ucie_mem_top.g_rp1.m_wvalid
+axi_ucie_mem_top.g_rp1.m_wready
+@22
++{mem: captured addr} axi_ucie_mem_top.g_rp1.u_mem.awaddr_q[13:0]
++{mem: captured data} axi_ucie_mem_top.g_rp1.u_mem.wdata_q[31:0]
++{mem: captured strb} axi_ucie_mem_top.g_rp1.u_mem.wstrb_q[3:0]
+@28
++{mem: array write} axi_ucie_mem_top.g_rp1.u_mem.do_write
+axi_ucie_mem_top.g_rp1.m_bvalid
+axi_ucie_mem_top.g_rp1.m_bready
+@22
+axi_ucie_mem_top.g_rp1.m_araddr[31:0]
+@28
+axi_ucie_mem_top.g_rp1.m_arvalid
+axi_ucie_mem_top.g_rp1.m_arready
+@22
+axi_ucie_mem_top.g_rp1.m_rdata[31:0]
+@28
+axi_ucie_mem_top.g_rp1.m_rvalid
+axi_ucie_mem_top.g_rp1.m_rready
+@1000200
+-Memory AXI-Lite port + array write

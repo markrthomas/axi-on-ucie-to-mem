@@ -1,0 +1,141 @@
+[*] AoU layout : cocotb multi_outstanding_test - several reads in flight at once.
+[*]
+[*] Emphasis: BACK-PRESSURE.  The initiator request queue (head/tail/count/full/
+[*] empty) is at the top, right under the AR channel that fills it, and the Sec 6
+[*] credit counters are expanded because this is the test that drains them.  If
+[*] the chain wedges, the answer is nearly always "q_full with every credit at 0"
+[*] (the piggyback-return deadlock class) and both halves are on screen together.
+[*]
+[*] wave-check: env=cocotb
+[dumpfile] "dv/cocotb/sim_build/axi_ucie_mem_top.fst"
+[timestart] 0
+[sst_width] 300
+[signals_width] 380
+[pane_width] 1240
+[treeopen] axi_ucie_mem_top.
+[treeopen] axi_ucie_mem_top.g_rp1.
+[pattern_trace] 1
+[pattern_trace] 0
+@800200
+-Clock / Reset
+@28
+axi_ucie_mem_top.ACLK
+axi_ucie_mem_top.ARESETn
+@1000200
+-Clock / Reset
+@800200
+-AXI front door : read requests in flight
+@22
+axi_ucie_mem_top.ARID[3:0]
+axi_ucie_mem_top.ARADDR[31:0]
+@24
+axi_ucie_mem_top.ARLEN[7:0]
+@28
+axi_ucie_mem_top.ARVALID
+axi_ucie_mem_top.ARREADY
+@22
+axi_ucie_mem_top.RID[3:0]
+axi_ucie_mem_top.RDATA[31:0]
+axi_ucie_mem_top.RRESP[1:0]
+@28
+axi_ucie_mem_top.RLAST
+axi_ucie_mem_top.RVALID
++{RREADY (held low to fill)} axi_ucie_mem_top.RREADY
+@1000200
+-AXI front door : read requests in flight
+@800200
+-Initiator request queue (the outstanding depth)
+@24
++{occupancy} axi_ucie_mem_top.g_rp1.u_init.q_count[2:0]
+@22
++{head ptr} axi_ucie_mem_top.g_rp1.u_init.q_head[1:0]
++{tail ptr} axi_ucie_mem_top.g_rp1.u_init.q_tail[1:0]
+@28
++{queue FULL} axi_ucie_mem_top.g_rp1.u_init.q_full
++{queue EMPTY} axi_ucie_mem_top.g_rp1.u_init.q_empty
++{push AR} axi_ucie_mem_top.g_rp1.u_init.acc_ar
++{push AW} axi_ucie_mem_top.g_rp1.u_init.acc_aw
++{pop} axi_ucie_mem_top.g_rp1.u_init.do_pop
+@22
++{head addr} axi_ucie_mem_top.g_rp1.u_init.addr_q[31:0]
++{head ID} axi_ucie_mem_top.g_rp1.u_init.id_q[3:0]
++{init FSM state} axi_ucie_mem_top.g_rp1.u_init.g_inorder.state[2:0]
+@1000200
+-Initiator request queue (the outstanding depth)
+@800200
+-Sec 6 credits : chiplet A (initiator)
+@24
++{WReq crd} axi_ucie_mem_top.g_rp1.u_init.cr_wreq[7:0]
++{RReq crd} axi_ucie_mem_top.g_rp1.u_init.cr_rreq[7:0]
++{WData crd} axi_ucie_mem_top.g_rp1.u_init.cr_wdata[7:0]
++{RData to return} axi_ucie_mem_top.g_rp1.u_init.ret_rdata[7:0]
++{WResp to return} axi_ucie_mem_top.g_rp1.u_init.ret_wresp[7:0]
+@28
++{RReq funded} axi_ucie_mem_top.g_rp1.u_init.rreq_ok
++{WReq funded} axi_ucie_mem_top.g_rp1.u_init.wreq_ok
++{WData funded} axi_ucie_mem_top.g_rp1.u_init.wdata_ok
+@1000200
+-Sec 6 credits : chiplet A (initiator)
+@800200
+-Sec 6 credits : chiplet B (target)
+@24
++{RData crd} axi_ucie_mem_top.g_rp1.u_tgt.cr_rdata[7:0]
++{WResp crd} axi_ucie_mem_top.g_rp1.u_tgt.cr_wresp[7:0]
++{WReq to return} axi_ucie_mem_top.g_rp1.u_tgt.ret_wreq[7:0]
++{RReq to return} axi_ucie_mem_top.g_rp1.u_tgt.ret_rreq[7:0]
++{WData to return} axi_ucie_mem_top.g_rp1.u_tgt.ret_wdata[7:0]
+@1000200
+-Sec 6 credits : chiplet B (target)
+@800200
+-UCIe flit link : A -> B (requests)
+@28
+axi_ucie_mem_top.g_rp1.init_tx_valid
+axi_ucie_mem_top.g_rp1.init_tx_ready
+axi_ucie_mem_top.g_rp1.a2b_valid
+axi_ucie_mem_top.g_rp1.a2b_ready
+@22
++{rx MsgType} axi_ucie_mem_top.g_rp1.u_tgt.in_mt[3:0]
++{rx Tag} axi_ucie_mem_top.g_rp1.u_tgt.in_tag[3:0]
++{rx Addr} axi_ucie_mem_top.g_rp1.u_tgt.in_addr[63:0]
+@1000200
+-UCIe flit link : A -> B (requests)
+@800200
+-UCIe flit link : B -> A (responses)
+@28
+axi_ucie_mem_top.g_rp1.tgt_tx_valid
+axi_ucie_mem_top.g_rp1.tgt_tx_ready
+axi_ucie_mem_top.g_rp1.b2a_valid
+axi_ucie_mem_top.g_rp1.b2a_ready
+axi_ucie_mem_top.g_rp1.u_init.rx_valid
+axi_ucie_mem_top.g_rp1.u_init.rx_ready
+@1000200
+-UCIe flit link : B -> A (responses)
+@800200
+-AoU target bridge (chiplet B)
+@22
++{tgt FSM state} axi_ucie_mem_top.g_rp1.u_tgt.state[2:0]
+axi_ucie_mem_top.g_rp1.u_tgt.id_q[3:0]
+axi_ucie_mem_top.g_rp1.u_tgt.tag_q[3:0]
+@24
++{beat index} axi_ucie_mem_top.g_rp1.u_tgt.beat_q[7:0]
+@28
+axi_ucie_mem_top.g_rp1.u_tgt.rpending
+axi_ucie_mem_top.g_rp1.u_tgt.wpending
++{rsp flit valid} axi_ucie_mem_top.g_rp1.u_tgt.rsp_valid
++{rsp flit ready} axi_ucie_mem_top.g_rp1.u_tgt.rsp_ready
+@1000200
+-AoU target bridge (chiplet B)
+@800200
+-Memory AXI-Lite port (chiplet B)
+@22
+axi_ucie_mem_top.g_rp1.m_araddr[31:0]
+@28
+axi_ucie_mem_top.g_rp1.m_arvalid
+axi_ucie_mem_top.g_rp1.m_arready
+@22
+axi_ucie_mem_top.g_rp1.m_rdata[31:0]
+@28
+axi_ucie_mem_top.g_rp1.m_rvalid
+axi_ucie_mem_top.g_rp1.m_rready
+@1000200
+-Memory AXI-Lite port (chiplet B)

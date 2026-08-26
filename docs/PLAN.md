@@ -154,6 +154,23 @@ AXI-Lite protocol property set. Flagged optional, not part of the core five.
   (Icarus SV TB), `vlt` (Verilator SV TB), `systemc`, `uvm`, `coverage`,
   `check`, `regress`, `ci`, `clean`, `waves`/`wave`. Each degrades gracefully if
   its tool is absent.
+- **Waveform debugging (dev-only) — DONE (SWARM_PLAN feature 2 of 3).** The single
+  `dv/wave.gtkw` became `dv/waves/`, **one curated GTKWave layout per debug
+  target** — `default` (generic cocotb fallback), `write_read`, `burst`,
+  `multi_outstanding`, `sv`, `ooo`, `mrp`, `act` — sharing one group scheme
+  (Clock/Reset → AXI front door → AoU bridge → UCIe flit link → §6 credits →
+  memory) with `@800200`/`@1000200` group markers and `+{human alias}` names.
+  `make wave [TEST=<name>]` picks `dv/waves/<key>.gtkw` (key = test name minus
+  `_test`) and falls back to `default.gtkw`; `wave-sv|-ooo|-mrp|-act` and
+  `waves-sv|-ooo|-mrp|-act|-all` extend the flow to the SV envs, which dump via
+  `dv/common/aou_wave_dump.svh` under `-DAOU_WAVES` — a define only those targets
+  pass, so the gate elaborates no dump logic and stays byte-identical.
+  `make wave-check` is the drift-guard: it resolves every `.gtkw` net path against
+  that target's real dump hierarchy (oss-cad-suite `fst2vcd`) and fails naming the
+  orphan. It is **dev/opt-in and deliberately NOT in `check`/`regress`/`ci`**, so
+  the gate stays wave-free and GTKWave-independent. It immediately caught real
+  rot: 23 of the old `dv/wave.gtkw`'s 42 net paths had died when the single-plane
+  chain moved under the `g_rp1` generate wrapper.
 - **`.github/workflows/ci.yml`** — GitHub Actions running `make ci`.
 - **`README.md`** — mirror `../uvm_review/README.md` depth: architecture +
   mermaid diagrams, a spec→RTL field-mapping table, per-env run instructions, a
@@ -437,9 +454,12 @@ in-order completion** (initiator request queue) already in place.
 - `make coverage` — Verilator lcov ≥ `COV_MIN` floor.
 - `make uvm` — prints clean skip here (no license), runs real on a licensed host.
 - `make ci` — lint + cocotb regression + coverage as one pass/fail gate.
-- Spot-check waveforms: `make wave` shows AXI AW/W handshake → a flit with
-  `MsgStart` bits set for WriteReq+WriteData → far-side AXI-Lite memory write →
-  WriteResp flit → AXI B.
+- Spot-check waveforms: `make wave TEST=write_read_test` opens pre-populated with
+  `dv/waves/write_read.gtkw` and shows AXI AW/W handshake → a flit with `MsgStart`
+  bits set for WriteReq+WriteData → far-side AXI-Lite memory write → WriteResp
+  flit → AXI B. `make wave-ooo` / `wave-mrp` / `wave-act` open their own layouts.
+- `make wave-check` — every committed `.gtkw` net path still resolves in its dump
+  (dev-only; not part of the gate).
 
 ## Key references reused
 - `../uvm_review/rtl/apb_mem.sv` (memory-array idioms, re-fronted as AXI-Lite),

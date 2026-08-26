@@ -169,7 +169,8 @@ Everything runs from the repo root and degrades gracefully if a tool is absent.
 | Resource planes | `make mrp` | end-to-end multi-plane datapath (`NUM_RP=2`): per-plane routing, no cross-plane credit leakage, arbiter fairness under contention (Icarus + Verilator) |
 | SystemC | `make systemc` | SystemC TB (Verilator `--sc` + `sc_main`) |
 | SV/UVM | `make uvm` | UVM TB (VCS/Xcelium/Questa); skips cleanly if unlicensed |
-| Waves | `make waves` / `make wave` | dump / open GTKWave |
+| Waves | `make waves` / `make wave` / `make wave-sv\|-ooo\|-mrp\|-act` | dump / open GTKWave with the **per-test layout** from `dv/waves/` |
+| Wave layout guard | `make wave-check` | every `.gtkw` net path must still exist in its dump (dev-only; deliberately **not** in `check`/`ci`) |
 | Lint | `make lint` | `iverilog -Wall` + Verilator RTL lint |
 | Line coverage | `make coverage` | Verilator `--coverage` → `sim/coverage.info` (floor `COV_MIN`, default 85%; ~90–94% achieved) |
 | Functional coverage | `make test` | PyUVM covergroup model (`dv/cocotb/axi_coverage.py`) sampled from the monitor → `[COV-FUNC]` report (floor `FCOV_MIN`, default 100%; 26/26 bins achieved) |
@@ -385,25 +386,77 @@ floor with `make test FCOV_MIN=<pct>`. AoU-protocol state (message type, credit
 flow, activation) is not observable at this env's AXI interface and is covered
 instead by `make pack` / `make act` / `make reorder` / `make ooo` and the formal tier.
 
-### 5. Waveforms
+### 5. Waveform debugging
+
+One flat signal list cannot suit every test, so `dv/waves/` holds **one curated
+GTKWave layout per debug target** and the `make wave*` targets pick the matching
+one automatically. A failing run is inspectable in seconds — the wave pane opens
+**pre-populated and grouped**, with nothing to hand-add.
 
 ```bash
-make waves                    # dump dv/cocotb/sim_build/axi_ucie_mem_top.fst
-make wave                     # + open GTKWave (skips cleanly if not installed)
-make waves TEST=random_test   # just one test
+make wave                          # cocotb chain, generic layout
+make wave TEST=write_read_test     # -> dv/waves/write_read.gtkw
+make wave TEST=burst_test          # -> dv/waves/burst.gtkw
+make wave TEST=multi_outstanding_test   # -> dv/waves/multi_outstanding.gtkw
+make wave-sv / wave-ooo / wave-mrp / wave-act    # the SV envs
+make waves / waves-sv|-ooo|-mrp|-act / waves-all # dump only, no viewer
+make wave-check                    # layouts still match the RTL? (see below)
 ```
 
-`make wave` applies the curated layout in `dv/wave.gtkw`, so the window opens
-with the AXI front-door, flit-link, and memory-port signals already added — look
-at the AXI `AW`/`W` handshake, then a flit valid on the link, then the far-side
-memory write and the `WriteResp` flit returning to complete `B`.
+The layout key is the cocotb test name minus its `_test` suffix; a test with no
+bespoke layout falls back to `dv/waves/default.gtkw`, so `make wave` always opens
+populated.
+
+| Layout | Target | What it puts on screen |
+|--------|--------|------------------------|
+| `default.gtkw` | any cocotb test | the generic chain: AXI front door → initiator bridge → both flit links → §6 credits → target bridge → memory port |
+| `write_read.gtkw` | `write_read_test` | the **write path end to end** — AW/W beat, the decoded `WriteReq`/`WriteData` fields at the target, the memory's *captured* address/data/strobe and its array-write pulse, then `WriteResp` → `B`; the read-back sits below it |
+| `burst.gtkw` | `burst_test` | **beat sequencing** — `AxLEN`/`AxSIZE`/`AxBURST` directly above the target's beat walker (`base_q` → `addr_q`, `beat_q`, `last_beat`), so a bad WRAP or a FIXED that moves is one glance |
+| `multi_outstanding.gtkw` | `multi_outstanding_test` | **back-pressure** — the initiator request queue (head/tail/count/full/empty) and *both* §6 credit banks expanded, the two halves of the piggyback-deadlock class on one screen |
+| `sv.gtkw` | `make wave-sv` | the `dv/sv` directed TB, same scheme re-rooted at `tb_axi_ucie_mem.dut…`, plus the TB's own `reads`/`errors` scoreboard |
+| `ooo.gtkw` | `make wave-ooo` | the `OOO_EN=1` internals — the TB's overtake counters, the target's one-entry **hold slot** (`h_valid`/`h_id`/`h_timer`, `same_id_in`, `flushing`), and both reorder buffers' per-slot `occ`/`done`, head/tail and issue→complete→out handshakes |
+| `mrp.gtkw` | `make wave-mrp` | the `NUM_RP=2` internals — the round-robin plane arbiter (per-plane `in_valid`, `grant`, `rr_sel`, mid-message `lock`), the FDId router's decoded `fdid` and both per-plane RX-queue depths, and the two planes' §6 credit banks side by side |
+| `act.gtkw` | `make wave-act` | the §8 FSM — `state`/`enabled`/`error`, the Misc handshake split into `send_*` vs `rx_is_*`, the `CrdtGrant` seed pulse with its five Table-17 codes, and the §8.3.2 Option-2 teardown gate (`deact_trig` → `quiescing` → `data_idle`) + ERROR recovery |
+
+**Layout conventions.** Every file uses the same scheme so they read alike:
+groups run *Clock/Reset → AXI front door → AoU bridge → UCIe flit link → §6
+credits → memory*, with scenario-specific groups inserted where they belong in
+that flow. Groups use GTKWave's `@800200` / `@1000200` open/close markers;
+vectors are hex (`@22`), counters decimal (`@24`), scalars binary (`@28`); and
+cryptic RTL names carry a `+{human alias}` (`+{HOLD slot ID}`, `+{A: WReq crd}`).
+Raw 2000-bit flit buses are deliberately **not** listed — the bridges' own
+decoded fields (`in_mt`, `in_tag`, `in_addr`) are on screen instead.
+
+**Layouts can't silently rot.** `make wave-check` regenerates every dump, then
+resolves **every net path in every `.gtkw`** against that dump's real hierarchy
+(via oss-cad-suite `fst2vcd`, GTKWave's own reader) and fails naming the orphan:
+
+```
+[WAVE-CHECK] FAIL dv/waves/ooo.gtkw   2 of 108 net path(s) no longer exist
+[WAVE-CHECK]   dv/waves/ooo.gtkw:133: orphaned net path '….u_rob_r.occupancy[3:0]'
+```
+
+It is **dev/opt-in and deliberately not part of `check`/`regress`/`ci`**: it has
+to run the sims and needs `fst2vcd`, and the gate must stay wave-free and
+GTKWave-independent. A missing dump or reader degrades to a printed SKIP
+(`FST2VCD=<path>` or `OSS=<root>` points it at the reader; `LAYOUT=<file>`
+checks just one).
+
+**How the dumps happen.** The cocotb env dumps under its existing `WAVES=1`. The
+SV envs (`sv`, `ooo`, `mrp`, `act`) include `dv/common/aou_wave_dump.svh`, whose
+body is inside `` `ifdef AOU_WAVES `` — a define **only** the `waves-*` targets
+pass. The gate compiles the very same testbenches with not one dump statement
+elaborated, so `make check`/`regress`/`ci` stay bit-and-cycle identical and never
+read a `.gtkw`.
 
 > **GTKWave opens blank / looks hung?** GTKWave never auto-populates its wave
 > pane; opening a raw FST with no savefile shows an empty window that reads as a
-> hang. `make wave` avoids this by passing `-a dv/wave.gtkw`. It also runs with
-> `NO_AT_BRIDGE=1`, which skips the AT-SPI accessibility bus whose missing-server
-> timeout is the usual cause of multi-second GTK startup stalls under WSLg or a
-> headless X server. The `.fst` itself is fine either way — verify with
+> hang. The `make wave*` targets avoid this by passing `-a dv/waves/<layout>.gtkw`.
+> They also run with `NO_AT_BRIDGE=1`, which skips the AT-SPI accessibility bus
+> whose missing-server timeout is the usual cause of multi-second GTK startup
+> stalls under WSLg or a headless X server. With no `gtkwave` on `PATH` the
+> targets still dump, then print a skip and exit 0 — the `.fst` is there for a
+> viewer elsewhere; verify with
 > `fst2vcd dv/cocotb/sim_build/axi_ucie_mem_top.fst | head`.
 
 ### 6. The SystemVerilog UVM testbench

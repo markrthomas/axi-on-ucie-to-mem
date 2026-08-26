@@ -1,0 +1,213 @@
+[*] AoU layout : dv/ooo end-to-end out-of-order-by-ID chain (OOO_EN=1).
+[*]
+[*] Emphasis: the F2 OOO internals, in the order a debug session needs them.
+[*]   1. the TB's overtake counters (r_overtakes / b_overtakes) - the run FAILS
+[*]      if these stay zero, so they are the first thing to look at;
+[*]   2. the TARGET's response-source mux (aou_ooo_resp_src): its one-entry HOLD
+[*]      slot (h_valid / h_id / h_timer) is what lets a later different-ID
+[*]      response overtake an earlier one;
+[*]   3. the INITIATOR's two reorder buffers (u_rob_r for RData, u_rob_w for
+[*]      WResp): per-slot occupancy / done vectors, head/tail, and the issue ->
+[*]      complete -> output handshakes that restore AXI ordering.
+[*]
+[*] wave-check: env=ooo
+[dumpfile] "dv/ooo/sim_build/tb_axi_ucie_ooo.fst"
+[timestart] 0
+[sst_width] 300
+[signals_width] 400
+[pane_width] 1240
+[treeopen] tb_axi_ucie_ooo.
+[treeopen] tb_axi_ucie_ooo.dut.
+[treeopen] tb_axi_ucie_ooo.dut.g_rp1.
+[pattern_trace] 1
+[pattern_trace] 0
+@800200
+-Clock / Reset / TB scoreboard
+@28
+tb_axi_ucie_ooo.ACLK
+tb_axi_ucie_ooo.ARESETn
+@24
++{read overtakes seen} tb_axi_ucie_ooo.r_overtakes[31:0]
++{write overtakes seen} tb_axi_ucie_ooo.b_overtakes[31:0]
++{read beats} tb_axi_ucie_ooo.beats[31:0]
++{errors} tb_axi_ucie_ooo.errors[31:0]
+@1000200
+-Clock / Reset / TB scoreboard
+@800200
+-AXI front door : multi-ID traffic
+@22
+tb_axi_ucie_ooo.AWID[3:0]
+tb_axi_ucie_ooo.AWADDR[31:0]
+@28
+tb_axi_ucie_ooo.AWVALID
+tb_axi_ucie_ooo.AWREADY
+tb_axi_ucie_ooo.WVALID
+tb_axi_ucie_ooo.WREADY
+tb_axi_ucie_ooo.WLAST
+@22
++{B: ID returned} tb_axi_ucie_ooo.BID[3:0]
+tb_axi_ucie_ooo.BRESP[1:0]
+@28
+tb_axi_ucie_ooo.BVALID
+tb_axi_ucie_ooo.BREADY
+@22
+tb_axi_ucie_ooo.ARID[3:0]
+tb_axi_ucie_ooo.ARADDR[31:0]
+@24
+tb_axi_ucie_ooo.ARLEN[7:0]
+@28
+tb_axi_ucie_ooo.ARVALID
+tb_axi_ucie_ooo.ARREADY
+@22
++{R: ID returned} tb_axi_ucie_ooo.RID[3:0]
+tb_axi_ucie_ooo.RDATA[31:0]
+@28
+tb_axi_ucie_ooo.RLAST
+tb_axi_ucie_ooo.RVALID
+tb_axi_ucie_ooo.RREADY
+@1000200
+-AXI front door : multi-ID traffic
+@800200
+-Target : OOO response-source mux (aou_ooo_resp_src)
+@28
++{in valid} tb_axi_ucie_ooo.dut.g_rp1.u_tgt.g_ooo_src.u_ooo.in_valid
++{in ready} tb_axi_ucie_ooo.dut.g_rp1.u_tgt.g_ooo_src.u_ooo.in_ready
+@22
++{in ID} tb_axi_ucie_ooo.dut.g_rp1.u_tgt.g_ooo_src.u_ooo.in_id[3:0]
++{in MsgType} tb_axi_ucie_ooo.dut.g_rp1.u_tgt.g_ooo_src.u_ooo.mt[3:0]
+@28
++{in first beat} tb_axi_ucie_ooo.dut.g_rp1.u_tgt.g_ooo_src.u_ooo.in_first
++{in last beat} tb_axi_ucie_ooo.dut.g_rp1.u_tgt.g_ooo_src.u_ooo.in_last
++{HOLD slot valid} tb_axi_ucie_ooo.dut.g_rp1.u_tgt.g_ooo_src.u_ooo.h_valid
+@22
++{HOLD slot ID} tb_axi_ucie_ooo.dut.g_rp1.u_tgt.g_ooo_src.u_ooo.h_id[3:0]
+@24
++{HOLD timer} tb_axi_ucie_ooo.dut.g_rp1.u_tgt.g_ooo_src.u_ooo.h_timer[5:0]
+@28
++{same-ID arrival} tb_axi_ucie_ooo.dut.g_rp1.u_tgt.g_ooo_src.u_ooo.same_id_in
++{flush trigger} tb_axi_ucie_ooo.dut.g_rp1.u_tgt.g_ooo_src.u_ooo.flush_trig
++{flushing} tb_axi_ucie_ooo.dut.g_rp1.u_tgt.g_ooo_src.u_ooo.flushing
++{forwarded (bypass)} tb_axi_ucie_ooo.dut.g_rp1.u_tgt.g_ooo_src.u_ooo.fwd_fire
++{out valid} tb_axi_ucie_ooo.dut.g_rp1.u_tgt.g_ooo_src.u_ooo.out_valid
++{out ready} tb_axi_ucie_ooo.dut.g_rp1.u_tgt.g_ooo_src.u_ooo.out_ready
+@1000200
+-Target : OOO response-source mux (aou_ooo_resp_src)
+@800200
+-UCIe flit link : B -> A (out-of-order responses)
+@28
+tb_axi_ucie_ooo.dut.g_rp1.tgt_tx_valid
+tb_axi_ucie_ooo.dut.g_rp1.tgt_tx_ready
+tb_axi_ucie_ooo.dut.g_rp1.b2a_valid
+tb_axi_ucie_ooo.dut.g_rp1.b2a_ready
+@22
++{rsp MsgType} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.rsp_mt[3:0]
++{rsp Tag} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.rsp_tag[3:0]
++{rsp -> ROB slot} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.rsp_slot[1:0]
+@28
++{rsp is RData} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.rsp_rd
++{rsp is WResp} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.rsp_wr
++{rsp last beat} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.rsp_last
+@1000200
+-UCIe flit link : B -> A (out-of-order responses)
+@800200
+-Initiator : OOO issue / tag allocation
+@22
++{OOO FSM state} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.ostate[1:0]
++{allocated tag} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.alloc_tag[3:0]
++{head tag} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.tag_q[3:0]
+@28
++{head is write} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.q_is_wr
++{accept (ROB has room)} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.acc_ok
++{ROB ready} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.rob_ready
++{request fired} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.req_fire
+@24
++{RData beats outstanding} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.rd_out[15:0]
++{RData beats needed} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.rd_need[15:0]
+@28
++{RData fits the ceiling} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.rd_fits
+@1000200
+-Initiator : OOO issue / tag allocation
+@800200
+-Initiator : read reorder buffer (u_rob_r)
+@22
++{slot occupied} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.u_rob_r.occ[3:0]
++{slot done} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.u_rob_r.done[3:0]
++{head slot} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.u_rob_r.head[1:0]
++{tail slot} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.u_rob_r.tail[1:0]
+@24
++{count} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.u_rob_r.count[2:0]
+@28
++{issue valid} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.u_rob_r.iss_valid
++{issue ready} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.u_rob_r.iss_ready
+@22
++{issue ID} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.u_rob_r.iss_id[3:0]
++{issue tag} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.u_rob_r.iss_tag[1:0]
+@28
++{complete valid} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.u_rob_r.cmp_valid
+@22
++{complete tag} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.u_rob_r.cmp_tag[1:0]
+@28
++{out valid} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.u_rob_r.out_valid
++{out ready} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.u_rob_r.out_ready
+@22
++{out ID (AXI order)} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.u_rob_r.out_id[3:0]
++{out slot} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.u_rob_r.out_idx[1:0]
+@28
++{slot reclaimed} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.u_rob_r.reclaim
+@1000200
+-Initiator : read reorder buffer (u_rob_r)
+@800200
+-Initiator : write-response reorder buffer (u_rob_w)
+@22
++{slot occupied} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.u_rob_w.occ[3:0]
++{slot done} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.u_rob_w.done[3:0]
++{head slot} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.u_rob_w.head[1:0]
++{tail slot} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.u_rob_w.tail[1:0]
+@24
++{count} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.u_rob_w.count[2:0]
+@28
++{issue valid} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.u_rob_w.iss_valid
++{complete valid} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.u_rob_w.cmp_valid
++{out valid} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.u_rob_w.out_valid
++{out ready} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.u_rob_w.out_ready
+@22
++{out ID (AXI order)} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.u_rob_w.out_id[3:0]
++{out BRESP} tb_axi_ucie_ooo.dut.g_rp1.u_init.g_ooo.u_rob_w.out_data[1:0]
+@1000200
+-Initiator : write-response reorder buffer (u_rob_w)
+@800200
+-Sec 6 credits
+@24
++{A: WReq crd} tb_axi_ucie_ooo.dut.g_rp1.u_init.cr_wreq[7:0]
++{A: RReq crd} tb_axi_ucie_ooo.dut.g_rp1.u_init.cr_rreq[7:0]
++{A: WData crd} tb_axi_ucie_ooo.dut.g_rp1.u_init.cr_wdata[7:0]
++{A: RData ret} tb_axi_ucie_ooo.dut.g_rp1.u_init.ret_rdata[7:0]
++{A: WResp ret} tb_axi_ucie_ooo.dut.g_rp1.u_init.ret_wresp[7:0]
++{B: RData crd} tb_axi_ucie_ooo.dut.g_rp1.u_tgt.cr_rdata[7:0]
++{B: WResp crd} tb_axi_ucie_ooo.dut.g_rp1.u_tgt.cr_wresp[7:0]
+@1000200
+-Sec 6 credits
+@800200
+-Memory AXI-Lite port (chiplet B)
+@22
+tb_axi_ucie_ooo.dut.g_rp1.m_awaddr[31:0]
+@28
+tb_axi_ucie_ooo.dut.g_rp1.m_awvalid
+tb_axi_ucie_ooo.dut.g_rp1.m_awready
+@22
+tb_axi_ucie_ooo.dut.g_rp1.m_wdata[31:0]
+@28
+tb_axi_ucie_ooo.dut.g_rp1.m_wvalid
+tb_axi_ucie_ooo.dut.g_rp1.m_wready
+@22
+tb_axi_ucie_ooo.dut.g_rp1.m_araddr[31:0]
+@28
+tb_axi_ucie_ooo.dut.g_rp1.m_arvalid
+tb_axi_ucie_ooo.dut.g_rp1.m_arready
+@22
+tb_axi_ucie_ooo.dut.g_rp1.m_rdata[31:0]
+@28
+tb_axi_ucie_ooo.dut.g_rp1.m_rvalid
+tb_axi_ucie_ooo.dut.g_rp1.m_rready
+@1000200
+-Memory AXI-Lite port (chiplet B)

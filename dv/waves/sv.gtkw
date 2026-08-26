@@ -1,0 +1,172 @@
+[*] AoU layout : dv/sv directed TB (tb_axi_ucie_mem, default NUM_RP=1 OOO_EN=0).
+[*]
+[*] Same group scheme as dv/waves/default.gtkw, re-rooted at the SV testbench
+[*] (tb_axi_ucie_mem.dut...) - the cocotb dump has axi_ucie_mem_top as its top,
+[*] this one wraps it in a TB, so the layouts cannot be shared.  The TB's own
+[*] scoreboard counters (reads / errors) ride at the top so a failing beat is
+[*] immediately locatable in time.
+[*]
+[*] wave-check: env=sv
+[dumpfile] "dv/sv/sim_build/tb_axi_ucie_mem.fst"
+[timestart] 0
+[sst_width] 300
+[signals_width] 380
+[pane_width] 1240
+[treeopen] tb_axi_ucie_mem.
+[treeopen] tb_axi_ucie_mem.dut.
+[treeopen] tb_axi_ucie_mem.dut.g_rp1.
+[pattern_trace] 1
+[pattern_trace] 0
+@800200
+-Clock / Reset / TB scoreboard
+@28
+tb_axi_ucie_mem.ACLK
+tb_axi_ucie_mem.ARESETn
+@24
++{reads checked} tb_axi_ucie_mem.reads[31:0]
++{errors} tb_axi_ucie_mem.errors[31:0]
+@1000200
+-Clock / Reset / TB scoreboard
+@800200
+-AXI front door : write
+@22
+tb_axi_ucie_mem.AWID[3:0]
+tb_axi_ucie_mem.AWADDR[31:0]
+@24
+tb_axi_ucie_mem.AWLEN[7:0]
+@22
+tb_axi_ucie_mem.AWSIZE[2:0]
+tb_axi_ucie_mem.AWBURST[1:0]
+@28
+tb_axi_ucie_mem.AWVALID
+tb_axi_ucie_mem.AWREADY
+@22
+tb_axi_ucie_mem.WDATA[31:0]
+tb_axi_ucie_mem.WSTRB[3:0]
+@28
+tb_axi_ucie_mem.WLAST
+tb_axi_ucie_mem.WVALID
+tb_axi_ucie_mem.WREADY
+@22
+tb_axi_ucie_mem.BID[3:0]
+tb_axi_ucie_mem.BRESP[1:0]
+@28
+tb_axi_ucie_mem.BVALID
+tb_axi_ucie_mem.BREADY
+@1000200
+-AXI front door : write
+@800200
+-AXI front door : read
+@22
+tb_axi_ucie_mem.ARID[3:0]
+tb_axi_ucie_mem.ARADDR[31:0]
+@24
+tb_axi_ucie_mem.ARLEN[7:0]
+@22
+tb_axi_ucie_mem.ARSIZE[2:0]
+tb_axi_ucie_mem.ARBURST[1:0]
+@28
+tb_axi_ucie_mem.ARVALID
+tb_axi_ucie_mem.ARREADY
+@22
+tb_axi_ucie_mem.RID[3:0]
+tb_axi_ucie_mem.RDATA[31:0]
+tb_axi_ucie_mem.RRESP[1:0]
+@28
+tb_axi_ucie_mem.RLAST
+tb_axi_ucie_mem.RVALID
+tb_axi_ucie_mem.RREADY
+@1000200
+-AXI front door : read
+@800200
+-AoU initiator bridge (chiplet A)
+@22
++{init FSM state} tb_axi_ucie_mem.dut.g_rp1.u_init.g_inorder.state[2:0]
++{head addr} tb_axi_ucie_mem.dut.g_rp1.u_init.addr_q[31:0]
++{head ID} tb_axi_ucie_mem.dut.g_rp1.u_init.id_q[3:0]
+@24
++{req queue occupancy} tb_axi_ucie_mem.dut.g_rp1.u_init.q_count[2:0]
+@28
+tb_axi_ucie_mem.dut.g_rp1.u_init.q_full
+tb_axi_ucie_mem.dut.g_rp1.u_init.q_empty
++{link ENABLED} tb_axi_ucie_mem.dut.g_rp1.u_init.act_enabled
+@1000200
+-AoU initiator bridge (chiplet A)
+@800200
+-UCIe flit link : A -> B (requests)
+@28
+tb_axi_ucie_mem.dut.g_rp1.init_tx_valid
+tb_axi_ucie_mem.dut.g_rp1.init_tx_ready
+tb_axi_ucie_mem.dut.g_rp1.a2b_valid
+tb_axi_ucie_mem.dut.g_rp1.a2b_ready
+@22
++{rx MsgType} tb_axi_ucie_mem.dut.g_rp1.u_tgt.in_mt[3:0]
++{rx Tag} tb_axi_ucie_mem.dut.g_rp1.u_tgt.in_tag[3:0]
++{rx Addr} tb_axi_ucie_mem.dut.g_rp1.u_tgt.in_addr[63:0]
+@1000200
+-UCIe flit link : A -> B (requests)
+@800200
+-UCIe flit link : B -> A (responses)
+@28
+tb_axi_ucie_mem.dut.g_rp1.tgt_tx_valid
+tb_axi_ucie_mem.dut.g_rp1.tgt_tx_ready
+tb_axi_ucie_mem.dut.g_rp1.b2a_valid
+tb_axi_ucie_mem.dut.g_rp1.b2a_ready
+tb_axi_ucie_mem.dut.g_rp1.u_init.rx_valid
+tb_axi_ucie_mem.dut.g_rp1.u_init.rx_ready
+@1000200
+-UCIe flit link : B -> A (responses)
+@800200
+-Sec 6 credits
+@24
++{A: WReq crd} tb_axi_ucie_mem.dut.g_rp1.u_init.cr_wreq[7:0]
++{A: RReq crd} tb_axi_ucie_mem.dut.g_rp1.u_init.cr_rreq[7:0]
++{A: WData crd} tb_axi_ucie_mem.dut.g_rp1.u_init.cr_wdata[7:0]
++{A: RData ret} tb_axi_ucie_mem.dut.g_rp1.u_init.ret_rdata[7:0]
++{A: WResp ret} tb_axi_ucie_mem.dut.g_rp1.u_init.ret_wresp[7:0]
++{B: RData crd} tb_axi_ucie_mem.dut.g_rp1.u_tgt.cr_rdata[7:0]
++{B: WResp crd} tb_axi_ucie_mem.dut.g_rp1.u_tgt.cr_wresp[7:0]
++{B: WReq ret} tb_axi_ucie_mem.dut.g_rp1.u_tgt.ret_wreq[7:0]
++{B: RReq ret} tb_axi_ucie_mem.dut.g_rp1.u_tgt.ret_rreq[7:0]
++{B: WData ret} tb_axi_ucie_mem.dut.g_rp1.u_tgt.ret_wdata[7:0]
+@1000200
+-Sec 6 credits
+@800200
+-AoU target bridge (chiplet B)
+@22
++{tgt FSM state} tb_axi_ucie_mem.dut.g_rp1.u_tgt.state[2:0]
++{running addr} tb_axi_ucie_mem.dut.g_rp1.u_tgt.addr_q[31:0]
+@24
++{beat index} tb_axi_ucie_mem.dut.g_rp1.u_tgt.beat_q[7:0]
+@28
+tb_axi_ucie_mem.dut.g_rp1.u_tgt.last_beat
++{link ENABLED} tb_axi_ucie_mem.dut.g_rp1.u_tgt.act_enabled
+@1000200
+-AoU target bridge (chiplet B)
+@800200
+-Memory AXI-Lite port (chiplet B)
+@22
+tb_axi_ucie_mem.dut.g_rp1.m_awaddr[31:0]
+@28
+tb_axi_ucie_mem.dut.g_rp1.m_awvalid
+tb_axi_ucie_mem.dut.g_rp1.m_awready
+@22
+tb_axi_ucie_mem.dut.g_rp1.m_wdata[31:0]
+tb_axi_ucie_mem.dut.g_rp1.m_wstrb[3:0]
+@28
+tb_axi_ucie_mem.dut.g_rp1.m_wvalid
+tb_axi_ucie_mem.dut.g_rp1.m_wready
+tb_axi_ucie_mem.dut.g_rp1.m_bvalid
+tb_axi_ucie_mem.dut.g_rp1.m_bready
+@22
+tb_axi_ucie_mem.dut.g_rp1.m_araddr[31:0]
+@28
+tb_axi_ucie_mem.dut.g_rp1.m_arvalid
+tb_axi_ucie_mem.dut.g_rp1.m_arready
+@22
+tb_axi_ucie_mem.dut.g_rp1.m_rdata[31:0]
+@28
+tb_axi_ucie_mem.dut.g_rp1.m_rvalid
+tb_axi_ucie_mem.dut.g_rp1.m_rready
+@1000200
+-Memory AXI-Lite port (chiplet B)

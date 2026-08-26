@@ -1,0 +1,165 @@
+[*] AoU layout : cocotb burst_test - INCR / WRAP / FIXED multi-beat read-back.
+[*]
+[*] Emphasis: BEAT SEQUENCING.  AxLEN/AxSIZE/AxBURST sit directly above the
+[*] target bridge's beat counter and its running address (base_q -> addr_q), so
+[*] a wrong WRAP wrap-around or a missing FIXED hold is visible as a divergence
+[*] between the AXI beat and the memory address on the same cycle.  WLAST/RLAST
+[*] and last_beat are grouped together for the end-of-burst check.
+[*]
+[*] wave-check: env=cocotb
+[dumpfile] "dv/cocotb/sim_build/axi_ucie_mem_top.fst"
+[timestart] 0
+[sst_width] 300
+[signals_width] 380
+[pane_width] 1240
+[treeopen] axi_ucie_mem_top.
+[treeopen] axi_ucie_mem_top.g_rp1.
+[pattern_trace] 1
+[pattern_trace] 0
+@800200
+-Clock / Reset
+@28
+axi_ucie_mem_top.ACLK
+axi_ucie_mem_top.ARESETn
+@1000200
+-Clock / Reset
+@800200
+-AXI burst attributes
+@22
+axi_ucie_mem_top.AWID[3:0]
+axi_ucie_mem_top.AWADDR[31:0]
+@24
++{AWLEN (beats-1)} axi_ucie_mem_top.AWLEN[7:0]
+@22
+axi_ucie_mem_top.AWSIZE[2:0]
++{AWBURST 0=FIX 1=INC 2=WRP} axi_ucie_mem_top.AWBURST[1:0]
+axi_ucie_mem_top.ARID[3:0]
+axi_ucie_mem_top.ARADDR[31:0]
+@24
++{ARLEN (beats-1)} axi_ucie_mem_top.ARLEN[7:0]
+@22
+axi_ucie_mem_top.ARSIZE[2:0]
++{ARBURST 0=FIX 1=INC 2=WRP} axi_ucie_mem_top.ARBURST[1:0]
+@1000200
+-AXI burst attributes
+@800200
+-AXI front door : write beats
+@28
+axi_ucie_mem_top.AWVALID
+axi_ucie_mem_top.AWREADY
+@22
+axi_ucie_mem_top.WDATA[31:0]
+axi_ucie_mem_top.WSTRB[3:0]
+@28
+axi_ucie_mem_top.WVALID
+axi_ucie_mem_top.WREADY
+axi_ucie_mem_top.WLAST
+axi_ucie_mem_top.BVALID
+axi_ucie_mem_top.BREADY
+@22
+axi_ucie_mem_top.BRESP[1:0]
+@1000200
+-AXI front door : write beats
+@800200
+-AXI front door : read beats
+@28
+axi_ucie_mem_top.ARVALID
+axi_ucie_mem_top.ARREADY
+@22
+axi_ucie_mem_top.RID[3:0]
+axi_ucie_mem_top.RDATA[31:0]
+axi_ucie_mem_top.RRESP[1:0]
+@28
+axi_ucie_mem_top.RVALID
+axi_ucie_mem_top.RREADY
+axi_ucie_mem_top.RLAST
+@1000200
+-AXI front door : read beats
+@800200
+-AoU initiator bridge : burst descriptor
+@22
++{init FSM state} axi_ucie_mem_top.g_rp1.u_init.g_inorder.state[2:0]
++{queued addr} axi_ucie_mem_top.g_rp1.u_init.addr_q[31:0]
+@24
++{queued len} axi_ucie_mem_top.g_rp1.u_init.len_q[7:0]
+@22
++{queued size} axi_ucie_mem_top.g_rp1.u_init.size_q[2:0]
++{queued burst} axi_ucie_mem_top.g_rp1.u_init.burst_q[1:0]
+@28
++{W beat valid} axi_ucie_mem_top.g_rp1.u_init.g_inorder.wbeat_valid
++{W beat last} axi_ucie_mem_top.g_rp1.u_init.g_inorder.wlast_q
+@1000200
+-AoU initiator bridge : burst descriptor
+@800200
+-UCIe flit link : A -> B (requests)
+@28
+axi_ucie_mem_top.g_rp1.a2b_valid
+axi_ucie_mem_top.g_rp1.a2b_ready
+@22
++{rx MsgType} axi_ucie_mem_top.g_rp1.u_tgt.in_mt[3:0]
++{rx Addr} axi_ucie_mem_top.g_rp1.u_tgt.in_addr[63:0]
+@1000200
+-UCIe flit link : A -> B (requests)
+@800200
+-AoU target bridge : beat walker (the AXI burst rule)
+@22
++{tgt FSM state} axi_ucie_mem_top.g_rp1.u_tgt.state[2:0]
++{burst base addr} axi_ucie_mem_top.g_rp1.u_tgt.base_q[31:0]
++{running addr} axi_ucie_mem_top.g_rp1.u_tgt.addr_q[31:0]
+@24
++{beat index} axi_ucie_mem_top.g_rp1.u_tgt.beat_q[7:0]
++{len (beats-1)} axi_ucie_mem_top.g_rp1.u_tgt.len_q[7:0]
+@22
++{size} axi_ucie_mem_top.g_rp1.u_tgt.size_q[2:0]
++{burst type} axi_ucie_mem_top.g_rp1.u_tgt.burst_q[1:0]
+@28
++{last beat} axi_ucie_mem_top.g_rp1.u_tgt.last_beat
+axi_ucie_mem_top.g_rp1.u_tgt.aw_done
+axi_ucie_mem_top.g_rp1.u_tgt.w_done
+axi_ucie_mem_top.g_rp1.u_tgt.ar_done
+@1000200
+-AoU target bridge : beat walker (the AXI burst rule)
+@800200
+-UCIe flit link : B -> A (responses)
+@28
+axi_ucie_mem_top.g_rp1.b2a_valid
+axi_ucie_mem_top.g_rp1.b2a_ready
+axi_ucie_mem_top.g_rp1.u_init.rx_valid
+axi_ucie_mem_top.g_rp1.u_init.rx_ready
+@1000200
+-UCIe flit link : B -> A (responses)
+@800200
+-Sec 6 credits
+@24
++{A: RReq crd} axi_ucie_mem_top.g_rp1.u_init.cr_rreq[7:0]
++{A: WData crd} axi_ucie_mem_top.g_rp1.u_init.cr_wdata[7:0]
++{A: RData ret} axi_ucie_mem_top.g_rp1.u_init.ret_rdata[7:0]
++{B: RData crd} axi_ucie_mem_top.g_rp1.u_tgt.cr_rdata[7:0]
++{B: WResp crd} axi_ucie_mem_top.g_rp1.u_tgt.cr_wresp[7:0]
+@1000200
+-Sec 6 credits
+@800200
+-Memory AXI-Lite port (per-beat address)
+@22
+axi_ucie_mem_top.g_rp1.m_awaddr[31:0]
+@28
+axi_ucie_mem_top.g_rp1.m_awvalid
+axi_ucie_mem_top.g_rp1.m_awready
+@22
+axi_ucie_mem_top.g_rp1.m_wdata[31:0]
+axi_ucie_mem_top.g_rp1.m_wstrb[3:0]
+@28
+axi_ucie_mem_top.g_rp1.m_wvalid
+axi_ucie_mem_top.g_rp1.m_wready
+@22
+axi_ucie_mem_top.g_rp1.m_araddr[31:0]
+@28
+axi_ucie_mem_top.g_rp1.m_arvalid
+axi_ucie_mem_top.g_rp1.m_arready
+@22
+axi_ucie_mem_top.g_rp1.m_rdata[31:0]
+@28
+axi_ucie_mem_top.g_rp1.m_rvalid
+axi_ucie_mem_top.g_rp1.m_rready
+@1000200
+-Memory AXI-Lite port (per-beat address)

@@ -82,6 +82,9 @@ module tb_axi_ucie_ooo
   initial ACLK = 1'b0;
   always #5 ACLK = ~ACLK;
 
+  // Dev-only waveform dump (compiled ONLY under -DAOU_WAVES; never on the gate).
+  `include "aou_wave_dump.svh"
+
   // Level >= 1 ([OOO-TB][T] transaction trace + [OOO-TB][F] decoded flits);
   // level 2 adds [OOO-TB][D] internal state (see the monitors at the bottom).
   bit verbose;

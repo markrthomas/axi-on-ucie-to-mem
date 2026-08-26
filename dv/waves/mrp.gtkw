@@ -1,0 +1,185 @@
+[*] AoU layout : dv/mrp multiple resource planes (NUM_RP=2).
+[*]
+[*] Emphasis: what is SHARED versus what is PER-PLANE.
+[*]   1. the shared link and the round-robin plane arbiter (aou_rp_arb): both
+[*]      planes' in_valid, the grant, the round-robin pointer and the mid-message
+[*]      lock - a fixed-priority regression shows up as a grant stuck at one plane;
+[*]   2. the FDId router (aou_rp_route): the decoded FDId and BOTH per-plane RX
+[*]      queues' depth/full, so a misrouted flit is visible as the wrong queue
+[*]      filling;
+[*]   3. per-plane Sec 6 credit banks side by side - plane 1's counters must not
+[*]      move while only plane 0 is running (the no-cross-plane-leakage check);
+[*]   4. the TB's own monitors (contended cycles, interleave switches, plane-1
+[*]      credit movement) so the fairness/isolation verdicts have context.
+[*]
+[*] AXI ports are plane-sliced: bit p of each vector belongs to plane p.
+[*]
+[*] wave-check: env=mrp
+[dumpfile] "dv/mrp/sim_build/tb_axi_ucie_mrp.fst"
+[timestart] 0
+[sst_width] 300
+[signals_width] 420
+[pane_width] 1240
+[treeopen] tb_axi_ucie_mrp.
+[treeopen] tb_axi_ucie_mrp.dut.
+[treeopen] tb_axi_ucie_mrp.dut.g_mrp.
+[pattern_trace] 1
+[pattern_trace] 0
+@800200
+-Clock / Reset / TB monitors
+@28
+tb_axi_ucie_mrp.ACLK
+tb_axi_ucie_mrp.ARESETn
+@24
++{contended cycles} tb_axi_ucie_mrp.contend_cyc[31:0]
++{plane switches on link} tb_axi_ucie_mrp.a_switch[31:0]
++{plane-1 credit moves} tb_axi_ucie_mrp.cr_moves[31:0]
++{read beats} tb_axi_ucie_mrp.beats[31:0]
++{errors} tb_axi_ucie_mrp.errors[31:0]
+@1000200
+-Clock / Reset / TB monitors
+@800200
+-AXI front doors (bit p = plane p)
+@28
++{AWVALID[1:0]} tb_axi_ucie_mrp.AWVALID[1:0]
++{AWREADY[1:0]} tb_axi_ucie_mrp.AWREADY[1:0]
+@22
+tb_axi_ucie_mrp.AWADDR[63:0]
+tb_axi_ucie_mrp.WDATA[63:0]
+@28
++{WVALID[1:0]} tb_axi_ucie_mrp.WVALID[1:0]
++{WREADY[1:0]} tb_axi_ucie_mrp.WREADY[1:0]
++{BVALID[1:0]} tb_axi_ucie_mrp.BVALID[1:0]
++{BREADY[1:0]} tb_axi_ucie_mrp.BREADY[1:0]
++{ARVALID[1:0]} tb_axi_ucie_mrp.ARVALID[1:0]
++{ARREADY[1:0]} tb_axi_ucie_mrp.ARREADY[1:0]
+@22
+tb_axi_ucie_mrp.ARADDR[63:0]
+tb_axi_ucie_mrp.RDATA[63:0]
+tb_axi_ucie_mrp.RID[7:0]
+@28
++{RVALID[1:0]} tb_axi_ucie_mrp.RVALID[1:0]
++{RREADY[1:0]} tb_axi_ucie_mrp.RREADY[1:0]
++{RLAST[1:0]} tb_axi_ucie_mrp.RLAST[1:0]
+@1000200
+-AXI front doors (bit p = plane p)
+@800200
+-Plane arbiter A -> B (aou_rp_arb, requests)
+@28
++{per-plane tx valid} tb_axi_ucie_mrp.dut.g_mrp.u_arb_a.in_valid[1:0]
++{per-plane tx ready} tb_axi_ucie_mrp.dut.g_mrp.u_arb_a.in_ready[1:0]
+@22
++{GRANT (plane)} tb_axi_ucie_mrp.dut.g_mrp.u_arb_a.grant[1:0]
+@28
++{granted valid} tb_axi_ucie_mrp.dut.g_mrp.u_arb_a.out_valid
++{granted ready} tb_axi_ucie_mrp.dut.g_mrp.u_arb_a.out_ready
++{round-robin sel} tb_axi_ucie_mrp.dut.g_mrp.u_arb_a.rr_sel
++{round-robin hit} tb_axi_ucie_mrp.dut.g_mrp.u_arb_a.rr_hit
++{last winner} tb_axi_ucie_mrp.dut.g_mrp.u_arb_a.last
++{mid-message lock} tb_axi_ucie_mrp.dut.g_mrp.u_arb_a.lock
++{locked plane} tb_axi_ucie_mrp.dut.g_mrp.u_arb_a.lock_sel
+@1000200
+-Plane arbiter A -> B (aou_rp_arb, requests)
+@800200
+-Plane arbiter B -> A (aou_rp_arb, responses)
+@28
++{per-plane tx valid} tb_axi_ucie_mrp.dut.g_mrp.u_arb_b.in_valid[1:0]
++{per-plane tx ready} tb_axi_ucie_mrp.dut.g_mrp.u_arb_b.in_ready[1:0]
+@22
++{GRANT (plane)} tb_axi_ucie_mrp.dut.g_mrp.u_arb_b.grant[1:0]
+@28
++{granted valid} tb_axi_ucie_mrp.dut.g_mrp.u_arb_b.out_valid
++{granted ready} tb_axi_ucie_mrp.dut.g_mrp.u_arb_b.out_ready
++{mid-message lock} tb_axi_ucie_mrp.dut.g_mrp.u_arb_b.lock
+@1000200
+-Plane arbiter B -> A (aou_rp_arb, responses)
+@800200
+-Shared UCIe link (both planes interleave here)
+@28
+tb_axi_ucie_mrp.dut.g_mrp.a2b_valid
+tb_axi_ucie_mrp.dut.g_mrp.a2b_ready
+@22
++{TB: FDId seen A->B} tb_axi_ucie_mrp.a_fdid[1:0]
+@28
++{TB: A->B handshake} tb_axi_ucie_mrp.a_fire
+tb_axi_ucie_mrp.dut.g_mrp.b2a_valid
+tb_axi_ucie_mrp.dut.g_mrp.b2a_ready
+@22
++{TB: FDId seen B->A} tb_axi_ucie_mrp.b_fdid[1:0]
+@28
++{TB: B->A handshake} tb_axi_ucie_mrp.b_fire
+@1000200
+-Shared UCIe link (both planes interleave here)
+@800200
+-FDId router A -> B (aou_rp_route, per-plane RX queues)
+@22
++{decoded FDId} tb_axi_ucie_mrp.dut.g_mrp.u_route_a.fdid[1:0]
+@24
++{plane 0 RX depth} tb_axi_ucie_mrp.dut.g_mrp.u_route_a.g_q[0].u_q.count[4:0]
++{plane 1 RX depth} tb_axi_ucie_mrp.dut.g_mrp.u_route_a.g_q[1].u_q.count[4:0]
+@28
++{plane 0 RX full} tb_axi_ucie_mrp.dut.g_mrp.u_route_a.g_q[0].u_q.full
++{plane 1 RX full} tb_axi_ucie_mrp.dut.g_mrp.u_route_a.g_q[1].u_q.full
++{plane 0 push} tb_axi_ucie_mrp.dut.g_mrp.u_route_a.g_q[0].u_q.push
++{plane 1 push} tb_axi_ucie_mrp.dut.g_mrp.u_route_a.g_q[1].u_q.push
++{plane 0 pop} tb_axi_ucie_mrp.dut.g_mrp.u_route_a.g_q[0].u_q.pop
++{plane 1 pop} tb_axi_ucie_mrp.dut.g_mrp.u_route_a.g_q[1].u_q.pop
+@1000200
+-FDId router A -> B (aou_rp_route, per-plane RX queues)
+@800200
+-FDId router B -> A (aou_rp_route, per-plane RX queues)
+@22
++{decoded FDId} tb_axi_ucie_mrp.dut.g_mrp.u_route_b.fdid[1:0]
+@24
++{plane 0 RX depth} tb_axi_ucie_mrp.dut.g_mrp.u_route_b.g_q[0].u_q.count[4:0]
++{plane 1 RX depth} tb_axi_ucie_mrp.dut.g_mrp.u_route_b.g_q[1].u_q.count[4:0]
+@28
++{plane 0 RX full} tb_axi_ucie_mrp.dut.g_mrp.u_route_b.g_q[0].u_q.full
++{plane 1 RX full} tb_axi_ucie_mrp.dut.g_mrp.u_route_b.g_q[1].u_q.full
+@1000200
+-FDId router B -> A (aou_rp_route, per-plane RX queues)
+@800200
+-Plane 0 : Sec 6 credit bank + FSMs
+@22
++{init FSM state} tb_axi_ucie_mrp.dut.g_mrp.g_rp[0].u_init.g_inorder.state[2:0]
++{tgt FSM state} tb_axi_ucie_mrp.dut.g_mrp.g_rp[0].u_tgt.state[2:0]
+@24
++{A: WReq crd} tb_axi_ucie_mrp.dut.g_mrp.g_rp[0].u_init.cr_wreq[7:0]
++{A: RReq crd} tb_axi_ucie_mrp.dut.g_mrp.g_rp[0].u_init.cr_rreq[7:0]
++{A: WData crd} tb_axi_ucie_mrp.dut.g_mrp.g_rp[0].u_init.cr_wdata[7:0]
++{B: RData crd} tb_axi_ucie_mrp.dut.g_mrp.g_rp[0].u_tgt.cr_rdata[7:0]
++{B: WResp crd} tb_axi_ucie_mrp.dut.g_mrp.g_rp[0].u_tgt.cr_wresp[7:0]
+@28
++{link ENABLED (A)} tb_axi_ucie_mrp.dut.g_mrp.g_rp[0].u_init.act_enabled
++{link ENABLED (B)} tb_axi_ucie_mrp.dut.g_mrp.g_rp[0].u_tgt.act_enabled
+@1000200
+-Plane 0 : Sec 6 credit bank + FSMs
+@800200
+-Plane 1 : Sec 6 credit bank + FSMs (must be still when plane 0 runs alone)
+@22
++{init FSM state} tb_axi_ucie_mrp.dut.g_mrp.g_rp[1].u_init.g_inorder.state[2:0]
++{tgt FSM state} tb_axi_ucie_mrp.dut.g_mrp.g_rp[1].u_tgt.state[2:0]
+@24
++{A: WReq crd} tb_axi_ucie_mrp.dut.g_mrp.g_rp[1].u_init.cr_wreq[7:0]
++{A: RReq crd} tb_axi_ucie_mrp.dut.g_mrp.g_rp[1].u_init.cr_rreq[7:0]
++{A: WData crd} tb_axi_ucie_mrp.dut.g_mrp.g_rp[1].u_init.cr_wdata[7:0]
++{B: RData crd} tb_axi_ucie_mrp.dut.g_mrp.g_rp[1].u_tgt.cr_rdata[7:0]
++{B: WResp crd} tb_axi_ucie_mrp.dut.g_mrp.g_rp[1].u_tgt.cr_wresp[7:0]
+@28
++{link ENABLED (A)} tb_axi_ucie_mrp.dut.g_mrp.g_rp[1].u_init.act_enabled
++{link ENABLED (B)} tb_axi_ucie_mrp.dut.g_mrp.g_rp[1].u_tgt.act_enabled
+@1000200
+-Plane 1 : Sec 6 credit bank + FSMs (must be still when plane 0 runs alone)
+@800200
+-Per-plane memory ports
+@22
++{plane 0 mem AWADDR} tb_axi_ucie_mrp.dut.g_mrp.g_rp[0].m_awaddr[31:0]
++{plane 0 mem WDATA} tb_axi_ucie_mrp.dut.g_mrp.g_rp[0].m_wdata[31:0]
++{plane 0 mem ARADDR} tb_axi_ucie_mrp.dut.g_mrp.g_rp[0].m_araddr[31:0]
++{plane 0 mem RDATA} tb_axi_ucie_mrp.dut.g_mrp.g_rp[0].m_rdata[31:0]
++{plane 1 mem AWADDR} tb_axi_ucie_mrp.dut.g_mrp.g_rp[1].m_awaddr[31:0]
++{plane 1 mem WDATA} tb_axi_ucie_mrp.dut.g_mrp.g_rp[1].m_wdata[31:0]
++{plane 1 mem ARADDR} tb_axi_ucie_mrp.dut.g_mrp.g_rp[1].m_araddr[31:0]
++{plane 1 mem RDATA} tb_axi_ucie_mrp.dut.g_mrp.g_rp[1].m_rdata[31:0]
+@1000200
+-Per-plane memory ports

@@ -31,6 +31,9 @@ module tb_aou_act
   initial clk = 1'b0;
   always #5 clk = ~clk;
 
+  // Dev-only waveform dump (compiled ONLY under -DAOU_WAVES; never on the gate).
+  `include "aou_wave_dump.svh"
+
   // DUT link + data-path signals
   logic                enabled, act_disabled, error;
   logic                deact_trig, err_clear;

@@ -53,7 +53,24 @@ SC_DIR     := dv/systemc
 UVM_DIR    := uvm
 TB_RESULTS := $(TB_DIR)/results.xml
 FST        := $(TB_DIR)/sim_build/$(TOP).fst
-WAVE_SAVE  := dv/wave.gtkw           # curated signal layout applied on open
+
+# --- waveform layouts (dev-only; NOTHING here is on the gate path) -----------
+# dv/waves/ holds one curated GTKWave save file per debug target, so `make wave`
+# opens the FST pre-populated and grouped for THAT scenario instead of blank.
+# default.gtkw is the generic fallback used whenever a test has no bespoke
+# layout.  See README "Waveform debugging" and docs/NOTES.md.
+WAVE_DIR     := dv/waves
+WAVE_DEFAULT := $(WAVE_DIR)/default.gtkw
+WAVE_CHECK   := $(WAVE_DIR)/wave_check.py
+# Per-env dumps written by the `waves-<env>` targets (dv/common/aou_wave_dump.svh
+# is compiled into those builds only, under -DAOU_WAVES).
+SV_FST  := $(SV_DIR)/sim_build/tb_axi_ucie_mem.fst
+OOO_FST := $(OOO_DIR)/sim_build/tb_axi_ucie_ooo.fst
+MRP_FST := $(MRP_DIR)/sim_build/tb_axi_ucie_mrp.fst
+ACT_FST := $(ACT_DIR)/sim_build/tb_aou_act.fst
+# wave_layout(<key>): the bespoke dv/waves/<key>.gtkw when it exists, else the
+# generic layout — so a brand-new test still opens populated.
+wave_layout = $(if $(wildcard $(WAVE_DIR)/$(1).gtkw),$(WAVE_DIR)/$(1).gtkw,$(WAVE_DEFAULT))
 
 IVERILOG_FLAGS       ?= -g2012 -Wall
 VERILATOR_LINT_FLAGS ?= --lint-only -Wall -Wno-DECLFILENAME
@@ -119,7 +136,9 @@ endif
 .PHONY: default help \
 	test test-all test-write-read test-random test-walking test-burst \
 	test-outstanding test-coverage fcov-reset \
-	sv vlt pack act reorder ooo mrp systemc uvm eda-check coverage formal waves wave check regress ci \
+	sv vlt pack act reorder ooo mrp systemc uvm eda-check coverage formal check regress ci \
+	waves waves-sv waves-ooo waves-mrp waves-act waves-all \
+	wave wave-sv wave-ooo wave-mrp wave-act wave-check \
 	lint _lint_iverilog _lint_verilator clean
 
 default: help
@@ -136,7 +155,20 @@ help:
 	@echo "    make test-outstanding  # multiple-outstanding reads (fills initiator queue)"
 	@echo "    make test-coverage     # functional-coverage closure + [COV-FUNC] floor (FCOV_MIN=$(FCOV_MIN)%)"
 	@echo "    make waves             # dump $(FST) (TEST=<name> for one test)"
-	@echo "    make wave              # open the dump in GTKWave"
+	@echo "    make wave              # dump + open in GTKWave with the matching dv/waves/ layout"
+	@echo ""
+	@echo "  Waveform debugging (dev-only — never part of check/regress/ci):"
+	@echo "    make wave TEST=<name>   # cocotb chain; layout = dv/waves/<key>.gtkw, key = <name>"
+	@echo "                           #   minus its _test suffix (write_read, burst,"
+	@echo "                           #   multi_outstanding), else dv/waves/default.gtkw"
+	@echo "    make wave-sv           # dv/sv directed TB      -> dv/waves/sv.gtkw"
+	@echo "    make wave-ooo          # dv/ooo OOO_EN=1 chain  -> dv/waves/ooo.gtkw"
+	@echo "    make wave-mrp          # dv/mrp NUM_RP=2 chain  -> dv/waves/mrp.gtkw"
+	@echo "    make wave-act          # dv/act §8 FSM unit TB  -> dv/waves/act.gtkw"
+	@echo "    make waves-sv|-ooo|-mrp|-act   # just dump the FST (no viewer)"
+	@echo "    make waves-all         # every dump above, in one go"
+	@echo "    make wave-check        # drift-guard: every .gtkw net path must still"
+	@echo "                           #   exist in its dump (LAYOUT=<file> for just one)"
 	@echo ""
 	@echo "  Other DV environments:"
 	@echo "    make sv                # portable SV directed TB under Icarus"
@@ -232,16 +264,70 @@ waves:
 	$(MAKE) -C $(TB_DIR) WAVES=1 $(if $(TEST),TESTCASE=$(TEST),)
 	@echo "[WAVES] wrote $(FST)$(if $(TEST), (single test: $(TEST)),)"
 
-# GTKWave never auto-populates its wave pane, so opening the raw FST looks like a
-# blank/hung window.  Apply $(WAVE_SAVE) so the AXI/flit/memory signals are shown
-# on open.  NO_AT_BRIDGE=1 skips the AT-SPI accessibility bus, whose absent-server
-# timeout is what makes GTK apps appear to hang for seconds under WSLg/headless X.
+# --- per-env waveform dumps (dev-only) ---------------------------------------
+# The SV testbenches gained an opt-in dump hook (dv/common/aou_wave_dump.svh)
+# that is compiled ONLY under -DAOU_WAVES, which only these targets pass — the
+# gate builds the same TBs with not one dump statement elaborated.
+waves-sv:
+	@$(MAKE) --no-print-directory -C $(SV_DIR) waves
+
+waves-ooo:
+	@$(MAKE) --no-print-directory -C $(OOO_DIR) waves
+
+waves-mrp:
+	@$(MAKE) --no-print-directory -C $(MRP_DIR) waves
+
+waves-act:
+	@$(MAKE) --no-print-directory -C $(ACT_DIR) waves
+
+waves-all: waves waves-sv waves-ooo waves-mrp waves-act
+
+# open_gtkwave(<fst>,<layout>): apply the curated layout so the wave pane is
+# populated and grouped on open — GTKWave never auto-adds signals, so without a
+# save file the FST opens blank and looks hung.  NO_AT_BRIDGE=1 skips the AT-SPI
+# accessibility bus, whose absent-server timeout is what makes GTK apps appear
+# to hang for seconds under WSLg/headless X.  No gtkwave on PATH is a clean
+# skip (exit 0) AFTER the dump, so the FST is still there for a viewer elsewhere.
+define open_gtkwave
+@if ! command -v gtkwave >/dev/null 2>&1; then \
+	echo "[WAVE] gtkwave not on PATH — dump is at $(1) (layout: $(2))"; exit 0; fi; \
+echo "[WAVE] opening $(1) in GTKWave (layout: $(2))"; \
+exec env NO_AT_BRIDGE=1 gtkwave $(if $(wildcard $(2)),-a $(2),) $(1)
+endef
+
+# `make wave [TEST=<name>]` — cocotb chain.  The layout key is the test name
+# with its `_test` suffix stripped (write_read_test -> dv/waves/write_read.gtkw);
+# a test with no bespoke layout falls back to dv/waves/default.gtkw.
+WAVE_KEY := $(if $(TEST),$(patsubst %_test,%,$(TEST)),default)
+
 wave:
-	@if ! command -v gtkwave >/dev/null 2>&1; then \
-		echo "[WAVE] gtkwave not on PATH — install GTKWave to view waveforms"; exit 0; fi; \
-	$(MAKE) --no-print-directory waves $(if $(TEST),TEST=$(TEST),); \
-	echo "[WAVE] opening $(FST) in GTKWave (layout: $(WAVE_SAVE))"; \
-	exec env NO_AT_BRIDGE=1 gtkwave $(if $(wildcard $(WAVE_SAVE)),-a $(WAVE_SAVE),) $(FST)
+	@$(MAKE) --no-print-directory waves $(if $(TEST),TEST=$(TEST),)
+	$(call open_gtkwave,$(FST),$(call wave_layout,$(WAVE_KEY)))
+
+wave-sv: waves-sv
+	$(call open_gtkwave,$(SV_FST),$(call wave_layout,sv))
+
+wave-ooo: waves-ooo
+	$(call open_gtkwave,$(OOO_FST),$(call wave_layout,ooo))
+
+wave-mrp: waves-mrp
+	$(call open_gtkwave,$(MRP_FST),$(call wave_layout,mrp))
+
+wave-act: waves-act
+	$(call open_gtkwave,$(ACT_FST),$(call wave_layout,act))
+
+# wave-check: drift-guard for dv/waves/*.gtkw — resolve every net path a layout
+# references against that target's real dump hierarchy and fail, naming the
+# orphan, when a renamed/moved RTL signal has left a stale entry behind (the
+# `eda-check` idea, applied to the wave layer).
+#
+# Deliberately DEV/OPT-IN and NOT part of check/regress/ci: it has to run the
+# sims to produce dumps and it needs GTKWave's fst2vcd, neither of which the
+# byte-identical, wave-free gate may depend on.  Missing dumps or no fst2vcd
+# degrade to a printed SKIP.  Pass FST2VCD=<path> or OSS=<root> for the reader.
+wave-check: waves-all
+	@echo "[WAVE-CHECK] verifying $(words $(wildcard $(WAVE_DIR)/*.gtkw)) layout(s) in $(WAVE_DIR)/"
+	@python3 $(WAVE_CHECK) $(CURDIR) $(if $(LAYOUT),$(LAYOUT),)
 
 # --- gates -------------------------------------------------------------------
 lint: _lint_iverilog _lint_verilator
