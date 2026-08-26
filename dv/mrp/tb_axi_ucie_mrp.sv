@@ -99,6 +99,9 @@ module tb_axi_ucie_mrp
   initial ACLK = 1'b0;
   always #5 ACLK = ~ACLK;
 
+  // Dev-only waveform dump (compiled ONLY under -DAOU_WAVES; never on the gate).
+  `include "aou_wave_dump.svh"
+
   // Shared DV-only flit decoder + VERBOSE=0|1|2 logging helpers.  Included in
   // the TB only (never in rtl/), so VERBOSE=0 emits nothing and the multi-plane
   // datapath is untouched.

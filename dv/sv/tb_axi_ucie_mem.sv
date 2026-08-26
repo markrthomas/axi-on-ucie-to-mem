@@ -66,6 +66,9 @@ module tb_axi_ucie_mem
   initial ACLK = 1'b0;
   always #5 ACLK = ~ACLK;
 
+  // Dev-only waveform dump (compiled ONLY under -DAOU_WAVES; never on the gate).
+  `include "aou_wave_dump.svh"
+
   logic [DW-1:0] ref_mem [0:WORDS-1];
   int            errors, reads;
 

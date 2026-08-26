@@ -1,0 +1,111 @@
+[*] AoU layout : dv/act Sec 8 interface-activation FSM unit test (tb_aou_act).
+[*]
+[*] Emphasis: the Table-24 state machine and everything that moves it.
+[*]   1. state / enabled / act_disabled / error - the FSM verdict signals;
+[*]   2. the Misc handshake, split tx (send_*) versus rx (rx_is_*): ActivateReq /
+[*]      Ack, CrdtGrant, DeactivateReq / Ack;
+[*]   3. the decoded CrdtGrant seed pulse and its five Table-17 grant codes -
+[*]      the credit bank is armed exactly on seed_valid;
+[*]   4. the Sec 8.3.2 Option-2 teardown gate: deact_trig -> deact_pending /
+[*]      quiescing held until data_idle, and the ERROR -> err_clear recovery.
+[*]
+[*] wave-check: env=act
+[dumpfile] "dv/act/sim_build/tb_aou_act.fst"
+[timestart] 0
+[sst_width] 300
+[signals_width] 380
+[pane_width] 1240
+[treeopen] tb_aou_act.
+[treeopen] tb_aou_act.dut.
+[pattern_trace] 1
+[pattern_trace] 0
+@800200
+-Clock / Reset / TB scoreboard
+@28
+tb_aou_act.clk
+tb_aou_act.rstn
+@24
++{checks} tb_aou_act.checks[31:0]
++{errors} tb_aou_act.errors[31:0]
+@1000200
+-Clock / Reset / TB scoreboard
+@800200
+-Sec 8 activation FSM (Table 24)
+@22
++{state} tb_aou_act.dut.state[2:0]
+@28
++{ENABLED} tb_aou_act.dut.enabled
++{DISABLED} tb_aou_act.dut.act_disabled
++{ERROR} tb_aou_act.dut.error
++{in bring-up} tb_aou_act.dut.in_bringup
+@1000200
+-Sec 8 activation FSM (Table 24)
+@800200
+-Misc handshake : transmitted (send_*)
+@28
++{send ActivateReq} tb_aou_act.dut.send_areq
++{send ActivateAck} tb_aou_act.dut.send_aack
++{send CrdtGrant} tb_aou_act.dut.send_crdt
++{send DeactivateReq} tb_aou_act.dut.send_dreq
++{send DeactivateAck} tb_aou_act.dut.send_dack
++{ActivateReq sent} tb_aou_act.dut.areq_sent
++{ActivateAck sent} tb_aou_act.dut.aack_sent
++{CrdtGrant sent} tb_aou_act.dut.crdt_sent
++{DeactivateReq sent} tb_aou_act.dut.dreq_sent
++{DeactivateAck sent} tb_aou_act.dut.dack_sent
++{act tx flit valid} tb_aou_act.dut.act_tx_valid
++{tx handshake} tb_aou_act.dut.tx_fire
+@1000200
+-Misc handshake : transmitted (send_*)
+@800200
+-Misc handshake : received (rx_is_*)
+@28
++{rx is Misc/activation} tb_aou_act.dut.rx_misc_act
++{rx ActivateReq} tb_aou_act.dut.rx_is_areq
++{rx ActivateAck} tb_aou_act.dut.rx_is_aack
++{rx CrdtGrant} tb_aou_act.dut.rx_is_crdt
++{rx DeactivateReq} tb_aou_act.dut.rx_is_dreq
++{rx DeactivateAck} tb_aou_act.dut.rx_is_dack
++{ActivateReq rcvd} tb_aou_act.dut.areq_rcvd
++{ActivateAck rcvd} tb_aou_act.dut.aack_rcvd
++{CrdtGrant rcvd} tb_aou_act.dut.crdt_rcvd
++{DeactivateReq rcvd} tb_aou_act.dut.dreq_rcvd
++{DeactivateAck rcvd} tb_aou_act.dut.dack_rcvd
+@1000200
+-Misc handshake : received (rx_is_*)
+@800200
+-CrdtGrant seed (Table 17 codes)
+@28
++{seed pulse} tb_aou_act.dut.seed_valid
+@22
++{WReq grant} tb_aou_act.dut.seed_wreq[2:0]
++{RReq grant} tb_aou_act.dut.seed_rreq[2:0]
++{WData grant} tb_aou_act.dut.seed_wdata[2:0]
++{RData grant} tb_aou_act.dut.seed_rdata[2:0]
++{WResp grant} tb_aou_act.dut.seed_wresp[1:0]
+@1000200
+-CrdtGrant seed (Table 17 codes)
+@800200
+-Teardown gate (Sec 8.3.2 Option 2) + ERROR recovery
+@28
++{SW deactivate trigger} tb_aou_act.dut.deact_trig
++{deactivate pending} tb_aou_act.dut.deact_pending
++{QUIESCING} tb_aou_act.dut.quiescing
++{data path idle} tb_aou_act.dut.data_idle
++{error now} tb_aou_act.dut.err_now
++{error clear} tb_aou_act.dut.err_clear
+@1000200
+-Teardown gate (Sec 8.3.2 Option 2) + ERROR recovery
+@800200
+-Link + gated data path
+@28
++{link tx valid} tb_aou_act.dut.tx_valid
++{link tx ready} tb_aou_act.dut.tx_ready
++{link rx valid} tb_aou_act.dut.rx_valid
++{link rx ready} tb_aou_act.dut.rx_ready
++{data tx valid (gated)} tb_aou_act.dut.d_tx_valid
++{data tx ready} tb_aou_act.dut.d_tx_ready
++{data rx valid (gated)} tb_aou_act.dut.d_rx_valid
++{data rx ready} tb_aou_act.dut.d_rx_ready
+@1000200
+-Link + gated data path
