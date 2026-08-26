@@ -105,6 +105,10 @@ follow-ons.
   §4.3 flit protocol header, §6 credit flow control on the real bridges, and the
   §8 interface activation FSM
 - `Dockerfile` / `docker/` / `railway.toml` — containerized DV gate (see [`docs/DOCKER.md`](docs/DOCKER.md))
+- `metrics/` — per-run metrics DB + self-contained HTML dashboard (opt-in, **off
+  the gate path**): `schema.sql`, `collect.py`, `dashboard.py`,
+  `coefficients.json`, `capture.sh`, and the committed `metrics.db` /
+  `dashboard.html` — see [Metrics & dashboard](#9-metrics--dashboard)
 - `Makefile` — standard DV gate targets; `docs/PLAN.md` — the design plan
 
 ## The five DV environments
@@ -653,6 +657,79 @@ in the docs), and per-model token/time metrics print at the end.
 You can also hand the swarm a plan — fill in [`docs/SWARM_PLAN.md`](docs/SWARM_PLAN.md),
 set `status: ready`, push to `main`, and the **Plan swarm** workflow implements it
 and opens a PR. Agents live in [`.claude/agents/`](.claude/agents/); see
+[`docs/DOCKER.md`](docs/DOCKER.md).
+
+### 9. Metrics & dashboard
+
+Every run can leave a row of numbers behind: how big the design is, what the DV
+suite actually checked, what the gate cost to run, and what the AI swarm that
+built it spent. They go into a **committed SQLite database**
+(`metrics/metrics.db`) and render into a **single self-contained HTML page**
+(`metrics/dashboard.html`) with trend charts and regression flags.
+
+```bash
+make metrics-capture   # run the gate under /usr/bin/time -v + a timestamped tee
+make metrics           # collect one run row (+ children) into metrics/metrics.db
+make dashboard         # regenerate metrics/dashboard.html
+xdg-open metrics/dashboard.html      # opens offline; no network needed
+```
+
+**All three are opt-in and deliberately OUTSIDE the gate.** `make check`,
+`regress` and `ci` do not depend on any of them, never write the database and
+never run synthesis. That is the point:
+
+> **Measurement must never change the thing it measures.**
+
+Collection is its own step, run *after* a completed gate — in CI as a
+`continue-on-error` post-gate step, in the container behind
+`AOU_POST_METRICS=1`, and locally with the two commands above. A failing
+collector cannot turn a green gate red (or a red one green).
+
+#### What it collects
+
+| domain | examples |
+|--------|----------|
+| **Design / RTL** | gate-equivalent + generic-cell count (total **and per module**), flop count, memory bits, longest combinational path, RTL LOC per module, module count, Verilator `-Wall` warning count, an Fmax **estimate** |
+| **Verification** | line coverage % (`sim/coverage.info`), functional coverage % (`[COV-FUNC]`), SVA/cover/assume property inventory, per-env check counts from the real banners, and per-proof formal status + BMC depth + solve time (parsed from `sby`) |
+| **CI / compute** | gate wall time, core-seconds, peak RSS, %CPU (all from `/usr/bin/time -v`), per-step split, build-vs-run split, runner vCPU/RAM, oss-cad-suite cache hit, an **estimated** CI cost and CPU energy |
+| **AI / swarm** | per-model tokens/cost, prompt-cache hit ratio, turns, output tokens/s — plus **per-agent** and **per-(agent × model)** rows (wall span, turns, tool calls, tool-error rate, tokens, modeled cost + energy) reconstructed from the swarm event stream |
+| **Trends** | each metric's delta vs the previous run, with regressions flagged on the dashboard |
+
+#### Measured vs estimated — never blurred
+
+Every single value carries a `kind`, enforced by a `CHECK` constraint in the
+schema and shown as a coloured badge on the dashboard:
+
+| badge | meaning |
+|-------|---------|
+| **measured** | read out of a real artifact — a log, `coverage.info`, an `sby` status file, `/usr/bin/time -v`, a yosys `stat`, the run result JSON |
+| **estimated** | **modeled**: a measured input × a documented coefficient from [`metrics/coefficients.json`](metrics/coefficients.json). All energy, cost, Fmax and gate-count figures are of this kind — there is no metered energy source and no liberty timing here, and the file says so with provenance and a `verified_on` date |
+| **not attributable** | the number was asked for and the tooling **cannot** supply it. The value is `NULL` and the reason is stored alongside it. Never a fabricated figure |
+
+Two gaps are worth knowing about up front, because they are recorded in the DB
+rather than papered over:
+
+- **Per-agent AI tokens.** Claude Code's `modelUsage` is per-**model** and
+  *aggregates* subagents. Per-agent wall span, turns, tool calls and tool errors
+  are reconstructed from the `stream-json` capture; per-agent *tokens* appear
+  only where the sidechain events expose a `usage` block, and are marked a gap
+  where they do not.
+- **Per-env simulation cycles.** No DV env prints a cycle count, and adding one
+  would change every env's stdout — including the committed `dv/systemc/sc.log`
+  golden log. Measuring it would mean perturbing it, so it is dropped with the
+  reason recorded.
+
+#### The dashboard is genuinely self-contained
+
+CSS, JavaScript and data are all inlined, and the charts are hand-rolled inline
+SVG — no CDN, no `<script src>`, no web font, no `fetch`. `metrics/dashboard.py`
+**verifies** this before writing and refuses to emit a page containing any
+external asset reference or network call. So the file opens from `file://` with
+the network off, and CI publishes it verbatim as the `metrics-dashboard`
+artifact.
+
+Schema, coefficient provenance and the full rationale are in
+[`docs/NOTES.md`](docs/NOTES.md); the container/CI wiring is in
 [`docs/DOCKER.md`](docs/DOCKER.md).
 
 ## Scope & follow-ons

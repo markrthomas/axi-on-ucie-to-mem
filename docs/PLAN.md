@@ -171,6 +171,31 @@ AXI-Lite protocol property set. Flagged optional, not part of the core five.
   the gate stays wave-free and GTKWave-independent. It immediately caught real
   rot: 23 of the old `dv/wave.gtkw`'s 42 net paths had died when the single-plane
   chain moved under the `g_rp1` generate wrapper.
+- **Metrics DB + dashboard (opt-in, off the gate path) — DONE (SWARM_PLAN
+  feature 3 of 3).** `make metrics` collects one row per run into the committed
+  SQLite `metrics/metrics.db` — design (per-module gate/flop/LOC counts from an
+  out-of-gate yosys generic synth, Verilator warning count, an Fmax estimate),
+  verification (line + functional coverage, the property inventory, per-env check
+  counts, per-proof `sby` status/depth/solve time), compute (`/usr/bin/time -v`
+  wall/core-seconds/peak RSS, per-step split, estimated cost + CPU energy) and
+  AI/swarm (per-model **and** per-agent and per-(agent × model) tokens, turns,
+  tool-error rate, modeled cost + energy). `make dashboard` renders it into the
+  **single self-contained** `metrics/dashboard.html` (inlined CSS/JS/data,
+  hand-rolled inline-SVG trend charts, regression flags) — the generator refuses
+  to emit a page with any external asset reference, and that guard is
+  mutation-tested.
+  Two rules are structural, not stylistic: every value carries
+  `kind ∈ {measured, estimated, not_attributable}` under a schema `CHECK`, so a
+  modeled energy figure can never masquerade as a measurement; and a number the
+  tooling cannot attribute is stored as a **NULL with its reason** rather than
+  invented (per-agent tokens where the sidechain exposes no `usage`, per-model
+  wall time, and per-env sim cycles — the last dropped because printing a cycle
+  count would change every env's stdout and break the committed
+  `dv/systemc/sc.log` golden diff, i.e. perturb the thing being measured).
+  Nothing is on the gate path: `check`/`regress`/`ci` gained no dependency, and
+  collection runs afterwards (CI post-gate step, `AOU_POST_METRICS=1` in the
+  container, `make metrics-capture && make metrics` locally). Schema and
+  coefficient provenance: [`docs/NOTES.md`](NOTES.md).
 - **`.github/workflows/ci.yml`** — GitHub Actions running `make ci`.
 - **`README.md`** — mirror `../uvm_review/README.md` depth: architecture +
   mermaid diagrams, a spec→RTL field-mapping table, per-env run instructions, a
