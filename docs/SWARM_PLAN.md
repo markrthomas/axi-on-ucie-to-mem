@@ -1,5 +1,5 @@
 ---
-status: draft
+status: ready
 ---
 
 # Swarm implementation plan
@@ -12,92 +12,103 @@ status: draft
 
 ## Goal
 
-**Feature 1 of 3 — verbose logging to files (packet-level + full-debug).** Today a
-partial facility exists: `VERBOSE=1` at the repo root passes `+verbose`, and the SV
-TBs print `[SV-TB][T]` **AXI transaction** traces while the cocotb BFM logs at DEBUG.
-Complete it into a **consistent, two-level, file-based** logging facility across
-**all DV envs**, and make it log the **AoU packets/flits** (not just AXI beats).
+**Feature 2 of 3 — per-test GTKWave layouts (`.gtkw`) for one-click debug.** Today
+there is a *single* curated layout, `dv/wave.gtkw`, that `make wave` applies with
+`gtkwave -a` so the FST doesn't open blank — but one flat signal list can't suit
+every test. A `write_read` run wants the AXI AW/W/B/AR/R channels and the memory;
+an `ooo` run wants the reorder-buffer slots and per-ID hold state; an `mrp` run
+wants the per-plane credit banks and the RP arbiter; an `act` run wants the §8
+activation FSM and CrdtGrant handshake. Give **each debug target its own `.gtkw`**
+with signals **grouped and named** for that scenario, and make `make wave
+TEST=<name>` (and the per-env wave flows) open the *matching* layout automatically,
+so a failing run is inspectable in seconds without hand-adding signals.
 
-Two levels, one knob:
-- **`VERBOSE=1` (packet/verbose):** a human-readable trace of every AoU **flit**
-  crossing each UCIe link — decoded: message type (WriteReq/ReadReq/WriteData/
-  ReadData/WriteResp/Misc), FDId/plane, MsgStart, MsgCredit, granule count, and the
-  key fields (id/addr/data/resp/last) — **plus** the existing AXI transaction trace.
-- **`VERBOSE=2` (full debug):** everything in L1 **plus** internal state needed to
-  debug: activation FSM state/transitions, per-message-type credit counters in both
-  bridges, initiator request-queue occupancy, reorder-buffer slot state (F2), RP
-  arbiter grants + per-plane RX-queue depth (F1), and OOO hold state (F2).
+This is the wave viewer the user chose: **GTKWave `.gtkw`** save files.
 
-Every level writes to a **per-test log file** (not just stdout) so a failing run is
-inspectable after the fact.
+## Hard invariant — the gate is untouched
 
-## Hard invariant — `VERBOSE=0` (default) stays byte-identical
-
-The whole gate depends on stable banners/baselines (SystemC even diffs a committed
-`dv/systemc/sc.log`). At `VERBOSE=0`, every env's stdout must be **exactly** as
-today — all new logging is behind the level gate and emitted only at L1/L2. No RTL
-behavior change; logging is additive DV only.
+Waveforms are a **dev-only convenience**. `make check` / `regress` / `ci` must be
+**bit-and-cycle identical** — they never dump waves and never read a `.gtkw`. The
+`.gtkw` files are static text applied only by the interactive `make wave*` targets;
+no RTL/TB behavior changes. `WAVES` unset (the default everywhere) stays exactly as
+today. Prove it: every env's gate banners/read-counts are unchanged and the SystemC
+`sc.log` diff is clean.
 
 ## Scope & files
 
-1. **Shared flit decoder (one source of truth).** Add a pure, non-synthesizable
-   flit→string decoder so SV and SystemC render a flit identically: either a
-   `` `ifndef SYNTHESIS `` function in `rtl/aou_pkg.sv` (used only by TBs, never
-   instantiated in the datapath) or a `dv/common/` helper. cocotb gets a small
-   Python mirror (reuse the §4.3/§5.8 byte map already encoded in `dv/pack`). It
-   must decode msgtype, FDId, MsgStart, MsgCredit (+RP subfield), granule count,
-   and per-type fields. **Prove the L0 datapath is unaffected** (function unused
-   when not logging).
+1. **A `dv/waves/` layout set — one `.gtkw` per debug target.** Author curated
+   GTKWave save files with **`@` group markers** (open/close groups) and
+   human-readable aliases, one per scenario, at minimum:
+   - `write_read.gtkw`, `burst.gtkw`, `multi_outstanding.gtkw` (cocotb AXI tests:
+     AW/W/B/AR/R channel beats + the UCIe flit/credit boundary + memory word).
+   - `ooo.gtkw` (the `dv/ooo` chain: reorder-buffer slot valid/id/data, OOO hold
+     state, response-source mux — the F2/OOO internals).
+   - `mrp.gtkw` (the `dv/mrp` chain: per-plane RX-queue depth, per-plane credit
+     banks, the RP arbiter grants + FDId routing).
+   - `act.gtkw` (the `dv/act` FSM: activation state, CrdtGrant, data_idle teardown
+     gate, ERROR recovery).
+   Group by protocol layer (AXI channel / UCIe flit / credit / memory / internal
+   FSM). Keep `dv/wave.gtkw` as the **generic fallback** when no per-test file
+   matches (or move it into `dv/waves/default.gtkw` and update `WAVE_SAVE`).
 
-2. **One verbosity knob, threaded everywhere.** Root `Makefile`: `VERBOSE ?= 0`
-   (accept `0|1|2`; keep `VERBOSE=1` meaning "verbose" as today, add `2`). Pass it
-   down to each env: `+verbose=<lvl>` (SV/Icarus/Verilator via `$value$plusargs`),
-   a define or run-arg for SystemC, and an env var / cocotb log-level for cocotb.
-   A single documented mapping: 0=off, 1=packet+txn, 2=+internal debug.
+2. **Auto-select the layout in `make wave`.** Root `Makefile`: pick
+   `dv/waves/<key>.gtkw` for the requested `TEST`/env, falling back to the generic
+   layout if the specific one is absent — so `gtkwave -a <the right file>`. Keep the
+   `NO_AT_BRIDGE=1` / graceful "gtkwave not on PATH → skip, exit 0" behavior that is
+   already there. Extend the wave flow beyond cocotb to the envs whose TBs can emit
+   a dump (`ooo`, `mrp`, `act`, `sv`) — add a `WAVES=1` dump path + a `wave-<env>`
+   convenience target where one doesn't exist yet, mirroring the cocotb one. If a
+   given TB genuinely can't dump under its simulator, say so in the PR rather than
+   faking it.
 
-3. **Per-test log files.** Each env writes `logs/<env>[_<test>].log` (gitignored)
-   via `$fopen`/`$fdisplay` (SV/SystemC) or a Python `FileHandler` (cocotb), tagged
-   with the env's existing `[..]` banner style (`[SV-TB][T]`, `[SC-TB][T]`,
-   `[COCOTB]`, etc.). The passing PASS/○ banners still go to stdout unchanged.
-   Add a `logs/` ignore and a `make clean` sweep.
+3. **A `.gtkw` freshness check (so layouts can't silently rot).** Add a lightweight
+   `make wave-check` that, for each `dv/waves/*.gtkw`, verifies every referenced
+   signal path still exists in that target's dump hierarchy (derive the signal list
+   from a generated FST/VCD via the oss-cad-suite `fst`/`vcd` tooling, or from an
+   iverilog/Verilator hierarchy dump). Fail with the orphaned `net path` when a
+   renamed RTL signal has left a stale entry — the same "drift-guard with teeth"
+   spirit as `eda-check`. This is a **dev/opt-in** target: it needs a dump (and
+   GTKWave-free parsing), so **do NOT add it to `check`/`ci`** (keep the gate
+   byte-identical and gtkwave-independent); wire it into `help` and mention it in
+   docs. If deriving the hierarchy cheaply isn't feasible for some env, degrade
+   gracefully (skip that env with a printed note) rather than blocking.
 
-4. **Packet logging (L1)** in the envs that carry real flits end-to-end (cocotb, sv,
-   systemc, ooo, mrp) — decode each flit at the link boundary (`tx_valid/rx_valid`
-   handshake) and log it. Unit envs (pack/act/reorder) log their existing
-   check-level detail at L1.
-
-5. **Full-debug logging (L2)** — internal state. Prefer TB-side hierarchical
-   references to the RTL state (no RTL edits); if a signal isn't reachable, add a
-   `` `ifndef SYNTHESIS `` debug-only observation port or `$display` in the RTL
-   **gated by a plusarg/param that is off by default** — never alter behavior.
-
-6. **Docs** — `README.md` (a "Debug logging" section: the `VERBOSE=0|1|2` levels,
-   where the logs land, a sample decoded-flit line) and `docs/DOCKER.md`. Note the
-   log files are for humans; CI runs at `VERBOSE=0`.
+4. **Docs (required — update in this same PR).**
+   - `README.md` — a "Waveform debugging" section: the per-test layouts, `make wave
+     TEST=<name>` / `wave-<env>`, what each layout emphasizes, a screenshot-free
+     description of the groups, and the `wave-check` guard.
+   - `Makefile` `help:` — lines for any new/changed wave target + the `TEST=` keys.
+   - `docs/NOTES.md` — a short note on the layout conventions (group scheme, naming).
+   - `docs/DOCKER.md` — only if the container/gate story changes (it should not; the
+     gate stays wave-free) — otherwise state "N/A, gate unchanged" in the PR.
+   - `docs/PLAN.md` — mark F2 done + what shipped.
 
 ## Acceptance
 
-- `make check` at the **default** `VERBOSE=0`: every env byte-identical green
-  (unchanged banners/read-counts, SystemC `sc.log` diff clean), `make coverage` ≥
-  `COV_MIN`, formal 4 proofs, `eda-check` clean.
-- `make check VERBOSE=1`: still green; each flit-carrying env writes a `logs/*.log`
-  containing **decoded flit lines** (msgtype/FDId/credit/fields) for its traffic.
-- `make <env> VERBOSE=2`: the log additionally shows internal state (FSM/credits/
-  queues/arbiter/reorder) for at least cocotb + sv + one of ooo/mrp.
-- No RTL behavior change; the decoder is unused on the L0 datapath.
-- Docs updated; `.gitignore` covers `logs/`.
+- `make check` (and `regress`/`ci`) **byte-identical green** — no env dumps waves,
+  no `.gtkw` read on the gate path; SystemC `sc.log` diff clean.
+- `make wave TEST=write_read_test` opens (or, with no gtkwave, cleanly skips with
+  exit 0 after dumping) using `dv/waves/write_read.gtkw`; likewise the `ooo`, `mrp`,
+  `act` flows each pick up their own layout. Each layout opens **pre-populated and
+  grouped** (no blank pane, no hand-adding signals).
+- `make wave-check` passes on the committed layouts, and **fails** if a signal path
+  in a `.gtkw` is renamed/removed (demonstrate the failure in the PR — the guard has
+  teeth).
+- Docs updated as above; `.gitignore` still covers generated dumps (`*.fst`,
+  `*.vcd`, `sim_build/`, `obj_dir/`).
 
 ## Notes / constraints — READ
 
-- **Additive DV, no RTL behavior change.** L0 must be byte-identical; if L2 truly
-  needs an internal signal that can't be reached from the TB, add a synthesis-
-  excluded, default-off debug hook — do NOT change datapath logic. If that can't be
-  done cleanly for some env, log what IS reachable and note the gap in the PR
-  (**STOP-and-report over faking**).
-- One decoder, one level-mapping — don't fork per-env conventions.
-- Keep it the **first of three** planned features (wave configs and a metrics DB
-  follow as separate plans) — do not scope-creep into those here.
-- Follow repo conventions (pinned-tool paths, `[..]` banners, one clean commit per
-  logical step, `Co-Authored-By` trailer). Never commit on `main`; branch, open a
-  PR, checkpoint continuously (branch early, push incrementally, draft PR, mark
+- **Additive, dev-only.** No RTL/TB behavior change; the gate never touches waves.
+  If an env's simulator can't produce a dump its `.gtkw` needs, **STOP and report**
+  it in the PR (mark PARTIAL) — never fake a layout against signals that don't exist.
+- **One layout scheme, not per-env dialects** — shared group naming/order so the
+  files read consistently; the fallback-to-generic keeps `make wave` working for a
+  test with no bespoke layout yet.
+- This is the **second of three** planned features (a metrics DB + dashboard is F3,
+  a separate plan) — do not scope-creep into F3 (no metrics/telemetry here).
+- Follow repo conventions: pinned-tool absolute paths, `[WAVES]`/`[WAVE]` banner
+  style already in the `Makefile`, one clean commit per logical step, the
+  `Co-Authored-By` trailer. **Never commit on `main`** — branch, open a PR, and
+  checkpoint continuously (branch early, push incrementally, draft PR, mark
   "PARTIAL — resume needed" on cutoff).
