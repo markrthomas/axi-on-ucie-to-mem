@@ -52,7 +52,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 # coverage —" banner (crashed the write_read_test on Railway). ubuntu:24.04 ships
 # C.UTF-8 built in, so this needs no locale-gen. Byte-identical output on a
 # UTF-8-capable sink; it only stops the crash on an ASCII one.
-ENV LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONIOENCODING=UTF-8 PYTHONUTF8=1
+#
+# PYTHONUNBUFFERED makes cocotb/pyuvm output stream live rather than block-buffer
+# when stdout is a pipe (the cloud captures logs off a pipe) — see the stdbuf
+# wrapper in docker/entrypoint.sh. Flush timing only; output bytes unchanged.
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONIOENCODING=UTF-8 PYTHONUTF8=1 PYTHONUNBUFFERED=1
 
 # --- RTL tools (Icarus + SystemC) + build/runtime deps, from apt --------------
 # iverilog: cocotb VPI + the Icarus directed/pack/act/reorder flows.
