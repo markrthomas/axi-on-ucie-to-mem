@@ -32,6 +32,44 @@ MAKE_ARGS=(
 # any preload.  The C toolchain block-buffers when stdout is a pipe; that is a
 # cosmetic log-latency tradeoff, accepted to keep the pinned tools working.
 
+# --- log-volume control for rate-limited cloud log sinks ---------------------
+# `make ci` is very chatty: Verilator's generated build echoes a ~500-char g++
+# command PER source file across ~7 Verilator-building envs. Railway rate-limits
+# log INGESTION (~500 lines/s + a volume cap), so an unfiltered gate maxes the
+# limit and buries the useful banners. On Railway (auto-detected) forward only the
+# SIGNAL — `[BRACKET]` banners, warnings, errors, PASS/FAIL — to the log stream,
+# while the FULL transcript is tee'd to a file and, on failure, tail-dumped so a
+# red run is still debuggable. Everywhere else (local `docker run`, CI) the gate
+# streams verbatim as before. Override with AOU_CI_QUIET=1/0. The exit status is
+# always make's (via PIPESTATUS), never grep's.
+if [ -n "${AOU_CI_QUIET:-}" ]; then
+  _ci_quiet="${AOU_CI_QUIET}"
+elif [ -n "${RAILWAY_SERVICE_ID:-}${RAILWAY_PROJECT_ID:-}${RAILWAY_ENVIRONMENT:-}" ]; then
+  _ci_quiet=1
+else
+  _ci_quiet=0
+fi
+
+_CI_LOG="${AOU_CI_LOG:-/tmp/aou-ci-full.log}"
+# Signal lines: [ENV-TB]/[STAGE] banners, tool errors/warnings, PASS/FAIL, the
+# iverilog "sorry:" notes, $finish, assertion hits, and make's *** failure line.
+_CI_SIGNAL_RE='(\[[A-Z][A-Z0-9_-]+\])|([Ee]rror)|([Ww]arning)|(%Error)|(%Warning)|(PASS)|(FAIL)|(\bsorry:)|(Assertion)|(\$finish)|(make(\[[0-9]+\])?: \*\*\*)'
+
+run_make() {
+  if [ "${_ci_quiet}" != "1" ]; then
+    exec make "$@"          # verbatim, unchanged behavior (local / CI)
+  fi
+  set +e
+  make "$@" 2>&1 | tee "${_CI_LOG}" | grep --line-buffered -E "${_CI_SIGNAL_RE}"
+  local rc=${PIPESTATUS[0]}
+  set -e
+  if [ "${rc}" -ne 0 ]; then
+    echo "=== gate FAILED (rc=${rc}) — last 200 lines of full transcript ==="
+    tail -n 200 "${_CI_LOG}" 2>/dev/null || true
+  fi
+  exit "${rc}"
+}
+
 # Headless Claude Code agent mode (layered ON TOP of the DV gate — it is only
 # reached when explicitly requested; the default and `make …` paths below are
 # unchanged).  See docker/agent.sh and docs/DOCKER.md.
@@ -51,10 +89,10 @@ if [ "${1:-}" = "swarm" ]; then
 fi
 
 if [ "$#" -eq 0 ]; then
-  exec make ci "${MAKE_ARGS[@]}"
+  run_make ci "${MAKE_ARGS[@]}"
 elif [ "$1" = "make" ]; then
   shift
-  exec make "$@" "${MAKE_ARGS[@]}"
+  run_make "$@" "${MAKE_ARGS[@]}"
 else
   exec "$@"
 fi
