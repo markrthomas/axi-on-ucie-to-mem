@@ -137,6 +137,7 @@ endif
 	test test-all test-write-read test-random test-walking test-burst \
 	test-outstanding test-coverage fcov-reset \
 	sv vlt pack act reorder ooo mrp systemc uvm eda-check coverage formal check regress ci \
+	metrics dashboard metrics-capture \
 	waves waves-sv waves-ooo waves-mrp waves-act waves-all \
 	wave wave-sv wave-ooo wave-mrp wave-act wave-check \
 	lint _lint_iverilog _lint_verilator clean
@@ -191,6 +192,15 @@ help:
 	@echo "    make check             # lint + eda-check + cocotb + SV(Icarus+Verilator) + pack + act + reorder + ooo + mrp + SystemC"
 	@echo "    make regress           # check + coverage + formal (CI-style pass/fail)"
 	@echo "    make ci                # regress"
+	@echo ""
+	@echo "  Metrics & dashboard (opt-in, POST-gate — never part of check/regress/ci):"
+	@echo "    make metrics-capture   # run the gate under /usr/bin/time + a timestamped tee"
+	@echo "                           #   (artifacts land in $(METRICS_CAPTURE)/)"
+	@echo "    make metrics           # collect design/verif/compute/AI numbers -> $(METRICS_DB)"
+	@echo "                           #   (runs its own yosys synth; METRICS_ARGS=--no-synth to skip)"
+	@echo "    make dashboard         # regenerate the self-contained $(METRICS_HTML)"
+	@echo "                           #   (inlined CSS/JS/data, no external requests — open it offline)"
+	@echo "                           #   every value is tagged measured | estimated | not attributable"
 	@echo ""
 	@echo "  Debug logging (one knob, every env — see README 'Debug logging'):"
 	@echo "    VERBOSE=0               # default: no extra output (byte-identical stdout)"
@@ -494,6 +504,43 @@ regress: check coverage formal
 ci: regress
 	@echo "[CI] full regression PASSED"
 
+# --- metrics & dashboard (F3) ------------------------------------------------
+# DELIBERATELY OUTSIDE the gate.  `check`/`regress`/`ci` do not depend on any
+# target below, do not write the database and do not run synthesis: measurement
+# must never change the thing it measures, so collection is its own step that
+# runs AFTER a completed gate (see docs/NOTES.md "Metrics DB" and docs/DOCKER.md
+# "Post-gate metrics step").  Nothing here can fail the gate.
+#
+#   make metrics-capture   run the real gate wrapped in /usr/bin/time -v and a
+#                          timestamped tee — the wrapper observes from outside
+#                          and adds no work to any timed DV run.
+#   make metrics           read those artifacts (+ sim/coverage.info, formal/*,
+#                          dv/cocotb/fcov.json, docker/last-run-metrics.json,
+#                          a swarm stream-json) and insert ONE run row.
+#   make dashboard         regenerate the single self-contained HTML file.
+METRICS_DIR     := metrics
+METRICS_DB      := $(METRICS_DIR)/metrics.db
+METRICS_HTML    := $(METRICS_DIR)/dashboard.html
+METRICS_CAPTURE := $(METRICS_DIR)/_capture
+# Runs shown on the dashboard's trend charts.
+DASH_RUNS ?= 20
+# Extra flags for the collector, e.g. METRICS_ARGS="--no-synth --trigger local".
+METRICS_ARGS ?=
+
+metrics-capture:
+	@$(METRICS_DIR)/capture.sh gate $(MAKE) ci \
+		VERILATOR=$(VERILATOR) VERILATOR_ROOT=$(VERILATOR_ROOT) \
+		VERILATOR_COV=$(VERILATOR_COV) SBY=$(SBY)
+
+metrics:
+	@python3 $(METRICS_DIR)/collect.py \
+		--db $(METRICS_DB) --capture-dir $(METRICS_CAPTURE) \
+		$(if $(strip $(VERILATOR)),--verilator $(VERILATOR),) $(METRICS_ARGS)
+
+dashboard:
+	@python3 $(METRICS_DIR)/dashboard.py \
+		--db $(METRICS_DB) --out $(METRICS_HTML) --runs $(DASH_RUNS)
+
 # --- clean -------------------------------------------------------------------
 clean:
 	$(MAKE) -C $(TB_DIR) clean 2>/dev/null || true
@@ -507,6 +554,8 @@ clean:
 	$(MAKE) -C $(UVM_DIR) clean 2>/dev/null || true
 	rm -f $(FCOV_DB)
 	rm -rf $(LOG_DIR)
+	# Transient metrics captures only — never the committed metrics.db/dashboard.html.
+	rm -rf $(METRICS_CAPTURE)
 	rm -rf $(TB_DIR)/sim_build $(TB_DIR)/__pycache__ __pycache__ \
 		results.xml dump.fst dump.vcd obj_dir \
 		$(COV_DIR) sim/coverage.info sim/coverage.dat sim/annotated
