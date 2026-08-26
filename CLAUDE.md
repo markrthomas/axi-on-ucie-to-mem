@@ -115,6 +115,14 @@ license-gated flow degrades gracefully (prints a skip, exits 0). See
   in the `Dockerfile` (`ENV LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONIOENCODING=UTF-8
   PYTHONUTF8=1`), so all envs are covered — don't chase individual characters. Keep
   that ENV; if you add a non-Docker cloud path, set the same there.
+- **Never `stdbuf`/`unbuffer` the gate (bundled-glibc clash):** to make cloud logs
+  stream live, wrapping `make` in `stdbuf -oL` is the obvious move — and it **breaks
+  the gate at `make lint`**. `stdbuf` `LD_PRELOAD`s the system `libstdbuf.so` (glibc
+  2.38) into every child, but the pinned oss-cad-suite tools (Verilator, `sby`) run
+  against their own **older bundled glibc** → `version 'GLIBC_2.38' not found` and the
+  tool dies. Same trap for any system-lib `LD_PRELOAD` into oss-cad-suite binaries.
+  For live logs use Python-only `PYTHONUNBUFFERED=1` (cocotb is the leg that matters);
+  the C tools block-buffer under a pipe — accepted. See [[docker-railway-dv-gate]].
 
 ## Conventions
 

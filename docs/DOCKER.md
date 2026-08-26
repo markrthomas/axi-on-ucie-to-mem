@@ -212,18 +212,29 @@ Python I/O encoding makes stdout byte-identical to a dev host and stops the cras
 outside the container inherit the host's already-UTF-8 locale, which is why this
 never reproduced on a dev machine.
 
-### Live log streaming (why the gate is line-buffered)
+### Live log streaming (Python only — why not `stdbuf`)
 
 When stdout is a **pipe** (the cloud captures logs off a pipe, not a TTY), glibc
 **full-buffers** each process, so a long `make ci` can print *nothing* until it
-exits — in the Railway/CI log viewer a running gate is then indistinguishable from
-a hung one. To stream output live, `docker/entrypoint.sh` wraps the gate in
-**`stdbuf -oL -eL`** (line-buffer stdout+stderr). Because `stdbuf` works via an
-`LD_PRELOAD` shim + env vars, it propagates to the child tools too
-(Verilator/Icarus/`sby`/gcc). Python bypasses libc stdio buffering, so
-**`PYTHONUNBUFFERED=1`** (in the ENV above) covers cocotb/pyuvm. This is **flush
-timing only** — the output bytes are unchanged, so every banner/baseline (incl.
-the SystemC `sc.log` diff) stays byte-identical.
+exits — in the Railway/CI log viewer a running gate then looks like a hung one.
+The natural fix, `stdbuf -oL`, **cannot be used here**: it works by
+`LD_PRELOAD`-ing the *system* `libstdbuf.so` (built against this image's glibc
+2.38) into every child, but the pinned **oss-cad-suite** tools (Verilator, `sby`)
+run against their own **bundled, older glibc**, which lacks `GLIBC_2.38` — so the
+preload fails to resolve and the tool dies at `make lint`:
+
+```
+verilator_bin: /opt/oss-cad-suite/lib/libc.so.6: version `GLIBC_2.38' not found
+  (required by /usr/libexec/coreutils/libstdbuf.so)
+```
+
+So streaming is **Python-only**, via **`PYTHONUNBUFFERED=1`** (in the ENV above):
+cocotb/pyuvm — the leg where a live trace matters, and where the em-dash crash
+lived — stream line-by-line, with no preload. The C toolchain (Verilator/Icarus/
+`sby`/gcc) still block-buffers under a pipe; that's an accepted cosmetic
+log-latency tradeoff to keep the pinned tools working. Output bytes are unchanged
+either way, so every banner/baseline (incl. the SystemC `sc.log` diff) stays
+byte-identical.
 
 ---
 
