@@ -19,6 +19,17 @@ MAKE_ARGS=(
   "SBY=${OSS}/bin/sby"
 )
 
+# Stream the gate's output LIVE instead of block-buffering it.  When stdout is a
+# pipe (the cloud captures logs off a pipe, not a TTY), glibc full-buffers each
+# process, so a long `make ci` shows *nothing* until it exits — a running gate is
+# indistinguishable from a hung one in the Railway/CI log viewer.  `stdbuf -oL -eL`
+# forces line-buffering, and because stdbuf works via LD_PRELOAD (libstdbuf.so) +
+# env, it propagates to the child tools too (Verilator/Icarus/sby/gcc).  Python
+# ignores libc stdio buffering, so PYTHONUNBUFFERED=1 (set in the Dockerfile ENV)
+# covers cocotb/pyuvm.  Timing only — output bytes are unchanged, so the gate's
+# banners/baselines (incl. the SystemC sc.log diff) stay byte-identical.
+STREAM=( stdbuf -oL -eL )
+
 # Headless Claude Code agent mode (layered ON TOP of the DV gate — it is only
 # reached when explicitly requested; the default and `make …` paths below are
 # unchanged).  See docker/agent.sh and docs/DOCKER.md.
@@ -38,10 +49,10 @@ if [ "${1:-}" = "swarm" ]; then
 fi
 
 if [ "$#" -eq 0 ]; then
-  exec make ci "${MAKE_ARGS[@]}"
+  exec "${STREAM[@]}" make ci "${MAKE_ARGS[@]}"
 elif [ "$1" = "make" ]; then
   shift
-  exec make "$@" "${MAKE_ARGS[@]}"
+  exec "${STREAM[@]}" make "$@" "${MAKE_ARGS[@]}"
 else
   exec "$@"
 fi
