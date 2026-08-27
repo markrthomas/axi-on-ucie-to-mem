@@ -144,6 +144,16 @@ ENV VL_JOBS=2
 # Anthropic-compatible endpoint, needs KIMI_API_KEY).  Keys are ALWAYS injected
 # at run time — never baked in.  Resolution lives in docker/provider-env.sh.
 ENV AOU_MODEL_PROVIDER=anthropic
+# Post-gate metrics (SWARM_PLAN F3).  OFF by default so `docker run aou-dv` is
+# byte-identical to before.  With -e AOU_POST_METRICS=1 the container runs the
+# gate through metrics/capture.sh (an outside-only /usr/bin/time + timestamped
+# tee wrapper — no work is added inside any timed DV run) and then collects a
+# metrics row and regenerates metrics/dashboard.html.  Collection is additive:
+# the container still exits with the GATE's status.  See docs/DOCKER.md.
+ENV AOU_POST_METRICS=0
+# metrics/*.sh and *.py are invoked directly by the entrypoint's post-gate path.
+RUN chmod +x /work/metrics/capture.sh /work/metrics/collect.py \
+             /work/metrics/dashboard.py /work/metrics/stamp.py
 COPY docker/entrypoint.sh   /usr/local/bin/entrypoint.sh
 COPY docker/agent.sh        /usr/local/bin/agent.sh
 COPY docker/swarm.sh        /usr/local/bin/swarm.sh

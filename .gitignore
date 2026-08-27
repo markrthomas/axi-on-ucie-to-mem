@@ -1,5 +1,8 @@
 START_NOTES
 NOTES.md
+# ...but docs/NOTES.md IS a committed design-notes document; the bare pattern
+# above is for a personal scratch NOTES.md at the repo root.
+!docs/NOTES.md
 # editor swap files
 *.swp
 *.swo
@@ -56,3 +59,9 @@ oss-cad-suite/
 
 # Per-test debug logs written by `make <env> VERBOSE=1|2` (see README)
 logs/
+
+# Metrics (F3).  The captured artifacts `make metrics` reads are TRANSIENT and
+# per-run — gate logs, /usr/bin/time output, the swarm stream-json.  The
+# database and the rendered dashboard are the DELIVERABLES and ARE committed
+# (see README "Metrics & dashboard"), so do not add them here.
+metrics/_capture/

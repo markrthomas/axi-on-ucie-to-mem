@@ -24,6 +24,9 @@
 #   SWARM_ALLOWED_TOOLS     default "Bash,Read,Edit,Write,Grep,Glob,Task,Agent".
 #   AOU_METRICS / AOU_METRICS_JSON   per-model token/time metrics at end of run
 #                       (set AOU_METRICS=0 to disable); see render-metrics.py.
+#   AOU_STREAM_JSON     where to tee the raw event stream for `make metrics`
+#                       (default metrics/_capture/swarm-stream.jsonl, gitignored);
+#                       set it EMPTY to skip the capture.
 set -euo pipefail
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -110,6 +113,13 @@ fi
 # report on stdout and the per-model token/time summary on stderr, and archive
 # the raw result JSON for CI.
 metrics_json="${AOU_METRICS_JSON:-$ROOT/docker/last-run-metrics.json}"
+# Raw event stream, one JSON object per line with an added `_ts_epoch`.  This is
+# the ONLY source of per-agent numbers: Claude Code's result `modelUsage` is
+# per-MODEL and aggregates subagents, so metrics/collect.py reconstructs each
+# agent's span/turns/tool-calls (and tokens where the sidechain exposes them)
+# from the Task spans here.  Gitignored, transient; AOU_STREAM_JSON=/dev/null (or
+# an empty value) turns it off.  See metrics/collect.py -> collect_ai_from_stream.
+stream_json="${AOU_STREAM_JSON-$ROOT/metrics/_capture/swarm-stream.jsonl}"
 start="$(date +%s)"
 set +e
 claude -p "$prompt" \
@@ -119,7 +129,8 @@ claude -p "$prompt" \
   "$@" \
   | python3 "$SELF_DIR/render-metrics.py" \
       --emit text --provider "$AOU_PROVIDER" \
-      --json-out "$metrics_json" --wall-start "$start"
+      --json-out "$metrics_json" --wall-start "$start" \
+      ${stream_json:+--stream-out "$stream_json"}
 # Snapshot the whole PIPESTATUS array in one shot: a plain assignment resets
 # PIPESTATUS, so reading [0] then [1] on separate commands loses [1] (and under
 # `set -u` that read is an "unbound variable" fatal error).

@@ -162,6 +162,113 @@ Entrypoint dispatch:
 
 ---
 
+## Post-gate metrics step (`AOU_POST_METRICS`)
+
+`make metrics` / `make dashboard` collect the per-run design / verification /
+compute / AI numbers into the committed `metrics/metrics.db` and render
+`metrics/dashboard.html`. They are **opt-in and outside the gate** — no
+`check`/`regress`/`ci` target depends on them, they never write the DB on the
+gate path, and they never run synthesis inside a timed DV run. The governing
+rule is *measurement must never change the thing it measures*; the full
+rationale and schema live in [`NOTES.md`](NOTES.md).
+
+In the image the whole thing is behind one knob, **off by default**:
+
+```bash
+# unchanged behaviour — byte-identical to before
+docker run --rm aou-dv
+
+# gate + post-gate metrics collection + dashboard regeneration
+docker run --rm -e AOU_POST_METRICS=1 aou-dv
+
+# works for a single environment too
+docker run --rm -e AOU_POST_METRICS=1 aou-dv make ooo
+```
+
+With the knob set, the entrypoint:
+
+1. runs the gate through `metrics/capture.sh`, which wraps it in
+   `/usr/bin/time -v` (exact wall clock, core-seconds, peak RSS, %CPU) and a
+   timestamped `tee`. This observes the gate from the **outside** only — no work
+   is added inside any timed DV run, and there is deliberately **no `stdbuf` and
+   no `LD_PRELOAD`** (see "Live log streaming" below: preloading the system
+   `libstdbuf.so` into the pinned oss-cad-suite tools kills `make lint`);
+2. **captures the gate's exit status**;
+3. runs `make metrics` then `make dashboard`, each of which may fail harmlessly
+   — a failure only prints;
+4. exits with the **gate's** status from step 2.
+
+So the metrics step is strictly additive: it **cannot** turn a green gate red,
+nor a red one green. (Verified by inducing a collector crash: the run still
+exited `0`.)
+
+### Knobs
+
+| variable | default | effect |
+|----------|---------|--------|
+| `AOU_POST_METRICS` | `0` | `1` enables the post-gate capture + collect + dashboard sequence described above |
+| `AOU_CAPTURE_DIR` | `metrics/_capture` | where `metrics/capture.sh` writes `<label>.log` / `<label>.time` (gitignored, transient) |
+| `AOU_STREAM_JSON` | `metrics/_capture/swarm-stream.jsonl` | where `docker/swarm.sh` tees the raw agent event stream, which is the **only** source of per-agent numbers (`modelUsage` is per-model and aggregates subagents). Set it empty to skip |
+| `AOU_OSS_CACHE_HIT` | unset | CI sets this from the `actions/cache` output so the collector can record the oss-cad-suite cache hit/miss; unset ⇒ recorded as *not attributable* |
+| `METRICS_ARGS` | empty | extra flags for the collector, e.g. `--no-synth` to skip the yosys pass |
+| `DASH_RUNS` | `20` | how many recent runs the dashboard trends |
+
+On **Railway**, set `AOU_POST_METRICS=1` as a service variable (Step 3 below) —
+nothing else changes; the job still exits with the gate's verdict.
+
+### In GitHub Actions
+
+CI runs the gate through the same `metrics/capture.sh` wrapper and then a
+**post-gate** `make metrics` + `make dashboard` step marked
+`continue-on-error: true`, uploading `metrics/dashboard.html` (plus the DB and
+the gate timing capture) as the `metrics-dashboard` artifact. Because the
+dashboard is a single self-contained file — inlined CSS/JS/data, no external
+requests, a property the generator verifies before writing — the artifact opens
+and renders exactly as it does locally.
+
+> **⚠ Not yet applied to `.github/workflows/ci.yml`.** The swarm's GitHub token
+> lacks the `workflows` permission, so it could not push a workflow change. A
+> human needs to apply the step below once; nothing else in this feature depends
+> on it (the container path and the local `make` targets work today).
+>
+> ```yaml
+>       # Replace the existing `make ci` step's `run:` with the capture wrapper.
+>       - name: make ci
+>         run: |
+>           metrics/capture.sh gate \
+>             make ci \
+>               VERILATOR="$OSS/bin/verilator" \
+>               VERILATOR_ROOT="$OSS/share/verilator" \
+>               VERILATOR_COV="$OSS/bin/verilator_coverage" \
+>               SBY="$OSS/bin/sby"
+>         env:
+>           ICARUS_BIN_DIR: /usr/bin
+>
+>       # ...then add these two steps after it.
+>       - name: Collect metrics (post-gate, cannot fail the gate)
+>         continue-on-error: true
+>         env:
+>           OSS: ${{ github.workspace }}/oss-cad-suite
+>           AOU_OSS_CACHE_HIT: ${{ steps.cache-oss.outputs.cache-hit }}
+>         run: |
+>           make metrics VERILATOR="$OSS/bin/verilator"
+>           make dashboard
+>
+>       - name: Upload metrics dashboard
+>         if: always()
+>         continue-on-error: true
+>         uses: actions/upload-artifact@v7
+>         with:
+>           name: metrics-dashboard
+>           path: |
+>             metrics/dashboard.html
+>             metrics/metrics.db
+>             metrics/_capture/gate.time
+>           if-no-files-found: ignore
+> ```
+
+---
+
 ## Build memory & the `VL_JOBS` knob
 
 Verilator compiles the generated C++ model with `--build -j 0`, meaning **one
@@ -601,6 +708,25 @@ turns 37 · API time 214.8s · wall 631s · est. cost $— *
 
 In GitHub Actions the **`DV swarm`** workflow uploads `last-run-metrics.json` as a
 build artifact and prints the same table to the job summary.
+
+#### From this block to the metrics DB — and where per-agent numbers come from
+
+The block above is the *end-of-run summary*. `make metrics` turns the same data
+into durable, trendable rows (see [Post-gate metrics step](#post-gate-metrics-step-aou_post_metrics)
+and [`NOTES.md`](NOTES.md)), and adds the one thing the summary cannot show:
+
+- `docker/render-metrics.py --stream-out PATH` additionally tees the **raw event
+  stream** to JSONL, injecting one extra key (`_ts_epoch`) per event. Everything
+  else passes through untouched. `docker/swarm.sh` passes it by default
+  (`AOU_STREAM_JSON`, gitignored).
+- `metrics/collect.py` attributes every event carrying `parent_tool_use_id` to
+  the `Task` tool-use that spawned it, reconstructing **per-agent** wall span,
+  turns, tool calls and tool-error rate — and **per-(agent × model)** tokens
+  wherever the sidechain assistant events carry a `usage` block.
+- Where they do not, or where the stream capture is absent, the row is written
+  `not_attributable` **with the reason**. Per-model *wall time* is likewise a
+  recorded gap: Claude Code reports only whole-run durations. Nothing is
+  invented to fill a hole.
 
 ---
 

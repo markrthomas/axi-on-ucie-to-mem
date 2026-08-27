@@ -72,6 +72,13 @@ license-gated flow degrades gracefully (prints a skip, exits 0). See
 - **After any `rtl/` change, run `make -C uvm eda` and commit** the regenerated
   `eda/vcs_uvm/design.sv` — `make check` runs `eda-check`, which **fails** if that
   single EDA-Playground design file is stale vs `rtl/`.
+- **Metrics are NOT on the gate.** `metrics/` (`make metrics-capture`,
+  `make metrics`, `make dashboard`) is opt-in and runs *after* a completed gate.
+  Never fold it into `check`/`regress`/`ci`, and never make a DV env do extra work
+  to produce a number — *measurement must not change the thing it measures*. Every
+  value is tagged `measured | estimated | not_attributable` (a schema `CHECK`), and
+  a metric that could only be had by perturbing a timed run is **dropped with the
+  reason recorded**, never taken. See `docs/NOTES.md` → "Metrics DB".
 
 ## DV env map (what each proves)
 
