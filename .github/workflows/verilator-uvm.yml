@@ -73,4 +73,5 @@ jobs:
         make -C uvm/vlt write_read \
           VERILATOR="$VERILATOR_PREFIX/bin/verilator" \
           UVM_HOME="$VERILATOR_PREFIX/uvm" \
-          BUILD_JOBS="$(nproc)"
+          BUILD_JOBS="$(nproc)" \
+          UVM_PLUSARGS="+UVM_NO_RELNOTES +UVM_TIMEOUT=2000us,NO"
