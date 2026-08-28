@@ -149,3 +149,11 @@ lives only in files a run reads: **this `CLAUDE.md`**, `.claude/agents/*.md`, th
 `docs/`, and the code/tests themselves. When a run discovers a reusable convention
 or a costly gotcha, the fix is to **write it here** (or into the relevant agent
 playbook), so the next run is faster. Keep this file curated and high-signal.
+
+## UVM on open-source Verilator (`uvm/vlt`) — PARTIAL
+
+License-free UVM-on-Verilator flow added 2026-08-28 (CI:
+`.github/workflows/verilator-uvm.yml`; Verilator 5.050 from source + **z3** for
+`randomize()` + `ccache`). Lint and the `--binary` build **pass**, but the `axi_write_read_test`
+smoke run **HANGS at runtime** — a documented design blocker (per Golden Rule 2,
+reported not hacked). Diagnosis + fix direction in `docs/PLAN.md`.
