@@ -493,3 +493,33 @@ in-order completion** (initiator request queue) already in place.
   `../uvm_review/uvm/*` (UVM mirror + single-file pattern),
   `../uvm_review/sim/sim_main.cpp` (Verilator coverage harness),
   `../uvm_review/README.md` (doc depth/style).
+
+## Open item — UVM-on-Verilator smoke (`uvm/vlt`): credit-piggyback deadlock (F2)
+
+**Added 2026-08-28 (PR `ci/uvm-verilator`).** A license-free Verilator 5.050 UVM
+flow was added under `uvm/vlt` (Makefile + shim) with CI in
+`.github/workflows/verilator-uvm.yml` (builds Verilator from source, installs the
+**z3** SMT solver so `randomize()` constraints solve, `ccache`, then lint +
+`axi_write_read_test`). Lint and the full `--binary` build are **green**.
+
+**Status: PARTIAL — design blocker (per Golden Rule 2, reported not hacked).**
+The `axi_write_read_test` smoke run **hangs**: after `[RNTST] Running test`,
+**zero AXI transactions complete** and the run sits until `[PH_TIMEOUT]`
+(bounded via `+UVM_TIMEOUT=2000us`). Sim time advances (clocks run), so this is
+not a stopped clock — the **first AXI write's response handshake never returns**,
+the sequence blocks, the objection is held forever.
+
+This matches the documented **credit piggyback deadlock (F2 class)** in
+`CLAUDE.md` → *Known gotchas*: the initiator returns ReadData/WriteResp credits
+**only** piggybacked on its next request flit, so with a response owed and no
+request behind it the target drains its credit pool and stalls. A single
+write→read smoke with no follow-on traffic is exactly that shape.
+
+**Fix direction (future):** bound outstanding responses against the granted
+credit ceiling so a lone transaction always drains (a credit-return path not
+gated on a subsequent request), and/or have the smoke sequence keep a request
+in flight. Then the `uvm/vlt` smoke should reach `SCOREBOARD` + clean `$finish`.
+Re-enable a hard gate on `UVM_ERROR==0 && UVM_FATAL==0` once it passes.
+
+**Note:** this repo already has a mature DV gate (`make ci`, 8 envs); the
+`uvm/vlt` flow is an additional license-free SV-UVM path, not a replacement.
