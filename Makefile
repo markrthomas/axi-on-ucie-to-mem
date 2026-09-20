@@ -135,7 +135,7 @@ endif
 
 .PHONY: default help \
 	test test-all test-write-read test-random test-walking test-burst \
-	test-outstanding test-coverage fcov-reset \
+	test-outstanding test-coverage fcov-reset sim cocotb \
 	sv vlt pack act reorder ooo mrp systemc uvm eda-check coverage formal check regress ci \
 	metrics dashboard metrics-capture \
 	waves waves-sv waves-ooo waves-mrp waves-act waves-all \
@@ -155,6 +155,7 @@ help:
 	@echo "    make test-burst        # INCR/WRAP/FIXED burst read-back"
 	@echo "    make test-outstanding  # multiple-outstanding reads (fills initiator queue)"
 	@echo "    make test-coverage     # functional-coverage closure + [COV-FUNC] floor (FCOV_MIN=$(FCOV_MIN)%)"
+	@echo "    make sim | make cocotb # aliases for 'make test' (cross-repo names; see DV_STANDARDS.md)"
 	@echo "    make waves             # dump $(FST) (TEST=<name> for one test)"
 	@echo "    make wave              # dump + open in GTKWave with the matching dv/waves/ layout"
 	@echo ""
@@ -225,6 +226,13 @@ define run_one_test
 endef
 
 test: test-all
+
+# DV_STANDARDS.md cross-repo aliases: this repo's cocotb/PyUVM functional tier
+# is already named `test`/`test-all`; `sim` and `cocotb` are the two other
+# spellings used across the sibling repos, so both work here too.
+sim: test-all
+
+cocotb: test-all
 
 # The per-test simulations of one run merge their functional-coverage bins
 # through $(FCOV_DB); drop any stale database so a report always describes
