@@ -162,7 +162,7 @@ Everything runs from the repo root and degrades gracefully if a tool is absent.
 
 | Flow | Command | What it does |
 |------|---------|--------------|
-| Full regression | `make test` | all six cocotb tests (write-read, random, walking, burst, multi-outstanding, coverage closure); ends with the `[COV-FUNC]` functional-coverage report + floor |
+| Full regression | `make test` (aliases: `make sim`, `make cocotb`) | all six cocotb tests (write-read, random, walking, burst, multi-outstanding, coverage closure); ends with the `[COV-FUNC]` functional-coverage report + floor |
 | Directed | `make test-write-read` / `test-random` / `test-walking` / `test-burst` / `test-outstanding` / `test-coverage` | one cocotb test |
 | SV (Icarus) | `make sv` | portable SV directed TB under Icarus |
 | SV (Verilator) | `make vlt` | same TB under Verilator + bound SVA assertions |
@@ -184,7 +184,10 @@ Everything runs from the repo root and degrades gracefully if a tool is absent.
 | Container | `docker run --rm aou-dv` | the whole `make ci` gate in a reproducible image ([`docs/DOCKER.md`](docs/DOCKER.md)) |
 | Debug logging | `make <target> VERBOSE=1\|2` | decoded AoU flit trace (L1) / + internal DUT state (L2), per-test files under `logs/` |
 
-Run `make help` for the full list.
+Run `make help` for the full list. The `test`/`sim`/`cocotb`, `lint`, `coverage`,
+`formal`, `check`, `regress`, `ci` and `clean` target names follow
+[`DV_STANDARDS.md`](DV_STANDARDS.md), a convention shared with this
+maintainer's sibling RTL/DV repos.
 
 ### Debug logging
 
