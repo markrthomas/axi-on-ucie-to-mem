@@ -15,7 +15,7 @@
 #   SINGLE=1           : the single-file variant axi_ucie_tb_single.sv
 # =============================================================================
 
-TEST   ?= axi_write_read_test
+TEST   ?= axi_random_test
 WAVES  ?=
 SINGLE ?= 0
 

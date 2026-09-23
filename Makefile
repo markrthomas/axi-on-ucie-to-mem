@@ -156,8 +156,8 @@ help:
 	@echo "    make test-outstanding  # multiple-outstanding reads (fills initiator queue)"
 	@echo "    make test-coverage     # functional-coverage closure + [COV-FUNC] floor (FCOV_MIN=$(FCOV_MIN)%)"
 	@echo "    make sim | make cocotb # aliases for 'make test' (cross-repo names; see DV_STANDARDS.md)"
-	@echo "    make waves             # dump $(FST) (TEST=<name> for one test)"
-	@echo "    make wave              # dump + open in GTKWave with the matching dv/waves/ layout"
+	@echo "    make waves             # dump $(FST) (default TEST=random_test, >= 5 txns; TEST=<name> for another)"
+	@echo "    make wave              # dump + open in GTKWave with the matching dv/waves/ layout (default: random_test)"
 	@echo ""
 	@echo "  Waveform debugging (dev-only — never part of check/regress/ci):"
 	@echo "    make wave TEST=<name>   # cocotb chain; layout = dv/waves/<key>.gtkw, key = <name>"
@@ -269,18 +269,20 @@ test-outstanding: fcov-reset
 test-coverage: fcov-reset
 	$(call run_one_test,coverage_test)
 
-# Waveform dump.  All three tests share one sim by default; TEST=<name> dumps
-# just one.  cocotb's Icarus dump module is only compiled into a FRESH
+# Waveform dump of a SINGLE cocotb test; TEST=<name> picks one, and with no
+# TEST= given it defaults to the random-mix test (64 items, >= 5 txns) per
+# DV_STANDARDS.md.  cocotb's Icarus dump module is only compiled into a FRESH
 # sim_build, so wipe it first.
 WAVE_TESTS := write_read_test random_test walking_test burst_test \
               multi_outstanding_test coverage_test
+WAVE_TEST  := $(if $(TEST),$(TEST),random_test)
 
 waves:
-	@if [ -n "$(TEST)" ] && ! echo " $(WAVE_TESTS) " | grep -q " $(TEST) "; then \
-		echo "[WAVES] unknown TEST='$(TEST)' — choose one of: $(WAVE_TESTS)"; exit 1; fi
+	@if ! echo " $(WAVE_TESTS) " | grep -q " $(WAVE_TEST) "; then \
+		echo "[WAVES] unknown TEST='$(WAVE_TEST)' — choose one of: $(WAVE_TESTS)"; exit 1; fi
 	rm -rf $(TB_DIR)/sim_build
-	$(MAKE) -C $(TB_DIR) WAVES=1 $(if $(TEST),TESTCASE=$(TEST),)
-	@echo "[WAVES] wrote $(FST)$(if $(TEST), (single test: $(TEST)),)"
+	$(MAKE) -C $(TB_DIR) WAVES=1 TESTCASE=$(WAVE_TEST)
+	@echo "[WAVES] wrote $(FST) (single test: $(WAVE_TEST))"
 
 # --- per-env waveform dumps (dev-only) ---------------------------------------
 # The SV testbenches gained an opt-in dump hook (dv/common/aou_wave_dump.svh)
@@ -313,13 +315,15 @@ echo "[WAVE] opening $(1) in GTKWave (layout: $(2))"; \
 exec env NO_AT_BRIDGE=1 gtkwave $(if $(wildcard $(2)),-a $(2),) $(1)
 endef
 
-# `make wave [TEST=<name>]` — cocotb chain.  The layout key is the test name
+# `make wave [TEST=<name>]` — cocotb chain; defaults to the random-mix test
+# (WAVE_TEST above) when TEST= is omitted.  The layout key is the test name
 # with its `_test` suffix stripped (write_read_test -> dv/waves/write_read.gtkw);
-# a test with no bespoke layout falls back to dv/waves/default.gtkw.
-WAVE_KEY := $(if $(TEST),$(patsubst %_test,%,$(TEST)),default)
+# a test with no bespoke layout (random_test included) falls back to
+# dv/waves/default.gtkw, which groups the full top-level DUT interface.
+WAVE_KEY := $(patsubst %_test,%,$(WAVE_TEST))
 
 wave:
-	@$(MAKE) --no-print-directory waves $(if $(TEST),TEST=$(TEST),)
+	@$(MAKE) --no-print-directory waves TEST=$(WAVE_TEST)
 	$(call open_gtkwave,$(FST),$(call wave_layout,$(WAVE_KEY)))
 
 wave-sv: waves-sv

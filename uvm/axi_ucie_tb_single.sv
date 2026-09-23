@@ -634,9 +634,10 @@ module axi_ucie_tb_top;
 
     initial begin
         uvm_config_db#(virtual axi_lite_if)::set(null, "*", "vif", axi);
-        // Default to the write-read test; +UVM_TESTNAME overrides it when given
-        // (so it "just runs" on EDA Playground with no run-option set).
-        run_test("axi_write_read_test");
+        // Default to the random-mix test (64 items, >= 5 txns); +UVM_TESTNAME
+        // overrides it when given (so it "just runs" on EDA Playground with no
+        // run-option set).
+        run_test("axi_random_test");
     end
 
 `ifdef DUMP
