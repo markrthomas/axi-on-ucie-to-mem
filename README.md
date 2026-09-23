@@ -401,7 +401,7 @@ one automatically. A failing run is inspectable in seconds — the wave pane ope
 **pre-populated and grouped**, with nothing to hand-add.
 
 ```bash
-make wave                          # cocotb chain, generic layout
+make wave                          # cocotb chain, defaults to random_test (64 items, >= 5 txns) -> dv/waves/default.gtkw
 make wave TEST=write_read_test     # -> dv/waves/write_read.gtkw
 make wave TEST=burst_test          # -> dv/waves/burst.gtkw
 make wave TEST=multi_outstanding_test   # -> dv/waves/multi_outstanding.gtkw
@@ -411,8 +411,10 @@ make wave-check                    # layouts still match the RTL? (see below)
 ```
 
 The layout key is the cocotb test name minus its `_test` suffix; a test with no
-bespoke layout falls back to `dv/waves/default.gtkw`, so `make wave` always opens
-populated.
+bespoke layout (the default `random_test` included) falls back to
+`dv/waves/default.gtkw` — which groups the full top-level DUT interface
+(clock/reset → AXI front door → AoU bridge → UCIe link → §6 credits → memory) —
+so `make wave` always opens populated with no arguments needed.
 
 | Layout | Target | What it puts on screen |
 |--------|--------|------------------------|
@@ -469,8 +471,8 @@ read a `.gtkw`.
 ### 6. The SystemVerilog UVM testbench
 
 ```bash
-make uvm                        # multi-file set, default write-read test
-make uvm TEST=axi_random_test   # pick a test
+make uvm                        # multi-file set, default random-mix test (64 items, >= 5 txns)
+make uvm TEST=axi_write_read_test   # pick a test
 make uvm SINGLE=1               # build the single-file variant instead
 ```
 
@@ -483,9 +485,9 @@ runs `+UVM_TESTNAME=<test>`.
 simulators): the two panes are **pre-assembled for you** in `eda/vcs_uvm/` — no
 manual file-juggling. Paste `eda/vcs_uvm/design.sv` (the whole DUT RTL as one
 file) into the **design** pane and `eda/vcs_uvm/testbench.sv` into the
-**testbench** pane. Tick **UVM 1.2**, pick a simulator, and add
-`+UVM_TESTNAME=axi_write_read_test` (or `axi_random_test` / `axi_walking_test`)
-to the run options.
+**testbench** pane. Tick **UVM 1.2**, pick a simulator, and run with no options
+for the default random-mix test, or add `+UVM_TESTNAME=axi_write_read_test`
+(or `axi_walking_test`) to pick a directed one.
 
 Both files are **auto-generated** from `rtl/` + `uvm/axi_ucie_tb_single.sv` by
 `make -C uvm eda`, and `make check` runs a drift-guard (`make eda-check`) that
