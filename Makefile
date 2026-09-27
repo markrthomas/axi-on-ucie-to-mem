@@ -308,11 +308,14 @@ waves-all: waves waves-sv waves-ooo waves-mrp waves-act
 # accessibility bus, whose absent-server timeout is what makes GTK apps appear
 # to hang for seconds under WSLg/headless X.  No gtkwave on PATH is a clean
 # skip (exit 0) AFTER the dump, so the FST is still there for a viewer elsewhere.
+# $(WAVE_ZOOM) runs as a GTKWave Tcl script after load and zooms to fit, so the
+# whole test is on screen instead of the first few ps.
+WAVE_ZOOM := $(WAVE_DIR)/zoom_full.tcl
 define open_gtkwave
 @if ! command -v gtkwave >/dev/null 2>&1; then \
 	echo "[WAVE] gtkwave not on PATH — dump is at $(1) (layout: $(2))"; exit 0; fi; \
 echo "[WAVE] opening $(1) in GTKWave (layout: $(2))"; \
-exec env NO_AT_BRIDGE=1 gtkwave $(if $(wildcard $(2)),-a $(2),) $(1)
+exec env NO_AT_BRIDGE=1 gtkwave -S $(WAVE_ZOOM) $(if $(wildcard $(2)),-a $(2),) $(1)
 endef
 
 # `make wave [TEST=<name>]` — cocotb chain; defaults to the random-mix test
