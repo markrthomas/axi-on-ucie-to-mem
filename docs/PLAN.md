@@ -1,6 +1,13 @@
 # AXI-over-UCIe → AXI memory: RTL + 5 DV environments
 
-## Context
+> **How to read this file.** "Context" and "Confirmed scope" below are the
+> *original* project brief, kept as history (its single-beat AXI4-Lite scope was
+> superseded by the F-phase work). **"Architecture" onward describes the design
+> as it is in the repo today**, and the F-sections + backlog are the live
+> design/backlog authority. The gate itself is defined by the root `Makefile`
+> (`check` / `regress` / `ci`); every gate description here mirrors it.
+
+## Context (original brief — historical)
 
 `~/proj/axi-on-ucie-to-mem` is an empty scaffold (`rtl/ dv/ src/ docs/`, empty
 `Makefile`, `START_NOTES`). The brief (`START_NOTES`): build an **AXI-over-UCIe
@@ -33,7 +40,7 @@ well with UCIe." Findings from the specs:
 SRAM memory** — consistent with the AXI4-Lite front door and with AoU carrying
 AXI. (CHI-C2C is the coherent alternative but far heavier; out of scope.)
 
-### Confirmed scope (from user)
+### Confirmed scope (from user — original; see UPDATE notes)
 - **AoU fidelity:** real Basic-Profile message *formats* (§5) + real **flit
   packing** (250 B PLP = 10 B protocol header with FDId + MsgStart[47:0] granule
   bitmap + 240 B / 48 granules of payload), over a ready/valid 256 B streaming
@@ -46,8 +53,11 @@ AXI. (CHI-C2C is the coherent alternative but far heavier; out of scope.)
   quiescing options are now modelled: Option 1 (SW pre-quiesces) and Option 2
   (hardware-managed — `deact_trig` mid-transaction is latched, `quiescing` gates
   new requests, teardown withheld until `data_idle`).)
-- **AXI flavor:** **AXI4-Lite, 32-bit** (single-beat AW/W/B/AR/R, AWLEN/ARLEN=0),
-  both at the front door and at the memory target.
+- **AXI flavor:** originally **AXI4-Lite, 32-bit** (single-beat, AWLEN/ARLEN=0)
+  at both ends.  (UPDATE: the front door is now an **AXI4 subset** — IDs,
+  INCR/WRAP/FIXED bursts of 1–16 beats, `WLAST`/`RLAST`, longer bursts answered
+  with `SLVERR` — see README "AXI4 subset profile".  Only the far-side memory
+  target, `axi_lite_mem`, is still single-beat AXI-Lite style.)
 - **GitHub:** create **private** repo `markrthomas/axi-on-ucie-to-mem` now, push
   early + at milestones.
 - **This plan** (`docs/PLAN.md`) is committed into the repo as the first commit
@@ -59,53 +69,55 @@ Two chiplets joined by a modeled UCIe streaming (FDI-like) link. DUT top =
 `axi_ucie_mem_top`:
 
 ```
-TB AXI-Lite master
-      │  AW/W/B/AR/R (32-bit)
+TB AXI4-subset master (IDs, bursts <= 16 beats)
+      │  AW/W/B/AR/R (32-bit data)
       ▼
-┌─────────────────────────────┐        256B flit + vld/rdy        ┌─────────────────────────────┐
-│ Chiplet A: initiator bridge │  ══ A→B link ═══════════════════▶ │ Chiplet B: target bridge    │
-│  AXI-Lite SUB → AoU msgs    │                                   │  AoU msgs → AXI-Lite MGR     │
-│  (WriteReq+WriteData256,    │  ◀═══════════════════ B→A link ══ │  → axi_lite_mem (SRAM slave) │
-│   ReadReq) + flit pack;     │                                   │  R/B → ReadData256/WriteResp │
-│  return flit → R/B          │                                   │  + flit pack                 │
-└─────────────────────────────┘                                   └─────────────────────────────┘
+┌──────────────────────────────┐     256B flit + vld/rdy      ┌──────────────────────────────┐
+│ Chiplet A: initiator bridge  │ ══ A→B link ═══════════════▶ │ Chiplet B: target bridge     │
+│  AXI4 SUB → AoU msgs,        │                              │  msg @ granule 0 → burst     │
+│  ONE message per flit:       │ ◀═══════════════ B→A link ══ │  expanded to single-beat     │
+│  WriteReq, WriteData256/beat,│                              │  accesses → axi_lite_mem     │
+│  ReadReq; ReadData256 → R,   │                              │  R/B → ReadData256/WriteResp │
+│  WriteResp → B; >16 beats →  │                              │  (one message per flit)      │
+│  local SLVERR, no AoU msg    │                              │                              │
+└──────────────────────────────┘                              └──────────────────────────────┘
 ```
 
 Message granules (Basic Profile, §5.8): WriteReq 3, ReadReq 3, WriteData256 8,
-ReadData256 8, WriteResp 1 — all fit one 48-granule PLP with room to spare, so
-packing multiple messages per flit is exercised but never overflows.
+ReadData256 8, WriteResp 1.  The datapath places **exactly one message per flit,
+at payload granule 0** (`MsgStart` bit 0); multi-message flits and `MsgStart`
+bitmap walking are **not** implemented in the bridges (the `aou_pkg` helpers
+can place a message at any granule, and that layout is conformance-tested by
+`dv/pack`, but no end-to-end test exercises it).  §6 credits: 128 WriteData /
+ReadData granules = 16 data beats, which is the AXI burst-length limit.
 
 ### RTL files (`rtl/`)
 - **`aou_pkg.sv`** — params + `MSGTYPE`/`MISCOP` enums, field widths & granule
-  counts, `GRANULE_BITS=40`, `NUM_GRANULES=48`, `FDID_W=2`; packed-struct typedefs
-  for the 5 messages and **pack/unpack functions** (field order per §5.3–5.5
-  tables; a single documented bit order shared by packer+unpacker — field widths
-  and granule totals match the spec exactly).  (UPDATE: byte-exact packing has
-  since been implemented — §5.8 message layouts and the §4.3 Figure-5 protocol
-  header — with a `dv/pack` conformance test.)
-- **`aou_flit_pack.sv`** — accepts a stream of typed messages, lays them into the
-  240 B payload granule-by-granule, sets `MsgStart[47:0]` + `FDId`, emits the
-  250 B PLP inside a 256 B flit on a `flit_valid/flit_ready` bus. One flit per
-  "batch" of ready messages (single-message batches are legal; empty granules
-  padded).
-- **`aou_flit_unpack.sv`** — walks `MsgStart` bitmap, slices granules, decodes
-  each message by `MSGTYPE`, emits typed messages.
-- **`aou_axi_initiator_bridge.sv`** — chiplet A: AXI-Lite **subordinate** front
-  (to TB). AW+W → WriteReq+WriteData256; AR → ReadReq; return ReadData256 → R,
-  WriteResp → B. Holds a small outstanding-transaction table keyed by
-  AWID/ARID (Lite: single ID, depth-1..N FIFO).
-- **`aou_axi_target_bridge.sv`** — chiplet B: unpack → drive AXI-Lite **manager**;
-  capture R/B → ReadData256/WriteResp → pack return flit.
-- **`ucie_stream_link.sv`** — one-directional 256 B flit pipe, valid/ready,
-  parameterizable latency/backpressure. **Not** a UCIe PHY/D2D — the FDI boundary
-  is the modeled interface (matches spec: everything below FDI is UCIe's own,
-  IMPLEMENTATION DEFINED). Two instances (A→B, B→A).
-- **`axi_lite_mem.sv`** — the memory target: an **AXI4-Lite 32-bit SRAM slave**
-  (word-addressed, zero-wait, `RRESP/BRESP=OKAY`). Replaces the old APB bridge +
-  APB memory. Reuses `../uvm_review/rtl/apb_mem.sv` ideas — zero-init array,
-  plain-`always` write idiom (VCS ICPD note), coverage waiver on constant
-  tie-offs — but with an AXI-Lite (not APB) front end.
-- **`axi_ucie_mem_top.sv`** — wires the chain; flat AXI-Lite ports (no SV
+  counts, byte-exact §5.8 message builders/getters (incl. 512b/1024b data) and
+  the §4.3 protocol-header / flit helpers (`flit_assemble`, `payload_put`,
+  `payload_get`, `msgstart_g`, credit helpers).  There is no separate flit
+  pack/unpack module; each bridge builds and decodes its flits with these
+  functions.
+- **`ucie_stream_link.sv`** — one-directional 256 B flit pipe, valid/ready.
+  **Not** a UCIe PHY/D2D — the FDI boundary is the modeled interface.
+- **`aou_activation.sv`** — §8 interface state machine (bring-up with
+  CrdtGrant, SW/peer deactivate incl. Option-2 quiescing, re-activation, ERROR
+  + `err_clear` recovery).  In the integrated DUT both bridges tie `deact_trig`
+  and `err_clear` off, so full-chain ERROR recovery requires `ARESETn`.
+- **`aou_axi_initiator_bridge.sv`** — chiplet A: AXI4-subset **subordinate**;
+  REQ_QD request queue (multiple outstanding), §6 credit counters, 16-beat
+  burst limit with local SLVERR, in-order (`OOO_EN=0`) or reorder-buffer
+  (`OOO_EN=1`) response path.
+- **`aou_axi_target_bridge.sv`** — chiplet B: decodes one message per flit,
+  expands bursts into single-beat memory accesses, returns
+  ReadData256/WriteResp.
+- **`aou_reorder.sv`** / **`aou_ooo_resp_src.sv`** — per-ID reorder buffer and
+  the target-side out-of-order response source (`OOO_EN=1`).
+- **`aou_rp_mux.sv`** — resource-plane arbiter / `FDId` router + per-plane RX
+  queue (`NUM_RP>1`).
+- **`axi_lite_mem.sv`** — the memory target: single-beat AXI-Lite-style 32-bit
+  SRAM (word-addressed, zero-wait, `RRESP/BRESP=OKAY`).
+- **`axi_ucie_mem_top.sv`** — wires the chain; flat AXI4-subset ports (no SV
   interface on the boundary, for cocotb/Verilator/SystemC portability).
 
 ## DV environments (the five in the brief) — `dv/`
@@ -113,7 +125,7 @@ packing multiple messages per flit is exercised but never overflows.
 Golden reference = the cocotb/PyUVM env (fully runnable here); all others
 cross-check the same DUT and the same reference-memory scoreboard.
 
-1. **cocotb + PyUVM** (`dv/cocotb/`) — AXI-Lite master BFM, driver/monitor/agent/
+1. **cocotb + PyUVM** (`dv/cocotb/`) — AXI4-subset master BFM, driver/monitor/agent/
    scoreboard/env, sequences (write-read, constrained-random, walking edge
    cases), `@cocotb.test` entries. Mirrors `../uvm_review/tb/` structure. One sim
    per test (fresh memory), pass/fail gated on `results.xml`. Runs on Icarus.
@@ -127,12 +139,12 @@ cross-check the same DUT and the same reference-memory scoreboard.
 2. **Icarus SV** (`dv/sv/`) — a self-checking **SystemVerilog** directed TB (AXI
    master tasks + reference-memory checker) runnable under `iverilog`+`vvp`,
    independent of cocotb.
-3. **Verilator** (`dv/verilator/` + `sim/`) — the same portable SV TB run under
+3. **Verilator** (`dv/sv/` + `sim/`) — the same portable SV TB run under
    Verilator, **plus** a C++ *line*-coverage harness (`sim/sim_main.cpp`, modeled
    on `../uvm_review/sim/`) → `sim/coverage.info` (lcov) with a `COV_MIN` floor.
    (Functional coverage lives in the PyUVM env — see 1 above.)
 4. **SystemC** (`dv/systemc/`) — `verilator --sc` generates a SystemC model of
-   the DUT; a hand-written `sc_main` testbench drives AXI-Lite + scoreboards
+   the DUT; a hand-written `sc_main` testbench drives AXI + scoreboards
    reads. (Verilator-SystemC is the pragmatic OSS path; SystemC headers confirmed
    at `/usr/include/systemc.h`.)
 5. **SystemVerilog UVM** (`uvm/`) — full UVM TB mirroring the PyUVM one
@@ -140,19 +152,24 @@ cross-check the same DUT and the same reference-memory scoreboard.
    prints skip + exits 0 when absent. Ships multi-file + single-file
    (`axi_ucie_tb_single.sv`) variants for EDA Playground, per `../uvm_review`.
 
-**Shared assertions** (`dv/sva/`): AXI-Lite protocol checker (front door + memory
-port) and AoU message/flit well-formedness (MsgStart consistency, granule bounds),
+**Shared assertions** (`dv/sva/`): `axi4_sva` AXI4-subset protocol checker on the
+front door (VALID-hold + every stalled payload field stable, mutation-tested by
+`dv/sva/mut/` / `make sva-mut`), AoU flit well-formedness (`aou_flit_sva`) and §6
+credit bounds (`aou_credit_sva`),
 `bind`-ed onto the DUT in the SV/UVM flows (Icarus/cocotb SVA is too weak to
 carry the rich ones — same caveat `../uvm_review` documents).
 
-**Optional (stretch): formal** (`formal/`) — `sby`/yosys is installed; a modest
-AXI-Lite protocol property set. Flagged optional, not part of the core five.
+**Formal** (`formal/`) — originally an optional stretch; now a gating tier of
+four SymbiYosys proofs run by `make regress`/`make ci` (see F4).
 
 ## Build/CI
 - **Root `Makefile`** mirroring `../uvm_review/Makefile` gate targets: `help`,
   `lint` (iverilog -Wall + Verilator lint), `test`/`test-*` (cocotb), `sv`
-  (Icarus SV TB), `vlt` (Verilator SV TB), `systemc`, `uvm`, `coverage`,
-  `check`, `regress`, `ci`, `clean`, `waves`/`wave`. Each degrades gracefully if
+  (Icarus SV TB), `vlt` (Verilator SV TB), `pack`, `act`, `reorder`, `ooo`,
+  `mrp`, `sva-mut`, `systemc`, `uvm`, `coverage`, `formal`, `check`, `regress`,
+  `ci`, `clean`, `waves`/`wave`.  `check` = lint + eda-check + cocotb + sv + vlt
+  + pack + act + reorder + ooo + mrp + sva-mut + systemc; `regress` = `check` +
+  coverage + formal; `ci` = `regress`. Each degrades gracefully if
   its tool is absent.
 - **Waveform debugging (dev-only) — DONE (SWARM_PLAN feature 2 of 3).** The single
   `dv/wave.gtkw` became `dv/waves/`, **one curated GTKWave layout per debug
@@ -231,10 +248,36 @@ implemented.)
 
 Each item below is self-contained and ordered by rough priority / value. For
 each: **Spec** = driving spec sections, **Touch** = files to change, **Approach**
-= a starting sketch, **Verify** = how to prove it. The current baseline is
-RP0-only, 32-bit, with the full §8 activation FSM (bring-up + teardown + ERROR),
+= a starting sketch, **Verify** = how to prove it. The baseline these
+items were written against was RP0-only, 32-bit, with the full §8 activation FSM
+(bring-up + teardown + ERROR) in `aou_activation`,
 **AXI4 INCR/WRAP/FIXED bursts**, and **multiple-outstanding transactions with
 in-order completion** (initiator request queue) already in place.
+
+### F0 — Scan follow-ups (docs/SCAN_ISSUES.md, 2026-08-25) — DONE / partly open
+- **Long bursts (#1) — DONE.** `AxLEN+1 > 16` would exhaust the §6 data
+  credits mid-burst and deadlock (no mid-burst replenishment).  The initiator
+  now accepts such a burst but never queues it: once every earlier transaction
+  has completed it answers locally with `SLVERR` (write: sink all W beats, one
+  B; read: `AxLEN+1` R beats, `RLAST` on the last) and emits no AoU message;
+  AW/AR accept is held while that response is owed, preserving per-ID order.
+  In-range bursts are cycle-identical.  Verified by `dv/sv` section 6 (17- and
+  256-beat W/R, memory untouched, link still usable; 275 checks) and `dv/ooo`
+  `long_phase` (same-ID 16-beat then 17-beat read must not be overtaken);
+  mutation: original RTL times out, dropping the idle-wait lets the SLVERR
+  overtake.  **Open:** completing long bursts (mid-burst credit replenishment).
+- **Integrated ERROR recovery (#2) — reset-only, documented.**  Both bridges tie
+  `err_clear`/`deact_trig` off.  A one-sided `err_clear` is not a safe fix (the
+  recovering end re-sends `ActivateReq` to a still-`ENABLED` peer, driving it
+  into `ERROR`, and in-flight transactions are stranded), so the contract is:
+  an `ERROR` in the integrated DUT is sticky until `ARESETn`.  Verified by
+  `dv/sv` section 7 (inject an inconsistent `ActivateReq` → `ERROR`, AXI write
+  stalls, reset → traffic OK).  **Open:** a both-ends recovery/deactivate
+  control routed through `axi_ucie_mem_top`.
+- **AXI SVA coverage (#4) — DONE.** `axi_lite_sva` replaced by `axi4_sva`
+  (every stalled payload field on AW/W/B/AR/R, bound on the full AXI4-subset
+  port list incl. IDs and burst controls); `dv/sva/mut/` + `make sva-mut` kills
+  26 mutants (each field, each VALID drop), in `check`.
 
 ### F1 — Multiple resource planes (RP0..RP3) — DONE (2 planes proven, generalises to 4)
 - **Spec:** §3 (resource planes / FDId routing), §4.3 (FDId header field), §6
@@ -312,7 +355,7 @@ in-order completion** (initiator request queue) already in place.
 - **DONE (sub-stages b + in-order c + wide data + OOO-by-ID reorder block):**
   - **INCR/WRAP/FIXED bursts** — `AxLEN`/`AxSIZE` carried in the request, burst
     type in `FLEX[1:0]` (AoU has no `AxBURST`); the target expands each burst into
-    single-beat AXI-Lite accesses (per-beat `axi_burst_next`), `{B,R}ID` echoed,
+    single-beat memory accesses (per-beat `axi_burst_next`), `{B,R}ID` echoed,
     `RLAST` on the final beat. Credit ceilings raised to 128 granules (16 beats).
   - **Multiple-outstanding, in-order** — a `REQ_QD`-deep request queue in
     `aou_axi_initiator_bridge` decouples AW/AR accept from the FSM, so several
@@ -478,11 +521,15 @@ in-order completion** (initiator request queue) already in place.
 - `make systemc` — SystemC TB reports 0 mismatches.
 - `make coverage` — Verilator lcov ≥ `COV_MIN` floor.
 - `make uvm` — prints clean skip here (no license), runs real on a licensed host.
-- `make ci` — lint + cocotb regression + coverage as one pass/fail gate.
+- `make sva-mut` — every `axi4_sva` stability/hold property is killed by its
+  mutant (26), the clean run passes.
+- `make ci` — `regress` = `check` (lint + eda-check + cocotb + sv + vlt + pack
+  + act + reorder + ooo + mrp + sva-mut + systemc) + coverage + formal, as one
+  pass/fail gate.
 - Spot-check waveforms: `make wave TEST=write_read_test` opens pre-populated with
-  `dv/waves/write_read.gtkw` and shows AXI AW/W handshake → a flit with `MsgStart`
-  bits set for WriteReq+WriteData → far-side AXI-Lite memory write → WriteResp
-  flit → AXI B. `make wave-ooo` / `wave-mrp` / `wave-act` open their own layouts.
+  `dv/waves/write_read.gtkw` and shows AXI AW/W handshake → a `WriteReq` flit
+  then one `WriteData256` flit per beat (each a single message, `MsgStart` bit 0)
+  → far-side memory write → `WriteResp` flit → AXI B. `make wave-ooo` / `wave-mrp` / `wave-act` open their own layouts.
 - `make wave-check` — every committed `.gtkw` net path still resolves in its dump
   (dev-only; not part of the gate).
 

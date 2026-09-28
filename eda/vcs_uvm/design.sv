@@ -1847,10 +1847,17 @@ endmodule
 // AW/AR accept from the FSM, so the master can have several transactions queued
 // while a prior burst is still in flight (s_awready/s_arready track queue-space,
 // not FSM state).
-// Bursts are bounded by the data-message credit ceiling (§6): the target's
-// CrdtGrant seeds enough WriteData/ReadData credits for up to CR_* granules, so
-// AxLEN+1 <= CR_WDATA/WRITEDATA_GRAN beats (16 by default); longer bursts need
-// mid-burst credit replenishment (follow-on).
+// Burst-length contract (§6).  A burst is bounded by the data-message credit
+// ceiling: the WriteData credits this bridge holds (CR_WDATA) and the ReadData
+// credits it grants the target (RDATA_CEIL) cover MAX_WBEATS / MAX_RBEATS beats
+// (16 each by default), and there is no mid-burst credit replenishment.  A
+// longer AW/AR is therefore NOT sent over AoU (it would deadlock the credit
+// loop).  It is never queued: once every earlier transaction has completed, the
+// bridge answers it locally with SLVERR -- a write consumes all its W beats and
+// gets one B, a read gets AxLEN+1 R beats (RLAST on the last) -- and emits no AoU
+// message for it.  AW/AR accept is held off while that local response is owed,
+// which keeps AXI per-ID response ordering.  Bursts within the limit take the
+// unchanged datapath below, cycle-identical to before.
 //
 // Two response paths, selected by OOO_EN (docs/PLAN.md F2):
 //
@@ -2025,6 +2032,12 @@ module aou_axi_initiator_bridge
   // in OOO mode WriteResp needs room for a held response plus one overtaking it.
   localparam logic [2:0] GR_RDATA = 3'b111;                  // 128 granules
   localparam logic [1:0] GR_WRESP = OOO_EN ? 2'b11 : 2'b01;  // 8 : 1 granule(s)
+  localparam int         RDATA_CEIL = 128;                   // GR_RDATA, granules
+
+  // Longest bursts the credit loop can carry without mid-burst replenishment.
+  localparam int MAX_WBEATS = CR_WDATA   / WRITEDATA_GRAN;   // 16 by default
+  localparam int MAX_RBEATS = RDATA_CEIL / READDATA_GRAN;    // 16 by default
+  localparam logic [1:0] AXI_SLVERR = 2'b10;
 
   logic                  act_enabled, act_disabled;
   logic [PLP_BITS-1:0]   dtx_data, drx_data;
@@ -2101,22 +2114,35 @@ module aou_axi_initiator_bridge
   // AXI accepted once ENABLED (§8) whenever the request queue has space; the FSM
   // pops and processes descriptors independently (multiple-outstanding accept).
   // AW has priority over AR so at most one descriptor is enqueued per cycle.
-  assign s_awready = act_enabled && !q_full;
-  assign s_arready = act_enabled && !q_full && !s_awvalid;  // AW priority
-  wire acc_aw = s_awvalid && s_awready;
-  wire acc_ar = s_arvalid && s_arready;
+  //
+  // A burst longer than the credit contract allows (see header) is accepted
+  // but not enqueued; the local error responder below owns it instead, and
+  // further AW/AR accepts are held off until that response has been delivered.
+  typedef enum logic [2:0] {
+    E_IDLE, E_WAIT, E_WDRAIN, E_B, E_R
+  } estate_e;
+  estate_e               e_state;
+  wire   e_free = (e_state == E_IDLE);
+  assign s_awready = act_enabled && !q_full && e_free;
+  assign s_arready = act_enabled && !q_full && e_free && !s_awvalid;  // AW priority
+  wire acc_aw  = s_awvalid && s_awready;
+  wire acc_ar  = s_arvalid && s_arready;
+  wire aw_long = (32'(s_awlen) + 1) > MAX_WBEATS;
+  wire ar_long = (32'(s_arlen) + 1) > MAX_RBEATS;
+  wire q_push_w = acc_aw && !aw_long;
+  wire q_push_r = acc_ar && !ar_long;
 
   always_ff @(posedge clk or negedge rstn) begin
     if (!rstn) begin
       q_head <= '0; q_tail <= '0; q_count <= '0;
     end else begin
-      if (acc_aw) begin
+      if (q_push_w) begin
         q_wr[q_tail]   <= 1'b1;      q_id[q_tail]    <= s_awid;
         q_addr[q_tail] <= s_awaddr;  q_len[q_tail]   <= s_awlen;
         q_size[q_tail] <= s_awsize;  q_burst[q_tail] <= s_awburst;
         q_prot[q_tail] <= s_awprot;
         q_tail <= (q_tail == QLAST) ? '0 : q_tail + 1'b1;
-      end else if (acc_ar) begin
+      end else if (q_push_r) begin
         q_wr[q_tail]   <= 1'b0;      q_id[q_tail]    <= s_arid;
         q_addr[q_tail] <= s_araddr;  q_len[q_tail]   <= s_arlen;
         q_size[q_tail] <= s_arsize;  q_burst[q_tail] <= s_arburst;
@@ -2124,10 +2150,72 @@ module aou_axi_initiator_bridge
         q_tail <= (q_tail == QLAST) ? '0 : q_tail + 1'b1;
       end
       if (do_pop) q_head <= (q_head == QLAST) ? '0 : q_head + 1'b1;
-      if ((acc_aw || acc_ar) && !do_pop)      q_count <= q_count + 1'b1;
-      else if (!(acc_aw || acc_ar) && do_pop) q_count <= q_count - 1'b1;
+      if ((q_push_w || q_push_r) && !do_pop)      q_count <= q_count + 1'b1;
+      else if (!(q_push_w || q_push_r) && do_pop) q_count <= q_count - 1'b1;
     end
   end
+
+  // --- AXI channel outputs of the selected datapath (i_*) -------------------
+  // The generate branch below drives these; the local error responder muxes
+  // onto the real s_* ports only while it is active (the datapath is idle then,
+  // so the two never drive a channel at the same time).
+  logic                  i_wready;
+  logic [AXI_ID_W-1:0]   i_bid;
+  logic [1:0]            i_bresp;
+  logic                  i_bvalid;
+  logic [AXI_ID_W-1:0]   i_rid;
+  logic [AXI_DATA_W-1:0] i_rdata;
+  logic [1:0]            i_rresp;
+  logic                  i_rlast;
+  logic                  i_rvalid;
+  logic                  br_idle;   // datapath has nothing issued or owed
+
+  // --- local error responder for over-long bursts ----------------------------
+  logic                  e_wr;
+  logic [AXI_ID_W-1:0]   e_id;
+  logic [7:0]            e_len, e_beat;
+  always_ff @(posedge clk or negedge rstn) begin
+    if (!rstn) begin
+      e_state <= E_IDLE;
+      e_wr <= 1'b0; e_id <= '0; e_len <= '0; e_beat <= '0;
+    end else begin
+      unique case (e_state)
+        E_IDLE:
+          if (acc_aw && aw_long) begin
+            e_wr <= 1'b1; e_id <= s_awid; e_len <= s_awlen; e_state <= E_WAIT;
+          end else if (acc_ar && ar_long) begin
+            e_wr <= 1'b0; e_id <= s_arid; e_len <= s_arlen; e_state <= E_WAIT;
+          end
+        // respond only once every earlier transaction has completed (AXI order)
+        E_WAIT: if (q_empty && br_idle) begin
+          e_beat  <= 8'd0;
+          e_state <= e_wr ? E_WDRAIN : E_R;
+        end
+        E_WDRAIN: if (s_wvalid && s_wlast) e_state <= E_B;   // consume all W beats
+        E_B:      if (s_bready) e_state <= E_IDLE;
+        E_R:      if (s_rready) begin
+          if (e_beat == e_len) e_state <= E_IDLE;
+          else                 e_beat  <= e_beat + 8'd1;
+        end
+        // verilator coverage_off
+        default: e_state <= E_IDLE;   // unreachable (all states enumerated)
+        // verilator coverage_on
+      endcase
+    end
+  end
+
+  wire e_w = (e_state == E_WDRAIN);
+  wire e_b = (e_state == E_B);
+  wire e_r = (e_state == E_R);
+  assign s_wready = e_w ? 1'b1       : i_wready;
+  assign s_bvalid = e_b | i_bvalid;
+  assign s_bid    = e_b ? e_id       : i_bid;
+  assign s_bresp  = e_b ? AXI_SLVERR : i_bresp;
+  assign s_rvalid = e_r | i_rvalid;
+  assign s_rid    = e_r ? e_id       : i_rid;
+  assign s_rdata  = e_r ? '0         : i_rdata;
+  assign s_rresp  = e_r ? AXI_SLVERR : i_rresp;
+  assign s_rlast  = e_r ? (e_beat == e_len) : i_rlast;
 
   generate
   // =========================================================================
@@ -2154,16 +2242,18 @@ module aou_axi_initiator_bridge
     assign req_flex = {{(FLEX_W-2){1'b0}}, burst_q};
     assign do_pop   = (state == S_IDLE) && !q_empty;
     // In S_WDATA we take a W beat only when no beat is buffered awaiting send.
-    assign s_wready = (state == S_WDATA) && !wbeat_valid;
-    assign s_bid    = bid_q;
-    assign s_bvalid = (state == S_B);
-    assign s_bresp  = bresp_q;
+    assign i_wready = (state == S_WDATA) && !wbeat_valid;
+    assign i_bid    = bid_q;
+    assign i_bvalid = (state == S_B);
+    assign i_bresp  = bresp_q;
     // Drive an R beat straight from an incoming ReadData flit.
-    assign s_rid    = rd_rid_full[AXI_ID_W-1:0];
-    assign s_rvalid = (state == S_RDATA) && drx_valid;
-    assign s_rdata  = rd_full[AXI_DATA_W-1:0];
-    assign s_rresp  = rd_resp(rdmsg);
-    assign s_rlast  = rd_last(rdmsg);
+    assign i_rid    = rd_rid_full[AXI_ID_W-1:0];
+    assign i_rvalid = (state == S_RDATA) && drx_valid;
+    assign i_rdata  = rd_full[AXI_DATA_W-1:0];
+    assign i_rresp  = rd_resp(rdmsg);
+    assign i_rlast  = rd_last(rdmsg);
+    // In-order: a transaction is complete when the FSM is back in S_IDLE.
+    assign br_idle  = (state == S_IDLE);
 
     // flit TX valid: gated by the credit for the message the state emits.
     assign dtx_valid = ((state == S_WREQ)  && wreq_ok)  ||
@@ -2223,7 +2313,7 @@ module aou_axi_initiator_bridge
           end
           S_WDATA: begin
             // capture a W beat when the buffer is free
-            if (s_wvalid && s_wready) begin
+            if (s_wvalid && i_wready) begin
               wdata_q <= s_wdata; wstrb_q <= s_wstrb; wlast_q <= s_wlast;
               wbeat_valid <= 1'b1;
             end
@@ -2259,7 +2349,7 @@ module aou_axi_initiator_bridge
           end
           S_RDATA: begin
             // credit replenish + return-credit accounting happen per accepted beat
-            if (s_rvalid && s_rready) begin : s_rdata_blk
+            if (i_rvalid && s_rready) begin : s_rdata_blk
               logic [CREDIT_W-1:0] mc;
               mc = flit_credit(drx_data);
               cr_wreq  <= sat_add(cr_wreq,  cred_decode(mc_wreq (mc)), LCR_WREQ);
@@ -2417,23 +2507,30 @@ module aou_axi_initiator_bridge
     wire [EW-1:0]        r_elem = r_vec_q[r_off +: EW];
 
     assign r_out_ready = !r_busy;
-    assign s_rvalid    = r_busy;
-    assign s_rid       = r_id_q;
-    assign s_rdata     = r_elem[AXI_DATA_W-1:0];
-    assign s_rresp     = r_elem[EW-1 -: 2];
-    assign s_rlast     = (r_beat == r_len_q);
+    assign i_rvalid    = r_busy;
+    assign i_rid       = r_id_q;
+    assign i_rdata     = r_elem[AXI_DATA_W-1:0];
+    assign i_rresp     = r_elem[EW-1 -: 2];
+    assign i_rlast     = (r_beat == r_len_q);
 
     // ---- AXI B output stage ----------------------------------------------
     logic [AXI_ID_W-1:0] b_id_q;
     logic [1:0]          b_resp_q;
     logic                b_busy;
     assign w_out_ready = !b_busy;
-    assign s_bvalid    = b_busy;
-    assign s_bid       = b_id_q;
-    assign s_bresp     = b_resp_q;
+    assign i_bvalid    = b_busy;
+    assign i_bid       = b_id_q;
+    assign i_bresp     = b_resp_q;
+
+    // Transactions issued but not yet completed on AXI (B handshake, or the
+    // RLAST beat).  The local error responder waits for this to reach zero.
+    logic [7:0] outst;
+    wire        b_done = i_bvalid && s_bready;
+    wire        r_done = i_rvalid && s_rready && i_rlast;
+    assign br_idle = (ostate == O_IDLE) && (outst == 8'd0);
 
     // ---- request transmit -------------------------------------------------
-    assign s_wready  = (ostate == O_WDATA) && !wbeat_valid;
+    assign i_wready  = (ostate == O_WDATA) && !wbeat_valid;
     assign dtx_valid = ((ostate == O_WREQ)  && wreq_ok)  ||
                        ((ostate == O_WDATA) && wbeat_valid && wdata_ok) ||
                        ((ostate == O_RREQ)  && rreq_ok);
@@ -2501,7 +2598,7 @@ module aou_axi_initiator_bridge
         burst_q  <= '0; prot_q <= '0; tag_q  <= '0;
         wdata_q  <= '0; wstrb_q <= '0; wbeat_valid <= 1'b0; wlast_q <= 1'b0;
         cr_wreq  <= '0; cr_rreq <= '0; cr_wdata <= '0;
-        ret_rdata <= '0; ret_wresp <= '0; rd_out <= '0;
+        ret_rdata <= '0; ret_wresp <= '0; rd_out <= '0; outst <= '0;
         cmpr_pend <= 1'b0; cmpr_tag <= '0;
         cmpw_pend <= 1'b0; cmpw_tag <= '0; cmpw_resp <= '0;
         r_id_q <= '0; r_vec_q <= '0; r_len_q <= '0; r_beat <= '0; r_busy <= 1'b0;
@@ -2525,6 +2622,7 @@ module aou_axi_initiator_bridge
         ret_rdata <= n_ret_rdata;
         ret_wresp <= n_ret_wresp;
         rd_out    <= n_rd_out;
+        outst     <= outst + 8'(do_pop) - 8'(b_done) - 8'(r_done);
 
         // ---- response collection (concurrent with issue) -------------------
         cmpr_pend <= 1'b0;
@@ -2590,7 +2688,7 @@ module aou_axi_initiator_bridge
           end
           O_WREQ: if (dtx_fire) ostate <= O_WDATA;
           O_WDATA: begin
-            if (s_wvalid && s_wready) begin
+            if (s_wvalid && i_wready) begin
               wdata_q <= s_wdata; wstrb_q <= s_wstrb; wlast_q <= s_wlast;
               wbeat_valid <= 1'b1;
             end

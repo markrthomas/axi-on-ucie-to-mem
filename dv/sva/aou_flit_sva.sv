@@ -11,7 +11,7 @@
 //     multi-plane bind passes its NUM_RP so the bound tightens to that build's
 //     active plane count (dv/sva/bind_mrp_sva.sv).
 //
-// Carried by the Verilator (--assert) and UVM flows (see axi_lite_sva header).
+// Carried by the Verilator (--assert) and UVM flows (see axi4_sva header).
 // -----------------------------------------------------------------------------
 `ifndef AOU_FLIT_SVA_SV
 `define AOU_FLIT_SVA_SV
@@ -29,7 +29,7 @@ module aou_flit_sva
     input logic                ready
 );
 
-  // `disable iff (!rstn)` inlined per property (see axi_lite_sva note).
+  // `disable iff (!rstn)` inlined per property (see axi4_sva note).
 
   // header/payload views of the flit under check (only the checked slices are
   // read; the rest is intentionally unused here).

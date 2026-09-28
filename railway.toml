@@ -2,8 +2,8 @@
 # https://docs.railway.com/reference/config-as-code
 #
 # This project is a hardware DV suite, not a web service: it has no listening
-# port.  The container runs `make ci` (the full lint + cocotb + SV + pack + act
-# + reorder + ooo + mrp + SystemC + coverage gate) and exits with the gate's
+# port.  The container runs `make ci` (the full lint + eda-check + cocotb + SV + pack + act
+# + reorder + ooo + mrp + sva-mut + SystemC + coverage + formal gate) and exits with the gate's
 # status (0 = green).  Deploy it as a one-off / scheduled job, not an
 # always-on service.
 

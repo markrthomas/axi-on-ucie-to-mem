@@ -28,7 +28,7 @@ module aou_credit_sva #(
     input logic [7:0] c2
 );
 
-  // `disable iff (!rstn)` inlined per property (see axi_lite_sva note).
+  // `disable iff (!rstn)` inlined per property (see axi4_sva note).
   a_c0_bound: assert property (@(posedge clk) disable iff (!rstn) c0 <= CEIL0[7:0]);
   a_c1_bound: assert property (@(posedge clk) disable iff (!rstn) c1 <= CEIL1[7:0]);
   a_c2_bound: assert property (@(posedge clk) disable iff (!rstn) c2 <= CEIL2[7:0]);
