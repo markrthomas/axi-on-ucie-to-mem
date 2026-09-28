@@ -21,7 +21,10 @@ BUILD_JOBS ?= 1
 
 VFLAGS ?= --binary --timing --vpi -j $(BUILD_JOBS) --build-jobs $(BUILD_JOBS) \
           -Wno-fatal -Wno-COVERIGN -Wno-TIMESCALEMOD --CFLAGS -O0
-UVM_PLUSARGS ?= +UVM_NO_RELNOTES
+# +UVM_TIMEOUT takes a bare integer in the UVM package's time unit (ns here):
+# UVM parses it with $sscanf("%d,%s"), so a suffix like "2000us" silently
+# truncates to 2000 (= 2 us) and drops the override flag.  2000000 = 2 ms.
+UVM_PLUSARGS ?= +UVM_NO_RELNOTES +UVM_TIMEOUT=2000000,NO
 
 VLT_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 UVM     := $(abspath $(VLT_DIR)/..)
@@ -48,8 +51,17 @@ define build
 	$(VERILATOR) $(VFLAGS) --top-module axi_ucie_tb_top \
 	  --Mdir $(OBJ)/axi_ucie_tb_top $(INCS) $(UVM_HDR) $(UVM_DPI) $(SRCS)
 endef
+# Hard gate: the sim exits 0 even on UVM_FATAL, so pass only if the report
+# summary shows UVM_ERROR == 0 and UVM_FATAL == 0 and the scoreboard reported a
+# clean check.
 define run
-	$(OBJ)/axi_ucie_tb_top/Vaxi_ucie_tb_top $(UVM_PLUSARGS) +UVM_TESTNAME=$(1)
+	$(OBJ)/axi_ucie_tb_top/Vaxi_ucie_tb_top $(UVM_PLUSARGS) +UVM_TESTNAME=$(1) \
+	  2>&1 | tee $(OBJ)/$(1).log
+	@grep -Eq '^UVM_ERROR : +0$$' $(OBJ)/$(1).log && \
+	 grep -Eq '^UVM_FATAL : +0$$' $(OBJ)/$(1).log && \
+	 grep -Eq '\[SCOREBOARD\] [0-9]+ reads checked, 0 errors' $(OBJ)/$(1).log && \
+	 echo "[UVM-VLT] PASS: $(1)" || \
+	 { echo "[UVM-VLT] FAIL: $(1) (see $(OBJ)/$(1).log)"; exit 1; }
 endef
 
 .PHONY: all build write_read random walking lint clean

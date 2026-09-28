@@ -3,12 +3,15 @@
 // a time, and writes captured RDATA/response back into the item.
 //
 // Timing mirrors the cocotb BFM (dv/cocotb/axi_lite_bfm.py): requests are driven
-// on the falling edge so the DUT samples clean values on the rising edge.  The
-// DUT asserts AWREADY and WREADY together in its idle state, so AW and W are
-// issued together and both readies are awaited on the same cycle; BREADY/RREADY
-// are held high for the response.
+// on the falling edge so the DUT samples clean values on the rising edge.  AW
+// and W are issued together but handshaken INDEPENDENTLY (AXI rule): each VALID
+// drops right after its own READY.  The bridge accepts AW into its request
+// queue (AWREADY = queue space) well before it opens W (WREADY only in
+// S_WDATA), so holding AWVALID until both readies coincide would enqueue
+// duplicate AWs whose W beats never arrive.  BREADY/RREADY are held high for
+// the response.
 //
-// The DUT boundary is an AXI4 subset (README "AXI4 subset profile"); every
+// The DUT boundary is an AXI4 subset (README "AoU Basic-Profile mapping"); every
 // transfer here is a single beat, so the AXI4-only fields are driven to the
 // legal single-beat values ID=0, LEN=0, SIZE=log2(bytes/beat), BURST=INCR,
 // WLAST=1.  (Left floating, WLAST reads 0 under Verilator and the initiator
@@ -49,11 +52,20 @@ class axi_driver extends uvm_driver #(axi_seq_item);
         vif.AWADDR  <= item.addr; vif.AWPROT <= 3'b000; vif.AWVALID <= 1'b1;
         vif.WDATA   <= item.data; vif.WSTRB  <= '1;     vif.WVALID  <= 1'b1;
         vif.BREADY  <= 1'b1;
-        @(posedge vif.ACLK);
-        while (!(vif.AWREADY === 1'b1 && vif.WREADY === 1'b1))
-            @(posedge vif.ACLK);
-        @(negedge vif.ACLK);
-        vif.AWVALID <= 1'b0; vif.WVALID <= 1'b0;
+        fork
+            begin
+                @(posedge vif.ACLK);
+                while (vif.AWREADY !== 1'b1) @(posedge vif.ACLK);
+                @(negedge vif.ACLK);
+                vif.AWVALID <= 1'b0;
+            end
+            begin
+                @(posedge vif.ACLK);
+                while (vif.WREADY !== 1'b1) @(posedge vif.ACLK);
+                @(negedge vif.ACLK);
+                vif.WVALID <= 1'b0;
+            end
+        join
         @(posedge vif.ACLK);
         while (vif.BVALID !== 1'b1) @(posedge vif.ACLK);
         item.resp = vif.BRESP;

@@ -494,32 +494,48 @@ in-order completion** (initiator request queue) already in place.
   `../uvm_review/sim/sim_main.cpp` (Verilator coverage harness),
   `../uvm_review/README.md` (doc depth/style).
 
-## Open item — UVM-on-Verilator smoke (`uvm/vlt`): credit-piggyback deadlock (F2)
+## UVM-on-Verilator smoke (`uvm/vlt`) — DONE (was: "credit-piggyback deadlock (F2)")
 
 **Added 2026-08-28 (PR `ci/uvm-verilator`).** A license-free Verilator 5.050 UVM
 flow was added under `uvm/vlt` (Makefile + shim) with CI in
 `.github/workflows/verilator-uvm.yml` (builds Verilator from source, installs the
 **z3** SMT solver so `randomize()` constraints solve, `ccache`, then lint +
-`axi_write_read_test`). Lint and the full `--binary` build are **green**.
+`axi_write_read_test`). Lint and the full `--binary` build were green, but the
+smoke **hung**: zero AXI transactions completed before `[PH_TIMEOUT]`.
 
-**Status: PARTIAL — design blocker (per Golden Rule 2, reported not hacked).**
-The `axi_write_read_test` smoke run **hangs**: after `[RNTST] Running test`,
-**zero AXI transactions complete** and the run sits until `[PH_TIMEOUT]`
-(bounded via `+UVM_TIMEOUT=2000us`). Sim time advances (clocks run), so this is
-not a stopped clock — the **first AXI write's response handshake never returns**,
-the sequence blocks, the objection is held forever.
+**Resolved 2026-09-28 — it was not an RTL/credit deadlock.** The hang was
+diagnosed as the F2 credit-piggyback deadlock, but the real causes were three
+TB/CI defects (no RTL changed):
 
-This matches the documented **credit piggyback deadlock (F2 class)** in
-`CLAUDE.md` → *Known gotchas*: the initiator returns ReadData/WriteResp credits
-**only** piggybacked on its next request flit, so with a response owed and no
-request behind it the target drains its credit pool and stalls. A single
-write→read smoke with no follow-on traffic is exactly that shape.
+1. **Unconnected AXI4 inputs.** The UVM tops (`uvm/axi_ucie_tb_top.sv`,
+   `uvm/axi_ucie_tb_single.sv`) wired only the AXI4-Lite subset of the DUT's
+   AXI4-subset boundary. `WLAST` floated (0 under Verilator, z/x on 4-state
+   sims), so the initiator bridge never left `S_WDATA` after the first W beat
+   (`rtl/aou_axi_initiator_bridge.sv`, `if (wlast_q) state <= S_WWAIT`) → **0
+   transactions**. Fix: `axi_lite_if` carries `Ax{ID,LEN,SIZE,BURST}`, `WLAST`,
+   `{B,R}ID`, `RLAST`; every port is connected; the driver holds single-beat
+   values (ID=0, LEN=0, SIZE=2, BURST=INCR, WLAST=1) and the monitor
+   `UVM_ERROR`s on `BID`/`RID` ≠ 0 or `RLAST` ≠ 1.
+2. **Driver held AWVALID until AWREADY && WREADY coincided.** The bridge accepts
+   AW into its request queue (`AWREADY` = queue space) before it opens W
+   (`WREADY` only in `S_WDATA`), so every waiting cycle enqueued a **duplicate
+   AW** whose W beat never came → 1 transaction, then stall. Fix: AW and W are
+   handshaken independently (`fork`/`join`), as AXI requires.
+3. **CI timeout plusarg.** UVM parses `+UVM_TIMEOUT` with `$sscanf("%d,%s")`, so
+   `2000us,NO` became `2000` (ns) = **2 µs** with override on, which cut the
+   healthy run short. Fix: `+UVM_TIMEOUT=2000000,NO` (2 ms) in the workflow and
+   as the `uvm/vlt` default.
 
-**Fix direction (future):** bound outstanding responses against the granted
-credit ceiling so a lone transaction always drains (a credit-return path not
-gated on a subsequent request), and/or have the smoke sequence keep a request
-in flight. Then the `uvm/vlt` smoke should reach `SCOREBOARD` + clean `$finish`.
-Re-enable a hard gate on `UVM_ERROR==0 && UVM_FATAL==0` once it passes.
+**Result (Verilator 5.050, measured locally):** `axi_write_read_test` 32 reads /
+0 errors, `axi_random_test` 35 / 0, `axi_walking_test` 24 / 0; `UVM_ERROR : 0`,
+`UVM_FATAL : 0`, clean `$finish`. The **hard gate is re-enabled**: `uvm/vlt`'s run
+recipe fails unless `UVM_ERROR`/`UVM_FATAL` are 0 and the scoreboard reports
+`0 errors` (banner `[UVM-VLT] PASS: <test>`). Mutation-tested: `WLAST=0` (0 txns),
+reverting to the joint AW+W wait (1 txn), and `ARID=1` (32 × RID `UVM_ERROR`)
+each fail the gate.
+
+The F2 credit-piggyback gotcha in `CLAUDE.md` is still a real design constraint;
+it just wasn't what this smoke hit.
 
 **Note:** this repo already has a mature DV gate (`make ci`, 8 envs); the
 `uvm/vlt` flow is an additional license-free SV-UVM path, not a replacement.
