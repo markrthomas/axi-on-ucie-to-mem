@@ -41,7 +41,7 @@ SRCS := $(UVM)/axi_lite_if.sv \
         $(RTL)/axi_lite_mem.sv $(RTL)/aou_reorder.sv $(RTL)/aou_ooo_resp_src.sv \
         $(RTL)/aou_rp_mux.sv $(RTL)/aou_axi_initiator_bridge.sv \
         $(RTL)/aou_axi_target_bridge.sv $(RTL)/axi_ucie_mem_top.sv \
-        $(SVA)/axi_lite_sva.sv $(SVA)/aou_flit_sva.sv $(SVA)/aou_credit_sva.sv \
+        $(SVA)/axi4_sva.sv $(SVA)/aou_flit_sva.sv $(SVA)/aou_credit_sva.sv \
         $(SVA)/bind_sva.sv \
         $(UVM)/axi_pkg.sv $(UVM)/axi_ucie_tb_top.sv
 

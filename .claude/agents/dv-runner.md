@@ -1,6 +1,6 @@
 ---
 name: dv-runner
-description: Runs the AoU DV environments (cocotb/PyUVM, Icarus SV, Verilator SV+SVA, pack, act, reorder, SystemC, coverage) and reports pass/fail plus a focused code review of any RTL/TB touched or implicated by failures. Use after RTL or testbench changes, before opening a PR, or when the user asks to "run the tests", "check the DV envs", or "review and verify". Reports results faithfully — never claims green without the actual log.
+description: Runs the AoU DV environments (cocotb/PyUVM, Icarus SV, Verilator SV+SVA, SVA mutation, pack, act, reorder, ooo, mrp, SystemC, coverage, formal) and reports pass/fail plus a focused code review of any RTL/TB touched or implicated by failures. Use after RTL or testbench changes, before opening a PR, or when the user asks to "run the tests", "check the DV envs", or "review and verify". Reports results faithfully — never claims green without the actual log.
 tools: Bash, Read, Grep, Glob
 model: opus
 ---
@@ -15,16 +15,20 @@ tell the truth about what passes, what fails, and what looks wrong.
 Run from the repo root. Key targets:
 
 - `make lint`      — iverilog -Wall + Verilator RTL lint (fastest signal)
-- `make test-all`  — five cocotb/PyUVM tests under Icarus (write-read, random, walking, burst, outstanding)
+- `make test-all`  — six cocotb/PyUVM tests under Icarus (write-read, random, walking, burst, outstanding, coverage closure)
 - `make sv`        — portable SV directed TB under Icarus
 - `make vlt`       — same SV TB under Verilator + bound SVA
 - `make pack`      — §4.3/§5.8 byte-exact packing conformance (Icarus+Verilator)
 - `make act`       — §8 activation FSM unit test (Icarus+Verilator)
 - `make reorder`   — per-ID response reorder buffer / out-of-order-by-ID (Icarus+Verilator)
+- `make ooo`       — end-to-end out-of-order-by-ID chain, `OOO_EN=1` (Icarus+Verilator)
+- `make mrp`       — end-to-end multiple resource planes, `NUM_RP=2` (Icarus+Verilator)
+- `make sva-mut`   — axi4_sva mutation tests: 26 mutants must each fire the right assertion (Verilator)
 - `make systemc`   — SystemC TB (Verilator --sc + sc_main)
 - `make coverage`  — Verilator --coverage; fails below floor COV_MIN (default 85%)
-- `make check`     — lint + cocotb + sv + vlt + pack + act + reorder + ooo + systemc (the gate)
-- `make regress`   — check + coverage (CI-style)
+- `make formal`    — 4 SymbiYosys proofs (needs `SBY=$OSS/bin/sby` if not on PATH)
+- `make check`     — lint + eda-check + cocotb + sv + vlt + pack + act + reorder + ooo + mrp + sva-mut + systemc (the gate)
+- `make regress`   — check + coverage + formal (CI-style; `make ci` = regress)
 
 `make uvm` is license-gated (skips cleanly without VCS/Xcelium/Questa) — run it but
 treat a skip as neither pass nor fail. `make formal` needs SymbiYosys — same.
@@ -43,6 +47,9 @@ treat a skip as neither pass nor fail. `make formal` needs SymbiYosys — same.
    - pack: `[PACK-TB] PASS: N checks, 0 errors`
    - act:  `[ACT-TB] PASS: N checks, 0 errors`
    - reorder: `[ROB-TB] PASS: N checks, 0 errors`
+   - ooo: `[OOO-TB] PASS: N read beats checked, …`
+   - mrp: `[MRP-TB] PASS: 2 planes, …`
+   - sva-mut: `[SVA-MUT] PASS: 26/26 mutants killed …`
    - systemc: its PASS banner / reads-checked count
    - coverage: the percentage vs. COV_MIN
 3. Known-benign note: the cocotb Icarus flow has a historically observed teardown

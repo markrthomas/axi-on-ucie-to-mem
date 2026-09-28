@@ -7,7 +7,7 @@
 # dv/sva/bind_mrp_sva.sv: aou_flit_sva with NUM_RP=2 (so the §4.3 FDId and the
 # Table-16 MsgCredit RP subfield are bounded to the ACTIVE planes rather than
 # RP0-only), aou_rp_sva (per-plane routing / no silent drop), aou_credit_sva on
-# each plane's bridges, and axi_lite_sva on each plane's AXI front door.
+# each plane's bridges, and axi4_sva on each plane's AXI front door.
 
 IVERILOG  ?= iverilog
 VVP       ?= $(shell d=$$(dirname $$(command -v $(IVERILOG) 2>/dev/null) 2>/dev/null); echo $${d:-.}/vvp)
@@ -32,7 +32,7 @@ TB  := tb_axi_ucie_mrp.sv
 TOP := tb_axi_ucie_mrp
 
 SVA_DIR := ../sva
-SVA := $(SVA_DIR)/axi_lite_sva.sv $(SVA_DIR)/aou_flit_sva.sv \
+SVA := $(SVA_DIR)/axi4_sva.sv $(SVA_DIR)/aou_flit_sva.sv \
        $(SVA_DIR)/aou_credit_sva.sv $(SVA_DIR)/aou_rp_sva.sv \
        $(SVA_DIR)/bind_mrp_sva.sv
 

@@ -49,6 +49,7 @@ ACT_DIR    := dv/act
 REORDER_DIR := dv/reorder
 OOO_DIR     := dv/ooo
 MRP_DIR     := dv/mrp
+SVA_MUT_DIR := dv/sva/mut
 SC_DIR     := dv/systemc
 UVM_DIR    := uvm
 TB_RESULTS := $(TB_DIR)/results.xml
@@ -136,7 +137,7 @@ endif
 .PHONY: default help \
 	test test-all test-write-read test-random test-walking test-burst \
 	test-outstanding test-coverage fcov-reset sim cocotb \
-	sv vlt pack act reorder ooo mrp systemc uvm eda-check coverage formal check regress ci \
+	sv vlt pack act reorder ooo mrp sva-mut systemc uvm eda-check coverage formal check regress ci \
 	metrics dashboard metrics-capture \
 	waves waves-sv waves-ooo waves-mrp waves-act waves-all \
 	wave wave-sv wave-ooo wave-mrp wave-act wave-check \
@@ -180,6 +181,7 @@ help:
 	@echo "    make reorder           # per-ID response reorder buffer: out-of-order-by-ID completion (Icarus+Verilator)"
 	@echo "    make ooo               # END-TO-END out-of-order-by-ID chain (OOO_EN=1): real different-ID overtake (Icarus+Verilator)"
 	@echo "    make mrp               # END-TO-END multiple resource planes (NUM_RP=2): per-plane credits/routing, arbiter fairness (Icarus+Verilator)"
+	@echo "    make sva-mut           # SVA mutation tests: every stalled AXI4 field/VALID drop must fire axi4_sva (Verilator)"
 	@echo "    make systemc           # SystemC TB (Verilator --sc model + sc_main)"
 	@echo "    make uvm               # SystemVerilog UVM TB (license-gated; skips if no VCS/Xcelium/Questa)"
 	@echo "    make coverage          # Verilator --coverage -> sim/coverage.info (floor COV_MIN=$(COV_MIN)%)"
@@ -190,7 +192,7 @@ help:
 	@echo "  Gates:"
 	@echo "    make lint              # iverilog -Wall + Verilator RTL lint"
 	@echo "    make eda-check         # verify the EDA Playground design.sv is current (drift-guard)"
-	@echo "    make check             # lint + eda-check + cocotb + SV(Icarus+Verilator) + pack + act + reorder + ooo + mrp + SystemC"
+	@echo "    make check             # lint + eda-check + cocotb + SV(Icarus+Verilator) + pack + act + reorder + ooo + mrp + sva-mut + SystemC"
 	@echo "    make regress           # check + coverage + formal (CI-style pass/fail)"
 	@echo "    make ci                # regress"
 	@echo ""
@@ -371,7 +373,7 @@ _lint_verilator:
 
 # --- other DV environments ---------------------------------------------------
 # Portable SV directed TB under Icarus and Verilator (Verilator run also binds
-# the AXI-Lite + AoU-flit SVA checkers via --assert).
+# the AXI4-subset + AoU-flit SVA checkers via --assert).
 sv:
 	$(MAKE) -C $(SV_DIR) icarus
 
@@ -411,6 +413,14 @@ ooo:
 mrp:
 	$(MAKE) -C $(MRP_DIR) icarus
 	$(MAKE) -C $(MRP_DIR) verilator
+
+# Assertion mutation tests for the bound AXI4 checker (dv/sva/axi4_sva.sv):
+# corrupt each stalled payload field (AW/AR ID/ADDR/LEN/SIZE/BURST/PROT, W
+# DATA/STRB/LAST, B ID/RESP, R ID/DATA/RESP/LAST) and drop each VALID early, one
+# at a time, and require the matching property to fire under Verilator --assert;
+# the unmutated run must pass.  Skips (exit 0) without Verilator >= 5.
+sva-mut:
+	$(MAKE) -C $(SVA_MUT_DIR) run
 
 # SystemC TB: Verilator --sc model of the DUT + hand-written sc_main driver.
 # Degrades gracefully (skip, exit 0) if Verilator or SystemC is absent.
@@ -508,13 +518,13 @@ eda-check:
 	@$(MAKE) --no-print-directory -C uvm eda-check
 
 # --- gates -------------------------------------------------------------------
-check: lint eda-check test-all sv vlt pack act reorder ooo mrp systemc
+check: lint eda-check test-all sv vlt pack act reorder ooo mrp sva-mut systemc
 
 # regress is the single signoff gate: everything `check` runs, plus the coverage
 # floor and the formal tier.  `formal` is kept OUT of the lighter `check` so the
 # quick loop stays quick; only regress/ci pay the prover time.
 regress: check coverage formal
-	@echo "[REGRESS] lint + cocotb + SV(Icarus+Verilator) + pack + act + reorder + ooo + mrp + SystemC + coverage + formal PASSED"
+	@echo "[REGRESS] lint + cocotb + SV(Icarus+Verilator) + pack + act + reorder + ooo + mrp + sva-mut + SystemC + coverage + formal PASSED"
 
 ci: regress
 	@echo "[CI] full regression PASSED"
@@ -565,6 +575,7 @@ clean:
 	$(MAKE) -C $(REORDER_DIR) clean 2>/dev/null || true
 	$(MAKE) -C $(OOO_DIR) clean 2>/dev/null || true
 	$(MAKE) -C $(MRP_DIR) clean 2>/dev/null || true
+	$(MAKE) -C $(SVA_MUT_DIR) clean 2>/dev/null || true
 	$(MAKE) -C $(SC_DIR) clean 2>/dev/null || true
 	$(MAKE) -C $(UVM_DIR) clean 2>/dev/null || true
 	rm -f $(FCOV_DB)

@@ -1,9 +1,9 @@
 // -----------------------------------------------------------------------------
 // bind_mrp_sva : assertion bindings for the MULTI-PLANE build (NUM_RP > 1).
 //
-// The single-plane bindings live in bind_sva.sv and attach axi_lite_sva to the
+// The single-plane bindings live in bind_sva.sv and attach axi4_sva to the
 // DUT's (scalar) boundary ports.  At NUM_RP > 1 those boundary ports are
-// per-plane vectors, so the AXI-Lite checker is bound one level down instead —
+// per-plane vectors, so the AXI4 checker is bound one level down instead —
 // onto each aou_axi_initiator_bridge instance, i.e. onto EVERY plane's AXI front
 // door, which is strictly more coverage than the single top-level bind.
 //
@@ -23,16 +23,19 @@
   `define MRP_NUM_RP 2
 `endif
 
-// Per-plane AXI4-Lite front door (one bind per initiator bridge instance).
-bind aou_axi_initiator_bridge axi_lite_sva #(
-  .AW(AXI_ADDR_W), .DW(AXI_DATA_W), .SW(AXI_STRB_W)
+// Per-plane AXI4-subset front door (one bind per initiator bridge instance).
+bind aou_axi_initiator_bridge axi4_sva #(
+  .AW(AXI_ADDR_W), .DW(AXI_DATA_W), .SW(AXI_STRB_W), .IDW(AXI_ID_W)
 ) u_axi_sva (
   .clk(clk), .rstn(rstn),
-  .awaddr(s_awaddr), .awvalid(s_awvalid), .awready(s_awready),
-  .wdata(s_wdata),   .wstrb(s_wstrb), .wvalid(s_wvalid), .wready(s_wready),
-  .bvalid(s_bvalid), .bready(s_bready),
-  .araddr(s_araddr), .arvalid(s_arvalid), .arready(s_arready),
-  .rdata(s_rdata),   .rvalid(s_rvalid), .rready(s_rready)
+  .awid(s_awid), .awaddr(s_awaddr), .awlen(s_awlen), .awsize(s_awsize),
+  .awburst(s_awburst), .awprot(s_awprot), .awvalid(s_awvalid), .awready(s_awready),
+  .wdata(s_wdata), .wstrb(s_wstrb), .wlast(s_wlast), .wvalid(s_wvalid), .wready(s_wready),
+  .bid(s_bid), .bresp(s_bresp), .bvalid(s_bvalid), .bready(s_bready),
+  .arid(s_arid), .araddr(s_araddr), .arlen(s_arlen), .arsize(s_arsize),
+  .arburst(s_arburst), .arprot(s_arprot), .arvalid(s_arvalid), .arready(s_arready),
+  .rid(s_rid), .rdata(s_rdata), .rresp(s_rresp), .rlast(s_rlast),
+  .rvalid(s_rvalid), .rready(s_rready)
 );
 
 // §4.3 flit well-formedness on the shared links, bounded to the ACTIVE planes.
