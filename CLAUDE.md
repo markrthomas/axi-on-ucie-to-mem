@@ -64,7 +64,10 @@ license-gated flow degrades gracefully (prints a skip, exits 0). See
   how many envs build at once (`SWARM_MAX_PARALLEL`).
 - **The gate:**
   - `make check` = `lint eda-check` + the **8 DV envs**: `test-all` (cocotb/PyUVM),
-    `sv`, `pack`, `act`, `reorder`, `ooo`, `mrp`, `systemc`.
+    `sv` (Makefile targets `sv` + `vlt` + `sva-mut`), `pack`, `act`, `reorder`,
+    `ooo`, `mrp`, `systemc`.  This 8-env grouping is the one `docker/swarm.sh`,
+    `docker/swarm-task.md` and `.claude/agents/*.md` use; the README's "five DV
+    environments" are the five *simulator/framework* flavours, a different axis.
   - `make regress` = `check` + `coverage` (Verilator lcov ≥ `COV_MIN`, floor 85) +
     `formal` (**4 proofs**: `axi_lite_mem`, `aou_flit`, `aou_credit`,
     `aou_activation`; bmc+cover gate, prove best-effort).
@@ -85,7 +88,7 @@ license-gated flow degrades gracefully (prints a skip, exits 0). See
 | env | dir | proves | banner |
 |-----|-----|--------|--------|
 | cocotb/PyUVM | `dv/cocotb` | end-to-end AXI + functional coverage (`FCOV_MIN`) | `[COV-FUNC]` / cocotb PASS |
-| sv | `dv/sv` | directed SV TB, Icarus + Verilator(+bound SVA) | `[SV-TB] PASS: N reads` |
+| sv | `dv/sv` + `dv/sva/mut` | directed SV TB, Icarus + Verilator(+bound SVA); SVA mutation (`make sva-mut`) | `[SV-TB] PASS: N reads`, `[SVA-MUT] PASS` |
 | pack | `dv/pack` | §4.3/§5.8 byte-exact flit/message packing | `[PACK-TB] PASS` |
 | act | `dv/act` | §8 activation FSM (bring-up/teardown/ERROR, quiescing) | `[ACT-TB] PASS` |
 | reorder | `dv/reorder` | standalone per-ID reorder buffer | `[ROB-TB] PASS` |

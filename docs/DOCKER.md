@@ -9,7 +9,7 @@ The image is defined by four files at the repo root:
 
 | File | Role |
 |------|------|
-| `Dockerfile` | Builds the toolchain image; mirrors `.github/workflows/ci.yml`. |
+| `Dockerfile` | Builds the toolchain image; runs the same pinned-tool `make ci` gate as `.github/workflows/ci.yml` (Python 3.12 vs CI 3.10 — see "Relation to CI"). |
 | `docker/entrypoint.sh` | Injects the pinned-Verilator make args, then runs the gate. |
 | `.dockerignore` | Keeps the build context small (no local tools / sim artifacts / `.git`). |
 | `railway.toml` | Tells Railway to build the Dockerfile and run it as a batch job. |
@@ -22,7 +22,7 @@ The image is defined by four files at the repo root:
 # build the image (downloads ~677 MB oss-cad-suite once; cached thereafter)
 docker build -t aou-dv .
 
-# run the full CI gate (lint + cocotb + SV + pack + act + reorder + ooo + mrp + SystemC + coverage)
+# run the full CI gate (lint + eda-check + cocotb + SV + pack + act + reorder + ooo + mrp + sva-mut + SystemC + coverage + formal)
 docker run --rm aou-dv
 
 # run just one environment
@@ -53,7 +53,7 @@ the banners this document quotes are stable.
 A green run ends with:
 
 ```
-[REGRESS] lint + cocotb + SV(Icarus+Verilator) + pack + act + reorder + ooo + mrp + SystemC + coverage + formal PASSED
+[REGRESS] lint + cocotb + SV(Icarus+Verilator) + pack + act + reorder + ooo + mrp + sva-mut + SystemC + coverage + formal PASSED
 ```
 
 and exit status `0`. Any failing environment stops the gate and returns non-zero.
@@ -64,7 +64,7 @@ gates on it, so the gate covers both coverage flavours:
 ```
 [COV-FUNC] overall: 26/26 goal bins = 100.0% (floor 100.0%)
 [COV-FUNC] PASS: functional coverage 100.0% meets the 100.0% floor
-[COVERAGE] line coverage: 92.9% (floor 85%)
+[COVERAGE] line coverage: 90.3% (floor 85%)
 ```
 
 The functional model (`dv/cocotb/axi_coverage.py`) is stdlib-only — **no extra
@@ -468,7 +468,7 @@ Runtime inputs:
 | `ANTHROPIC_API_KEY` | everything | Console key; injected at run time, never baked. |
 | `GITHUB_TOKEN` | push + PR | repo/PR scope; without it the swarm edits & tests but stops before pushing (leaves a committed branch). |
 | `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` | commit identity | sensible defaults if unset. |
-| `SWARM_MAX_PARALLEL` | throttle | max dv-env-testers run at once. **Auto-sized to available RAM** (`MemAvailable / 2 GB`, clamped 1–6) since each env's Verilator build can need ~2 GB; set it to override. |
+| `SWARM_MAX_PARALLEL` | throttle | max dv-env-testers run at once. **Auto-sized to available RAM** (`MemAvailable / 2 GB`, clamped 1–8 — one per DV env) since each env's Verilator build can need ~2 GB; set it to override. |
 | `SWARM_PERMISSION_MODE` | tuning | default `acceptEdits`. |
 | `SWARM_ALLOWED_TOOLS` | tuning | default `Bash,Read,Edit,Write,Grep,Glob,Task,Agent`. |
 
@@ -476,7 +476,7 @@ Runtime inputs:
 concurrent Verilator/g++ compiles — on a small host that OOM-kills `cc1plus`
 (the same failure the `VL_JOBS` cap fixes for a single build). `swarm.sh`
 therefore reads `MemAvailable` and dispatches testers in **batches** of
-`SWARM_MAX_PARALLEL` (≈ 2 on a 5–6 GB box, up to 6 where RAM is ample); the
+`SWARM_MAX_PARALLEL` (≈ 2 on a 5–6 GB box, up to 8 — all eight envs at once — where RAM is ample); the
 manager also retries any OOM-killed env with `VL_JOBS=1`. Sequential
 `make regress` is unaffected — this only bounds the swarm's parallel fan-out.
 
@@ -665,8 +665,11 @@ It should authenticate, answer, and print a metrics block showing `kimi-k3`.
 ### Run metrics
 
 At the end of every `agent` / `swarm` run the runner prints a **per-model metrics
-block** and writes the raw result JSON to `docker/last-run-metrics.json`
-(override with `AOU_METRICS_JSON`; disable the block with `AOU_METRICS=0`). It is
+block** and writes the raw result JSON — by default to `last-run-metrics.json`
+in the current directory for `agent` (`docker/agent.sh`; `/work` in the image)
+and to `docker/last-run-metrics.json` for `swarm` (`docker/swarm.sh`); the
+GitHub workflows set it to `$GITHUB_WORKSPACE/last-run-metrics.json` (override
+with `AOU_METRICS_JSON`; disable the block with `AOU_METRICS=0`). It is
 derived from Claude Code's `--output-format json` result (`modelUsage` +
 `duration_*` + `num_turns`):
 
@@ -775,7 +778,7 @@ the runtime environment; nothing is baked in.
 | `SWARM_REPO` | swarm | **required on Railway** | `owner/repo`, e.g. `markrthomas/axi-on-ucie-to-mem`. The image has no `.git`, so `swarm.sh` clones the repo at run time to make its PR — and unlike GitHub Actions, Railway does **not** set `GITHUB_REPOSITORY`, so you must provide this. |
 | `VL_JOBS` | any | optional | Verilator build parallelism; image default `2`. Set **`1`** on the smallest instances if a compile OOMs. |
 | `SWARM_MAX_PARALLEL` | swarm | optional | Max DV envs tested at once; auto-sized to RAM if unset. |
-| `AOU_METRICS_JSON` | agent, swarm | optional | Path for the raw run-metrics JSON (default `docker/last-run-metrics.json`); `AOU_METRICS=0` disables the metrics block. |
+| `AOU_METRICS_JSON` | agent, swarm | optional | Path for the raw run-metrics JSON (default: `last-run-metrics.json` in the working directory for `agent`, `docker/last-run-metrics.json` for `swarm`); `AOU_METRICS=0` disables the metrics block. |
 | `GIT_AUTHOR_NAME` / `GIT_AUTHOR_EMAIL` | swarm | optional | Commit identity for the swarm's branch. |
 
 ### Step 4 — run it, and (optionally) schedule it
@@ -837,11 +840,25 @@ so during MDT (mid-Mar–early-Nov, UTC−6) 09:00 UTC is 3:00 AM local — use
 
 ## Relation to CI
 
-The GitHub Actions workflow (`.github/workflows/ci.yml`) and this image install
-the **same tools the same way** and run the **same `make ci` gate**. CI does not
-build the Dockerfile — it's a parallel, equivalent recipe. Keep the two in sync:
-if you bump a tool version or add an apt/pip dependency in one, mirror it in the
-other. Both are validated by the same green gate (cocotb 6/6 with functional
-coverage 26/26 bins, SV 134 reads, pack 229, act 30, reorder 76, ooo 80 beats /
+The GitHub Actions workflow (`.github/workflows/ci.yml`) and this image run the
+**same `make ci` gate** with the **same pinned tool versions** — oss-cad-suite
+2026-04-13 (Verilator 5.047, SymbiYosys), apt Icarus + SystemC 2.3.3 on Ubuntu
+24.04, cocotb 1.9.2 + pyuvm 4.0.1. They are **not** byte-for-byte the same
+recipe, and one difference is deliberate:
+
+| | Docker image | GitHub Actions CI |
+|-|--------------|-------------------|
+| Python | Ubuntu 24.04 apt `python3` **3.12** (+ `python3-dev`), in a venv | `actions/setup-python` **3.10** |
+| cocotb/pyuvm install | `pip` into `/opt/venv` | `pip` into the setup-python interpreter |
+| oss-cad-suite | extracted to `/opt/oss-cad-suite` | extracted to `$GITHUB_WORKSPACE/oss-cad-suite` (cached) |
+
+**Support policy:** the gate is supported on **Python 3.10 and 3.12** (the two
+interpreters CI and the image exercise); cocotb 1.9.2 / pyuvm 4.0.1 are pinned in
+both, so the Python version is the only toolchain delta. CI does not build the
+Dockerfile — it's a parallel recipe. Keep the two in sync: if you bump a tool
+version or add an apt/pip dependency in one, mirror it in the other. Both are
+validated by the same green gate (cocotb 6/6 with functional
+coverage 26/26 bins, SV 170 reads incl. 275 long-burst SLVERR checks, SVA
+mutation 26/26, pack 229, act 30, reorder 76, ooo 80 beats /
 10 different-ID overtakes, mrp 2 planes / 76 beats, SystemC 145,
-line coverage 92.9%).
+line coverage 90.3% — the >16-beat SLVERR responder is exercised by dv/sv and dv/ooo, not by the sim/ coverage harness).

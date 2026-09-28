@@ -166,6 +166,68 @@ module tb_axi_ucie_mem
     end
   endtask
 
+  // --- over-long burst contract (SCAN_ISSUES #1) ---------------------------
+  // A burst longer than the 16-beat credit ceiling must be answered locally
+  // with SLVERR -- never hang, never reach memory.  Every wait below is
+  // bounded so a regression shows up as a named failure, not a global timeout.
+  localparam int LB_WAIT = 2000;          // cycles allowed for any one handshake
+  int lb_checks;                          // long-burst checks performed
+  int rec_checks;                         // ERROR-recovery checks performed
+
+  // Bounded wait for SIG (a DUT output), as a macro rather than a task with a
+  // `ref` argument so it runs identically under Icarus and Verilator.
+  `define LB_WAIT(SIG, WHAT) \
+    lbn = 0; \
+    @(posedge ACLK); \
+    while (!(SIG) && lbn <= LB_WAIT) begin @(posedge ACLK); lbn++; end \
+    if (!(SIG)) begin \
+      errors++; \
+      $display("[SV-TB] LONG-BURST TIMEOUT waiting for %s", WHAT); \
+    end
+
+  task automatic axi_wburst_long(input logic [IW-1:0] id, input logic [AW-1:0] addr,
+                                 input logic [7:0] len);
+    int k, lbn;
+    begin
+      @(negedge ACLK);
+      AWID = id; AWADDR = addr; AWLEN = len; AWSIZE = SZ4; AWBURST = BI;
+      AWPROT = 3'b000; AWVALID = 1'b1;
+      `LB_WAIT(AWREADY, "AWREADY")
+      @(negedge ACLK); AWVALID = 1'b0;
+      for (k = 0; k <= len; k++) begin          // all len+1 beats must be taken
+        @(negedge ACLK);
+        WDATA = 32'h5A5A_0000 + k; WSTRB = {SW{1'b1}};   // ref_mem NOT updated:
+        WLAST = (k == int'(len)); WVALID = 1'b1;         // nothing may reach memory
+        `LB_WAIT(WREADY, "WREADY")
+        @(negedge ACLK); WVALID = 1'b0; WLAST = 1'b0;
+      end
+      `LB_WAIT(BVALID, "BVALID")
+      lb_checks++;
+      if (BRESP !== 2'b10) begin errors++; $display("[SV-TB] long write len=%0d: BRESP=%b exp SLVERR", len, BRESP); end
+      if (BID   !== id)    begin errors++; $display("[SV-TB] long write BID got %0d exp %0d", BID, id); end
+    end
+  endtask
+
+  task automatic axi_rburst_long(input logic [IW-1:0] id, input logic [AW-1:0] addr,
+                                 input logic [7:0] len);
+    int k, lbn;
+    begin
+      @(negedge ACLK);
+      ARID = id; ARADDR = addr; ARLEN = len; ARSIZE = SZ4; ARBURST = BI;
+      ARPROT = 3'b000; ARVALID = 1'b1;
+      `LB_WAIT(ARREADY, "ARREADY")
+      @(negedge ACLK); ARVALID = 1'b0;
+      for (k = 0; k <= len; k++) begin
+        `LB_WAIT(RVALID, "RVALID")
+        lb_checks++;
+        if (RRESP !== 2'b10)            begin errors++; $display("[SV-TB] long read len=%0d beat %0d: RRESP=%b exp SLVERR", len, k, RRESP); end
+        if (RID   !== id)               begin errors++; $display("[SV-TB] long read RID mismatch beat %0d", k); end
+        if (RLAST !== (k == int'(len))) begin errors++; $display("[SV-TB] long read RLAST mismatch beat %0d", k); end
+        @(negedge ACLK);
+      end
+    end
+  endtask
+
   // single-beat convenience wrappers (AWLEN=0, INCR)
   task automatic axi_write(input logic [AW-1:0] addr, input logic [DW-1:0] data);
     axi_wburst(4'd0, addr, 8'd0, BI, data, 32'd0);
@@ -186,7 +248,7 @@ module tb_axi_ucie_mem
     WDATA = '0; WSTRB = '0;
     ARID = '0; ARADDR = '0; ARLEN = '0; ARSIZE = '0; ARBURST = '0; ARPROT = '0;
     BREADY = 1'b1; RREADY = 1'b1;
-    errors = 0; reads = 0;
+    errors = 0; reads = 0; lb_checks = 0; rec_checks = 0;
     aou_log_init("[SV-TB]");
     verbose = (aou_lvl >= 1);
     for (i = 0; i < WORDS; i++) ref_mem[i] = '0;
@@ -293,6 +355,81 @@ module tb_axi_ucie_mem
           axi_write(edge_a[i], edge_d[j]);
           axi_read(edge_a[i]);
         end
+    end
+
+    // 6) over-long bursts (SCAN_ISSUES #1): 17 beats (one past the 16-beat
+    //    credit ceiling) and the AxLEN=255 extreme, write and read.  Each must
+    //    complete with SLVERR, leave memory untouched, and leave the link usable
+    //    -- checked by 16-beat (boundary) write/read-backs around them.
+    begin : long_bursts
+      logic [AW-1:0] lb_a;
+      lb_a = 32'h0000_0400;
+      axi_wburst(4'd3, lb_a, 8'd15, BI, 32'h1600_0000, 32'h1);  // 16 beats: legal
+      axi_wburst_long(4'd4, lb_a, 8'd16);                        // 17 beats: SLVERR
+      axi_rburst(4'd3, lb_a, 8'd15, BI);                         // memory untouched
+      axi_rburst_long(4'd5, lb_a, 8'd16);                        // 17 beats: SLVERR
+      axi_wburst_long(4'd6, lb_a, 8'd255);                       // 256 beats: SLVERR
+      axi_rburst_long(4'd7, lb_a, 8'd255);                       // 256 beats: SLVERR
+      axi_wburst(4'd8, lb_a, 8'd15, BI, 32'h1700_0000, 32'h1);  // link still works
+      axi_rburst(4'd8, lb_a, 8'd15, BI);
+      $display("[SV-TB] LONG-BURST: %0d SLVERR checks (17- and 256-beat W/R), 0 hangs",
+               lb_checks);
+    end
+
+    // 7) §8 ERROR in the integrated DUT is recovered by reset (SCAN_ISSUES #2).
+    //    The full chain exposes no err_clear: clearing one side alone would send
+    //    a fresh ActivateReq into a still-ENABLED peer (itself an inconsistent
+    //    Req -> ERROR), and in-flight transactions would be left owing responses,
+    //    so reset is the documented recovery.  Inject a genuinely inconsistent
+    //    ActivateReq into the ENABLED target, show ERROR is sticky (a write gets
+    //    no B), then show reset brings the whole chain back.
+    begin : error_recovery
+      flit_t areq;
+      int    n;
+      areq = flit_assemble('0, msgstart_t'(1),
+                           payload_put('0, 0, ACTIVATEREQ_GRAN,
+                                       mk_activate_req_rp('0, 5'b0, 5'b0, 16'b0)));
+      repeat (8) @(negedge ACLK);                    // link idle
+      force dut.g_rp1.tgt_rx_data  = areq;
+      force dut.g_rp1.tgt_rx_valid = 1'b1;
+      @(negedge ACLK);
+      release dut.g_rp1.tgt_rx_data;
+      release dut.g_rp1.tgt_rx_valid;
+      @(negedge ACLK);
+      rec_checks++;
+      if (dut.g_rp1.u_tgt.u_act.error !== 1'b1) begin
+        errors++; $display("[SV-TB] ERROR-REC: target did not enter ERROR on an inconsistent ActivateReq");
+      end
+      // sticky: a write is accepted but never answered while the target is in ERROR
+      AWID = 4'd1; AWADDR = 32'h0000_0800; AWLEN = 8'd0; AWSIZE = SZ4; AWBURST = BI;
+      AWPROT = 3'b000; AWVALID = 1'b1;
+      WDATA = 32'hE77E_0000; WSTRB = {SW{1'b1}}; WLAST = 1'b1;
+      n = 0; @(posedge ACLK);
+      while (!AWREADY && n < 200) begin @(posedge ACLK); n++; end
+      @(negedge ACLK); AWVALID = 1'b0; WVALID = 1'b1;
+      n = 0; @(posedge ACLK);
+      while (!WREADY && n < 200) begin @(posedge ACLK); n++; end
+      @(negedge ACLK); WVALID = 1'b0; WLAST = 1'b0;
+      n = 0;
+      while (!BVALID && n < 2000) begin @(posedge ACLK); n++; end
+      rec_checks++;
+      if (BVALID === 1'b1) begin
+        errors++; $display("[SV-TB] ERROR-REC: got a B response while the target was in ERROR");
+      end
+      if (dut.g_rp1.u_tgt.u_act.error !== 1'b1) begin
+        errors++; $display("[SV-TB] ERROR-REC: ERROR was not sticky");
+      end
+      // recovery: reset, then the chain must re-activate and complete traffic
+      @(negedge ACLK); ARESETn = 1'b0;
+      repeat (3) @(negedge ACLK); ARESETn = 1'b1;
+      rec_checks++;
+      axi_wburst(4'd2, 32'h0000_0800, 8'd3, BI, 32'hC0DE_0000, 32'h1);
+      axi_rburst(4'd2, 32'h0000_0800, 8'd3, BI);
+      if (dut.g_rp1.u_tgt.u_act.error !== 1'b0 || dut.g_rp1.u_init.u_act.error !== 1'b0) begin
+        errors++; $display("[SV-TB] ERROR-REC: ERROR still set after reset");
+      end
+      $display("[SV-TB] ERROR-REC: %0d checks (inconsistent Req -> sticky ERROR -> reset -> traffic OK)",
+               rec_checks);
     end
 
     if (errors == 0)

@@ -243,6 +243,68 @@ module tb_axi_ucie_ooo
     end
   endtask
 
+  // --- phase C: over-long bursts under OOO_EN=1 (SCAN_ISSUES #1) -----------
+  // A 16-beat read (legal) is followed back-to-back by a 17-beat read of the
+  // SAME ID.  The long one must be answered locally with SLVERR, and only after
+  // the legal one has fully drained (AXI same-ID order): 16 OKAY beats, then
+  // 17 SLVERR beats.  Then a 17-beat write must take all its W beats and return
+  // one SLVERR B.  Every wait is bounded (LB_WAIT) so a hang is a named failure.
+  localparam int LB_WAIT = 4000;
+  int lb_checks;
+  task automatic long_phase();
+    int k, n, got, issued;
+    logic [AW-1:0] la;
+    begin
+      la = w_addr[0];
+      // AR #1 (legal, 16 beats) then AR #2 (17 beats, same ID) back to back
+      issued = 0; got = 0; n = 0;
+      while (got < 33 && n < LB_WAIT) begin
+        @(negedge ACLK);
+        if (issued < 2) begin
+          ARID = 4'd1; ARADDR = la; ARLEN = (issued == 0) ? 8'd15 : 8'd16;
+          ARSIZE = SZ4; ARBURST = BI; ARPROT = 3'b000; ARVALID = 1'b1;
+        end else ARVALID = 1'b0;
+        @(posedge ACLK); n++;
+        if (ARVALID && ARREADY) issued++;
+        if (RVALID && RREADY) begin
+          lb_checks++;
+          chk(RID === 4'd1, $sformatf("long-burst phase: RID beat %0d", got));
+          if (got < 16) begin
+            chk(RRESP === 2'b00, $sformatf("legal 16-beat read beat %0d not OKAY (SLVERR overtook it?)", got));
+            chk(RLAST === (got == 15), $sformatf("legal read RLAST beat %0d", got));
+          end else begin
+            chk(RRESP === 2'b10, $sformatf("17-beat read beat %0d: RRESP=%b exp SLVERR", got-16, RRESP));
+            chk(RLAST === (got == 32), $sformatf("17-beat read RLAST beat %0d", got-16));
+          end
+          got++;
+        end
+      end
+      @(negedge ACLK); ARVALID = 1'b0;
+      chk(got == 33, $sformatf("long-burst read phase hung: %0d of 33 beats", got));
+      // 17-beat write: all 17 W beats must be taken, one SLVERR B returned
+      @(negedge ACLK);
+      AWID = 4'd2; AWADDR = la; AWLEN = 8'd16; AWSIZE = SZ4; AWBURST = BI;
+      AWPROT = 3'b000; AWVALID = 1'b1;
+      n = 0; @(posedge ACLK);
+      while (!AWREADY && n < LB_WAIT) begin @(posedge ACLK); n++; end
+      @(negedge ACLK); AWVALID = 1'b0;
+      for (k = 0; k <= 16; k++) begin
+        WDATA = 32'hDEAD_0000 + k; WSTRB = {SW{1'b1}}; WLAST = (k == 16); WVALID = 1'b1;
+        n = 0; @(posedge ACLK);
+        while (!WREADY && n < LB_WAIT) begin @(posedge ACLK); n++; end
+        @(negedge ACLK);
+      end
+      WVALID = 1'b0; WLAST = 1'b0;
+      n = 0; @(posedge ACLK);
+      while (!BVALID && n < LB_WAIT) begin @(posedge ACLK); n++; end
+      lb_checks++;
+      chk(BVALID === 1'b1, "17-beat write: no B response (hang)");
+      chk(BRESP === 2'b10, $sformatf("17-beat write: BRESP=%b exp SLVERR", BRESP));
+      chk(BID === 4'd2, "17-beat write: BID mismatch");
+      @(negedge ACLK);
+    end
+  endtask
+
   int i;
 
   initial begin
@@ -252,7 +314,7 @@ module tb_axi_ucie_ooo
     WDATA = '0; WSTRB = '0;
     ARID = '0; ARADDR = '0; ARLEN = '0; ARSIZE = '0; ARBURST = '0; ARPROT = '0;
     BREADY = 1'b1; RREADY = 1'b1;
-    errors = 0; beats = 0; r_overtakes = 0; b_overtakes = 0;
+    errors = 0; beats = 0; r_overtakes = 0; b_overtakes = 0; lb_checks = 0;
     aou_log_init("[OOO-TB]");
     verbose = (aou_lvl >= 1);
 
@@ -306,6 +368,10 @@ module tb_axi_ucie_ooo
     end
 
     read_phase();
+
+    long_phase();
+    $display("[OOO-TB] LONG-BURST: %0d checks (16-beat then same-ID 17-beat read, 17-beat write)",
+             lb_checks);
 
     // --- acceptance checks ------------------------------------------------
     for (i = 0; i < NW; i++)

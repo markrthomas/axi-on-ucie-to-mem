@@ -173,3 +173,36 @@ would (a) add minutes to the gate, (b) make the gate write to the repository, an
 was, and the collection step runs after it — in CI as a `continue-on-error`
 post-gate step, in the container behind `AOU_POST_METRICS=1`, and locally as
 `make metrics-capture && make metrics`.
+
+## AXI boundary contracts (SCAN_ISSUES #1, #2, #4)
+
+### Bursts longer than 16 beats get a local SLVERR, not a hang
+The §6 data-credit ceiling (128 WriteData / ReadData granules, 8 per 256-bit
+message) covers 16 beats, and nothing replenishes credits mid-burst: the target
+returns WriteData credits only with the write response, and the initiator
+returns ReadData credits only on a later request flit. A 17+-beat burst would
+therefore stall forever. The initiator bridge now accepts a long AW/AR (it
+cannot refuse one without hanging the master) but never queues it: once every
+earlier transaction has completed (`q_empty && br_idle`, and in OOO mode no
+outstanding response) it answers locally with `SLVERR` and sends no AoU
+message. Accept is held while that response is owed, so per-ID ordering holds.
+Waiting for idle rather than answering immediately matters: in OOO mode an
+immediate SLVERR would overtake an earlier same-ID response (the `dv/ooo`
+`long_phase` mutation catches exactly that). Implementing mid-burst credit
+return is the alternative, left as backlog.
+
+### Integrated ERROR recovery is reset-only
+`aou_activation` supports `err_clear`, but the bridges tie it off. Wiring a
+one-sided clear is unsafe: the recovering end goes DISABLED → ACTIVATE and sends
+`ActivateReq` to a peer still ENABLED, which that peer treats as a protocol
+error — so recovery would bounce the peer into ERROR — and any in-flight AXI
+transaction is stranded with its credits. A correct recovery needs a
+coordinated both-ends control plus a policy for in-flight transactions, so
+the documented contract is that `ARESETn` is the only recovery; `dv/sv` section
+7 tests it.
+
+### `axi4_sva` stability uses `===`
+`sig === $past(sig)` instead of `$stable(sig)`: on 4-state simulators an
+undriven field (the UVM tops leave AXI4-only fields unconnected) compares equal
+to itself instead of producing an X false-fail. `dv/sva/mut/` proves every
+property still fires on a real change.

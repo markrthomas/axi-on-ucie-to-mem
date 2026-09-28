@@ -2,7 +2,7 @@
 // axi_ucie_tb_single : single-file UVM testbench for axi_ucie_mem_top.
 //
 // Self-contained UVM env (axi_lite_if + axi_pkg with all component classes + a
-// bound axi_lite_sva protocol checker + the sim top).  Canonical source for the
+// bound axi4_sva protocol checker + the sim top).  Canonical source for the
 // EDA Playground TESTBENCH pane: `make -C uvm eda` copies this file verbatim to
 // eda/vcs_uvm/testbench.sv and concatenates rtl/*.sv into eda/vcs_uvm/design.sv,
 // so the two panes never drift from rtl/.  This layout and the multi-file set
@@ -553,19 +553,31 @@ endclass
 
 endpackage
 
-module axi_lite_sva #(
-    parameter int AW = 32,
-    parameter int DW = 32,
-    parameter int SW = DW/8
+module axi4_sva #(
+    parameter int AW  = 32,
+    parameter int DW  = 32,
+    parameter int SW  = DW/8,
+    parameter int IDW = 4
 ) (
-    input logic          clk,
-    input logic          rstn,
-    input logic [AW-1:0] awaddr,  input logic awvalid, input logic awready,
-    input logic [DW-1:0] wdata,   input logic [SW-1:0] wstrb,
-                                  input logic wvalid,  input logic wready,
-    input logic          bvalid,  input logic bready,
-    input logic [AW-1:0] araddr,  input logic arvalid, input logic arready,
-    input logic [DW-1:0] rdata,   input logic rvalid,  input logic rready
+    input logic           clk,
+    input logic           rstn,
+    // AW
+    input logic [IDW-1:0] awid,   input logic [AW-1:0] awaddr, input logic [7:0] awlen,
+    input logic [2:0]     awsize, input logic [1:0]    awburst, input logic [2:0] awprot,
+    input logic           awvalid, input logic awready,
+    // W
+    input logic [DW-1:0]  wdata,  input logic [SW-1:0] wstrb, input logic wlast,
+    input logic           wvalid, input logic wready,
+    // B
+    input logic [IDW-1:0] bid,    input logic [1:0] bresp,
+    input logic           bvalid, input logic bready,
+    // AR
+    input logic [IDW-1:0] arid,   input logic [AW-1:0] araddr, input logic [7:0] arlen,
+    input logic [2:0]     arsize, input logic [1:0]    arburst, input logic [2:0] arprot,
+    input logic           arvalid, input logic arready,
+    // R
+    input logic [IDW-1:0] rid,    input logic [DW-1:0] rdata, input logic [1:0] rresp,
+    input logic           rlast,  input logic rvalid, input logic rready
 );
 
   // `disable iff (!rstn)` is inlined per property rather than via a module-level
@@ -581,15 +593,28 @@ module axi_lite_sva #(
   a_ar_hold: assert property (p_hold(arvalid, arready));
   a_r_hold:  assert property (p_hold(rvalid,  rready));
 
-  // --- payload stable while stalled -----------------------------------------
+  // --- every payload field stable while its channel is stalled ---------------
   a_aw_stable: assert property (@(posedge clk) disable iff (!rstn)
-    (awvalid && !awready) |=> $stable(awaddr));
-  a_w_stable:  assert property (@(posedge clk) disable iff (!rstn)
-    (wvalid && !wready) |=> ($stable(wdata) && $stable(wstrb)));
+    (awvalid && !awready) |=>
+      (awid    === $past(awid))    && (awaddr  === $past(awaddr)) &&
+      (awlen   === $past(awlen))   && (awsize  === $past(awsize)) &&
+      (awburst === $past(awburst)) && (awprot  === $past(awprot)));
+  a_w_stable: assert property (@(posedge clk) disable iff (!rstn)
+    (wvalid && !wready) |=>
+      (wdata === $past(wdata)) && (wstrb === $past(wstrb)) &&
+      (wlast === $past(wlast)));
+  a_b_stable: assert property (@(posedge clk) disable iff (!rstn)
+    (bvalid && !bready) |=>
+      (bid === $past(bid)) && (bresp === $past(bresp)));
   a_ar_stable: assert property (@(posedge clk) disable iff (!rstn)
-    (arvalid && !arready) |=> $stable(araddr));
-  a_r_stable:  assert property (@(posedge clk) disable iff (!rstn)
-    (rvalid && !rready) |=> $stable(rdata));
+    (arvalid && !arready) |=>
+      (arid    === $past(arid))    && (araddr  === $past(araddr)) &&
+      (arlen   === $past(arlen))   && (arsize  === $past(arsize)) &&
+      (arburst === $past(arburst)) && (arprot  === $past(arprot)));
+  a_r_stable: assert property (@(posedge clk) disable iff (!rstn)
+    (rvalid && !rready) |=>
+      (rid   === $past(rid))   && (rdata === $past(rdata)) &&
+      (rresp === $past(rresp)) && (rlast === $past(rlast)));
 
   // --- control signals known out of reset -----------------------------------
   a_known: assert property (@(posedge clk) disable iff (!rstn)
@@ -598,13 +623,18 @@ module axi_lite_sva #(
 
 endmodule
 
-bind axi_ucie_mem_top axi_lite_sva u_axi_sva (
+bind axi_ucie_mem_top axi4_sva #(
+  .AW(AXI_ADDR_W), .DW(AXI_DATA_W), .SW(AXI_STRB_W), .IDW(AXI_ID_W)
+) u_axi_sva (
   .clk(ACLK), .rstn(ARESETn),
-  .awaddr(AWADDR), .awvalid(AWVALID), .awready(AWREADY),
-  .wdata(WDATA),   .wstrb(WSTRB), .wvalid(WVALID), .wready(WREADY),
-  .bvalid(BVALID), .bready(BREADY),
-  .araddr(ARADDR), .arvalid(ARVALID), .arready(ARREADY),
-  .rdata(RDATA),   .rvalid(RVALID), .rready(RREADY)
+  .awid(AWID), .awaddr(AWADDR), .awlen(AWLEN), .awsize(AWSIZE),
+  .awburst(AWBURST), .awprot(AWPROT), .awvalid(AWVALID), .awready(AWREADY),
+  .wdata(WDATA), .wstrb(WSTRB), .wlast(WLAST), .wvalid(WVALID), .wready(WREADY),
+  .bid(BID), .bresp(BRESP), .bvalid(BVALID), .bready(BREADY),
+  .arid(ARID), .araddr(ARADDR), .arlen(ARLEN), .arsize(ARSIZE),
+  .arburst(ARBURST), .arprot(ARPROT), .arvalid(ARVALID), .arready(ARREADY),
+  .rid(RID), .rdata(RDATA), .rresp(RRESP), .rlast(RLAST),
+  .rvalid(RVALID), .rready(RREADY)
 );
 
 module axi_ucie_tb_top;

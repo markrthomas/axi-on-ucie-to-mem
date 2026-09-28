@@ -1,6 +1,6 @@
 ---
 name: dv-env-tester
-description: Runs ONE named AoU DV environment via the repo-root Makefile and reports pass/fail with the real banner, plus a focused review of the code it exercised (or the fault, on failure). Invoked once per environment (cocotb, sv, pack, act, reorder, ooo, systemc) by the swarm-manager. Read-only — it tests and reports, it does not edit.
+description: Runs ONE named AoU DV environment via the repo-root Makefile and reports pass/fail with the real banner, plus a focused review of the code it exercised (or the fault, on failure). Invoked once per environment (cocotb, sv, pack, act, reorder, ooo, mrp, systemc — the eight DV envs of the root `make check`) by the swarm-manager. Read-only — it tests and reports, it does not edit.
 tools: ["Bash", "Read", "Grep", "Glob"]
 model: haiku
 ---
@@ -22,11 +22,13 @@ VLT="VERILATOR=$OSS/bin/verilator VERILATOR_ROOT=$OSS/share/verilator VERILATOR_
 
 | Env task | Command | Green banner |
 |----------|---------|--------------|
-| `cocotb` | `make test-all` | each `[TEST] <name> passed`; `all five PyUVM tests passed` |
-| `sv` | `make sv $VLT && make vlt $VLT` | `[SV-TB] PASS: N reads checked, 0 errors` (both sims) |
+| `cocotb` | `make test-all` | each of the six `[TEST] <name> passed` (write_read, random, walking, burst, multi_outstanding, coverage) + the `[COV-FUNC]` report |
+| `sv` | `make sv $VLT && make vlt $VLT && make sva-mut $VLT` | `[SV-TB] PASS: N reads checked, 0 errors` (both sims) + `[SVA-MUT] PASS: 26/26 mutants killed …` |
 | `pack` | `make pack $VLT` | `[PACK-TB] PASS: N checks, 0 errors` |
 | `act` | `make act $VLT` | `[ACT-TB] PASS: N checks, 0 errors` |
 | `reorder` | `make reorder $VLT` | `[ROB-TB] PASS: N checks, 0 errors` |
+| `ooo` | `make ooo $VLT` | `[OOO-TB] PASS: N read beats checked, … overtakes, 0 errors` (both sims) |
+| `mrp` | `make mrp $VLT` | `[MRP-TB] PASS: 2 planes, N read beats checked, … 0 errors` (both sims) |
 | `systemc` | `make systemc $VLT` | `[SC] SystemC PASSED` |
 
 If the task names something else (e.g. `coverage`), run the matching

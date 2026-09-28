@@ -1,5 +1,25 @@
 # Repository scan — fix handoff
 
+## Resolution status (2026-09-28)
+
+| # | Issue | Status | Resolution |
+|---|-------|--------|------------|
+| 1 | Long AXI bursts deadlock | **Fixed** (contract option 1) | `rtl/aou_axi_initiator_bridge.sv`: bursts > 16 beats are accepted but answered locally with `SLVERR` (all W beats sunk + one B; `AxLEN+1` R beats, `RLAST` on the last) once earlier transactions complete; no AoU message, no memory access, per-ID order kept. In-range bursts cycle-identical. Tests: `dv/sv` section 6 (17/256-beat W/R, 16-beat boundary retained, 275 checks, `LB_WAIT` timeout), `dv/ooo` `long_phase` (same-ID ordering). Mutation: original RTL times out; removing the idle-wait lets SLVERR overtake. |
+| 2 | Integrated ERROR recovery | **Documented reset-only + tested** | One-sided `err_clear` would drive the still-ENABLED peer into ERROR and strand in-flight transactions, so recovery stays `ARESETn`-only (README, PLAN F0, docs/NOTES.md). `dv/sv` section 7: inconsistent `ActivateReq` → sticky ERROR (AXI stalls 2000 cycles) → reset → 4-beat W/R OK. Coordinated both-ends recovery is backlog. |
+| 3 | "AXI4-Lite" naming | **Fixed** (docs) | README/PLAN now call the boundary an AXI4 subset; new README "AXI4 subset profile" table (widths, IDs, 1–16 beats, SLVERR, unsupported features). Memory target described as single-beat AXI-Lite-style. |
+| 4 | SVA misses stalled fields | **Fixed** | `dv/sva/axi_lite_sva.sv` → `dv/sva/axi4_sva.sv`: every payload field on AW/W/B/AR/R, bound on the full port list incl. IDs/burst controls (single-plane, per-plane MRP, UVM single-file + EDA copy). `dv/sva/mut/` + `make sva-mut` (in `check`): 26 mutants each fire the expected assertion; clean run passes; a weakened checker is caught. |
+| 5 | Multi-message flit claim | **Fixed** (docs) | README intro, mermaid diagram, mapping table, PLAN architecture and waveform walkthrough now say one message per flit at granule 0. |
+| 6 | PLAN lists absent modules | **Fixed** | PLAN "Architecture"/"RTL files" rewritten to the current `rtl/` set; `dv/verilator/` → `dv/sv/`; original brief marked historical. |
+| 7 | README scope contradictions | **Fixed** | "Scope & follow-ons" rewritten: lists implemented OOO/NUM_RP/Option-2/wide-data packing; pending items only; activation qualified (standalone full §8, integrated bring-up only). |
+| 8 | Swarm/agent env lists | **Fixed** | `docker/swarm-task.md`, `swarm-manager`, `dv-env-tester`, `dv-runner` list the eight `check` envs (incl. ooo, mrp; `sv` covers sv+vlt+sva-mut), six cocotb tests, regress includes formal; CLAUDE.md defines the 8-env grouping. |
+| 9 | Swarm parallelism 1–6 vs 1–8 | **Fixed** (docs) | `docs/DOCKER.md` now says 1–8 (one per env), matching `docker/swarm.sh`. |
+| 10 | Path / gate drift | **Fixed**, one item not a defect | PLAN and README `make ci` descriptions now match the Makefile. `CLAUDE.md` → `docs/NOTES.md` was already correct: `docs/NOTES.md` is the tracked file; root `NOTES.md` is gitignored personal scratch. |
+| 11 | Docker/CI parity, metrics default | **Fixed** (docs) | DOCKER.md/Dockerfile state the deliberate Python 3.12 (image) vs 3.10 (CI) delta and support policy; metrics defaults documented per script (`agent.sh`: `./last-run-metrics.json`; `swarm.sh`: `docker/last-run-metrics.json`; workflows: `$GITHUB_WORKSPACE`). |
+
+The original findings follow unchanged.
+
+---
+
 This document captures issues found in a repository scan on 2026-08-25.  The
 default verification gate passed (`make check`), so these are either untested
 edge cases or specification/integration gaps rather than current gate failures.
