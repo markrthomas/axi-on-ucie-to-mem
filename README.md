@@ -527,7 +527,7 @@ interface + UVM package + the bound `axi4_sva` / `aou_flit_sva` / `aou_credit_sv
 runs `+UVM_TESTNAME=<test>`.
 
 The DUT boundary is an AXI4 subset (IDs, `AxLEN` bursts — see
-[AoU Basic-Profile mapping](#aou-basic-profile-mapping-spec-5)), so
+[AXI4 subset profile](#axi4-subset-profile)), so
 `axi_lite_if` carries the AXI4 fields too and **every** `axi_ucie_mem_top` port
 is connected in both tops (`axi_ucie_tb_top.sv`, `axi_ucie_tb_single.sv`). The
 UVM sequences are single-beat, so the driver holds `AxID=0`, `AxLEN=0`,

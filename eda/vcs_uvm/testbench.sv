@@ -244,7 +244,7 @@ endclass
 // duplicate AWs whose W beats never arrive.  BREADY/RREADY are held high for
 // the response.
 //
-// The DUT boundary is an AXI4 subset (README "AoU Basic-Profile mapping"); every
+// The DUT boundary is an AXI4 subset (README "AXI4 subset profile"); every
 // transfer here is a single beat, so the AXI4-only fields are driven to the
 // legal single-beat values ID=0, LEN=0, SIZE=log2(bytes/beat), BURST=INCR,
 // WLAST=1.  (Left floating, WLAST reads 0 under Verilator and the initiator
