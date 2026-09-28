@@ -30,6 +30,8 @@ class axi_monitor extends uvm_monitor;
             if (vif.AWVALID === 1'b1 && vif.AWREADY === 1'b1) aw_addr = vif.AWADDR;
             if (vif.WVALID  === 1'b1 && vif.WREADY  === 1'b1) w_data  = vif.WDATA;
             if (vif.BVALID  === 1'b1 && vif.BREADY  === 1'b1) begin
+                if (vif.BID !== '0)
+                    `uvm_error("MON", $sformatf("BID=%0h, expected 0 (AWID)", vif.BID))
                 tr = axi_seq_item::type_id::create("mon_w");
                 tr.write = 1'b1; tr.addr = aw_addr; tr.data = w_data;
                 tr.resp  = vif.BRESP;
@@ -39,6 +41,9 @@ class axi_monitor extends uvm_monitor;
             end
             if (vif.ARVALID === 1'b1 && vif.ARREADY === 1'b1) ar_addr = vif.ARADDR;
             if (vif.RVALID  === 1'b1 && vif.RREADY  === 1'b1) begin
+                if (vif.RID !== '0 || vif.RLAST !== 1'b1)
+                    `uvm_error("MON", $sformatf("RID=%0h RLAST=%b, expected 0/1 (single beat)",
+                                                vif.RID, vif.RLAST))
                 tr = axi_seq_item::type_id::create("mon_r");
                 tr.write = 1'b0; tr.addr = ar_addr; tr.rdata = vif.RDATA;
                 tr.resp  = vif.RRESP;

@@ -153,10 +153,23 @@ lives only in files a run reads: **this `CLAUDE.md`**, `.claude/agents/*.md`, th
 or a costly gotcha, the fix is to **write it here** (or into the relevant agent
 playbook), so the next run is faster. Keep this file curated and high-signal.
 
-## UVM on open-source Verilator (`uvm/vlt`) — PARTIAL
+## UVM on open-source Verilator (`uvm/vlt`)
 
 License-free UVM-on-Verilator flow added 2026-08-28 (CI:
 `.github/workflows/verilator-uvm.yml`; Verilator 5.050 from source + **z3** for
-`randomize()` + `ccache`). Lint and the `--binary` build **pass**, but the `axi_write_read_test`
-smoke run **HANGS at runtime** — a documented design blocker (per Golden Rule 2,
-reported not hacked). Diagnosis + fix direction in `docs/PLAN.md`.
+`randomize()` + `ccache`). Lint, build and all three tests **pass** with a hard
+gate (`[UVM-VLT] PASS: <test>`; fails on any `UVM_ERROR`/`UVM_FATAL` or a missing
+clean `[SCOREBOARD]` line). The earlier "F2 deadlock" hang was three TB/CI bugs,
+not RTL (history in `docs/PLAN.md`). Gotchas it taught:
+
+- **Connect every DUT port in a TB top.** The boundary is an AXI4 subset;
+  a floating `WLAST` reads 0 under Verilator (z/x on 4-state sims) and parks the
+  initiator bridge in `S_WDATA`. `uvm/vlt` lint shows no PINMISSING for this, so
+  check the port list by hand.
+- **Handshake AW and W independently.** `AWREADY` (queue space) and `WREADY`
+  (`S_WDATA` only) are not simultaneous; holding `AWVALID` until both are high
+  enqueues duplicate AWs.
+- **`+UVM_TIMEOUT` is a bare integer** in time units (`2000000,NO` = 2 ms).
+  A suffix (`2000us`) is silently parsed as `2000` with override forced on.
+- Mirror every `uvm/` change into `uvm/axi_ucie_tb_single.sv`, then
+  `make -C uvm eda` (`eda-check` diffs `eda/vcs_uvm/testbench.sv`).
