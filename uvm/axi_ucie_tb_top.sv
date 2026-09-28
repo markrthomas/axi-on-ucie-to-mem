@@ -17,23 +17,27 @@ module axi_ucie_tb_top;
     import axi_pkg::*;
     `include "uvm_macros.svh"
 
-    localparam int AW = 32, DW = 32, MEM_ADDR_W = 16;
+    localparam int AW = 32, DW = 32, IW = 4, MEM_ADDR_W = 16;
 
     // 10 ns clock, matching the cocotb BFM's 10 ns period.
     logic ACLK = 1'b0;
     always #5 ACLK = ~ACLK;
 
-    axi_lite_if #(.AW(AW), .DW(DW)) axi (.ACLK(ACLK));
+    axi_lite_if #(.AW(AW), .DW(DW), .IW(IW)) axi (.ACLK(ACLK));
 
     axi_ucie_mem_top #(
-        .AXI_ADDR_W(AW), .AXI_DATA_W(DW), .MEM_ADDR_W(MEM_ADDR_W)
+        .AXI_ADDR_W(AW), .AXI_DATA_W(DW), .AXI_ID_W(IW), .MEM_ADDR_W(MEM_ADDR_W)
     ) dut (
         .ACLK(axi.ACLK), .ARESETn(axi.ARESETn),
-        .AWADDR(axi.AWADDR), .AWPROT(axi.AWPROT), .AWVALID(axi.AWVALID), .AWREADY(axi.AWREADY),
-        .WDATA(axi.WDATA),   .WSTRB(axi.WSTRB),   .WVALID(axi.WVALID),   .WREADY(axi.WREADY),
-        .BRESP(axi.BRESP),   .BVALID(axi.BVALID), .BREADY(axi.BREADY),
-        .ARADDR(axi.ARADDR), .ARPROT(axi.ARPROT), .ARVALID(axi.ARVALID), .ARREADY(axi.ARREADY),
-        .RDATA(axi.RDATA),   .RRESP(axi.RRESP),   .RVALID(axi.RVALID),   .RREADY(axi.RREADY)
+        .AWID(axi.AWID),     .AWADDR(axi.AWADDR), .AWLEN(axi.AWLEN),     .AWSIZE(axi.AWSIZE),
+        .AWBURST(axi.AWBURST), .AWPROT(axi.AWPROT), .AWVALID(axi.AWVALID), .AWREADY(axi.AWREADY),
+        .WDATA(axi.WDATA),   .WSTRB(axi.WSTRB),   .WLAST(axi.WLAST),
+        .WVALID(axi.WVALID), .WREADY(axi.WREADY),
+        .BID(axi.BID),       .BRESP(axi.BRESP),   .BVALID(axi.BVALID),   .BREADY(axi.BREADY),
+        .ARID(axi.ARID),     .ARADDR(axi.ARADDR), .ARLEN(axi.ARLEN),     .ARSIZE(axi.ARSIZE),
+        .ARBURST(axi.ARBURST), .ARPROT(axi.ARPROT), .ARVALID(axi.ARVALID), .ARREADY(axi.ARREADY),
+        .RID(axi.RID),       .RDATA(axi.RDATA),   .RRESP(axi.RRESP),     .RLAST(axi.RLAST),
+        .RVALID(axi.RVALID), .RREADY(axi.RREADY)
     );
 
     initial begin

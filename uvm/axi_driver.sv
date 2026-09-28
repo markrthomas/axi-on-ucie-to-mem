@@ -7,6 +7,12 @@
 // DUT asserts AWREADY and WREADY together in its idle state, so AW and W are
 // issued together and both readies are awaited on the same cycle; BREADY/RREADY
 // are held high for the response.
+//
+// The DUT boundary is an AXI4 subset (README "AXI4 subset profile"); every
+// transfer here is a single beat, so the AXI4-only fields are driven to the
+// legal single-beat values ID=0, LEN=0, SIZE=log2(bytes/beat), BURST=INCR,
+// WLAST=1.  (Left floating, WLAST reads 0 under Verilator and the initiator
+// bridge waits in S_WDATA for a last beat that never comes.)
 // -----------------------------------------------------------------------------
 class axi_driver extends uvm_driver #(axi_seq_item);
     `uvm_component_utils(axi_driver)
@@ -38,6 +44,8 @@ class axi_driver extends uvm_driver #(axi_seq_item);
 
     task automatic drive_write(axi_seq_item item);
         @(negedge vif.ACLK);
+        vif.AWID    <= '0;        vif.AWLEN  <= 8'd0;   vif.AWSIZE  <= 3'($clog2($bits(vif.WSTRB)));
+        vif.AWBURST <= 2'b01;     vif.WLAST  <= 1'b1;
         vif.AWADDR  <= item.addr; vif.AWPROT <= 3'b000; vif.AWVALID <= 1'b1;
         vif.WDATA   <= item.data; vif.WSTRB  <= '1;     vif.WVALID  <= 1'b1;
         vif.BREADY  <= 1'b1;
@@ -55,6 +63,8 @@ class axi_driver extends uvm_driver #(axi_seq_item);
 
     task automatic drive_read(axi_seq_item item);
         @(negedge vif.ACLK);
+        vif.ARID    <= '0;        vif.ARLEN  <= 8'd0;   vif.ARSIZE  <= 3'($clog2($bits(vif.WSTRB)));
+        vif.ARBURST <= 2'b01;
         vif.ARADDR  <= item.addr; vif.ARPROT <= 3'b000; vif.ARVALID <= 1'b1;
         vif.RREADY  <= 1'b1;
         @(posedge vif.ACLK);

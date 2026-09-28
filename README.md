@@ -481,6 +481,17 @@ licensed host it auto-detects VCS / Xcelium / Questa, elaborates the DUT +
 interface + UVM package + the bound `axi_lite_sva` / `aou_flit_sva` checkers, and
 runs `+UVM_TESTNAME=<test>`.
 
+The DUT boundary is an AXI4 subset (IDs, `AxLEN` bursts — see
+[AoU Basic-Profile mapping](#aou-basic-profile-mapping-spec-5)), so
+`axi_lite_if` carries the AXI4 fields too and **every** `axi_ucie_mem_top` port
+is connected in both tops (`axi_ucie_tb_top.sv`, `axi_ucie_tb_single.sv`). The
+UVM sequences are single-beat, so the driver holds `AxID=0`, `AxLEN=0`,
+`AxSIZE=2` (32-bit), `AxBURST=INCR`, `WLAST=1` from reset onward, and the
+monitor flags any response with `BID`/`RID` ≠ 0 or `RLAST` ≠ 1 as a
+`UVM_ERROR`. (Left floating, those inputs read `z`/`x` on 4-state simulators and
+`0` under Verilator — and `WLAST=0` parks the initiator bridge in `S_WDATA`
+waiting for a last beat that never comes.)
+
 **On [EDA Playground](https://www.edaplayground.com)** (free UVM-capable
 simulators): the two panes are **pre-assembled for you** in `eda/vcs_uvm/` — no
 manual file-juggling. Paste `eda/vcs_uvm/design.sv` (the whole DUT RTL as one

@@ -27,33 +27,46 @@
 interface axi_lite_if #(
     parameter int AW = 32,
     parameter int DW = 32,
-    parameter int SW = DW/8
+    parameter int SW = DW/8,
+    parameter int IW = 4        // AXI ID width (matches axi_ucie_mem_top AXI_ID_W)
 ) (
     input logic ACLK
 );
     logic          ARESETn;
     // write address
+    logic [IW-1:0] AWID;
     logic [AW-1:0] AWADDR;
+    logic [7:0]    AWLEN;
+    logic [2:0]    AWSIZE;
+    logic [1:0]    AWBURST;
     logic [2:0]    AWPROT;
     logic          AWVALID;
     logic          AWREADY;
     // write data
     logic [DW-1:0] WDATA;
     logic [SW-1:0] WSTRB;
+    logic          WLAST;
     logic          WVALID;
     logic          WREADY;
     // write response
+    logic [IW-1:0] BID;
     logic [1:0]    BRESP;
     logic          BVALID;
     logic          BREADY;
     // read address
+    logic [IW-1:0] ARID;
     logic [AW-1:0] ARADDR;
+    logic [7:0]    ARLEN;
+    logic [2:0]    ARSIZE;
+    logic [1:0]    ARBURST;
     logic [2:0]    ARPROT;
     logic          ARVALID;
     logic          ARREADY;
     // read data
+    logic [IW-1:0] RID;
     logic [DW-1:0] RDATA;
     logic [1:0]    RRESP;
+    logic          RLAST;
     logic          RVALID;
     logic          RREADY;
 endinterface
@@ -227,6 +240,12 @@ endclass
 // DUT asserts AWREADY and WREADY together in its idle state, so AW and W are
 // issued together and both readies are awaited on the same cycle; BREADY/RREADY
 // are held high for the response.
+//
+// The DUT boundary is an AXI4 subset (README "AXI4 subset profile"); every
+// transfer here is a single beat, so the AXI4-only fields are driven to the
+// legal single-beat values ID=0, LEN=0, SIZE=log2(bytes/beat), BURST=INCR,
+// WLAST=1.  (Left floating, WLAST reads 0 under Verilator and the initiator
+// bridge waits in S_WDATA for a last beat that never comes.)
 // -----------------------------------------------------------------------------
 class axi_driver extends uvm_driver #(axi_seq_item);
     `uvm_component_utils(axi_driver)
@@ -258,6 +277,8 @@ class axi_driver extends uvm_driver #(axi_seq_item);
 
     task automatic drive_write(axi_seq_item item);
         @(negedge vif.ACLK);
+        vif.AWID    <= '0;        vif.AWLEN  <= 8'd0;   vif.AWSIZE  <= 3'($clog2($bits(vif.WSTRB)));
+        vif.AWBURST <= 2'b01;     vif.WLAST  <= 1'b1;
         vif.AWADDR  <= item.addr; vif.AWPROT <= 3'b000; vif.AWVALID <= 1'b1;
         vif.WDATA   <= item.data; vif.WSTRB  <= '1;     vif.WVALID  <= 1'b1;
         vif.BREADY  <= 1'b1;
@@ -275,6 +296,8 @@ class axi_driver extends uvm_driver #(axi_seq_item);
 
     task automatic drive_read(axi_seq_item item);
         @(negedge vif.ACLK);
+        vif.ARID    <= '0;        vif.ARLEN  <= 8'd0;   vif.ARSIZE  <= 3'($clog2($bits(vif.WSTRB)));
+        vif.ARBURST <= 2'b01;
         vif.ARADDR  <= item.addr; vif.ARPROT <= 3'b000; vif.ARVALID <= 1'b1;
         vif.RREADY  <= 1'b1;
         @(posedge vif.ACLK);
@@ -324,6 +347,8 @@ class axi_monitor extends uvm_monitor;
             if (vif.AWVALID === 1'b1 && vif.AWREADY === 1'b1) aw_addr = vif.AWADDR;
             if (vif.WVALID  === 1'b1 && vif.WREADY  === 1'b1) w_data  = vif.WDATA;
             if (vif.BVALID  === 1'b1 && vif.BREADY  === 1'b1) begin
+                if (vif.BID !== '0)
+                    `uvm_error("MON", $sformatf("BID=%0h, expected 0 (AWID)", vif.BID))
                 tr = axi_seq_item::type_id::create("mon_w");
                 tr.write = 1'b1; tr.addr = aw_addr; tr.data = w_data;
                 tr.resp  = vif.BRESP;
@@ -333,6 +358,9 @@ class axi_monitor extends uvm_monitor;
             end
             if (vif.ARVALID === 1'b1 && vif.ARREADY === 1'b1) ar_addr = vif.ARADDR;
             if (vif.RVALID  === 1'b1 && vif.RREADY  === 1'b1) begin
+                if (vif.RID !== '0 || vif.RLAST !== 1'b1)
+                    `uvm_error("MON", $sformatf("RID=%0h RLAST=%b, expected 0/1 (single beat)",
+                                                vif.RID, vif.RLAST))
                 tr = axi_seq_item::type_id::create("mon_r");
                 tr.write = 1'b0; tr.addr = ar_addr; tr.rdata = vif.RDATA;
                 tr.resp  = vif.RRESP;
@@ -498,6 +526,10 @@ class axi_base_test extends uvm_test;
         vif.AWADDR  <= '0;   vif.AWPROT  <= '0;
         vif.WDATA   <= '0;   vif.WSTRB   <= '0;
         vif.ARADDR  <= '0;   vif.ARPROT  <= '0;
+        vif.AWID    <= '0;   vif.AWLEN   <= '0;  vif.AWSIZE <= 3'($clog2($bits(vif.WSTRB)));
+        vif.AWBURST <= 2'b01; vif.WLAST  <= 1'b1;
+        vif.ARID    <= '0;   vif.ARLEN   <= '0;  vif.ARSIZE <= 3'($clog2($bits(vif.WSTRB)));
+        vif.ARBURST <= 2'b01;
         repeat (3) @(posedge vif.ACLK);
         @(negedge vif.ACLK);
         vif.ARESETn <= 1'b1;
@@ -613,23 +645,27 @@ module axi_ucie_tb_top;
     import axi_pkg::*;
     `include "uvm_macros.svh"
 
-    localparam int AW = 32, DW = 32, MEM_ADDR_W = 16;
+    localparam int AW = 32, DW = 32, IW = 4, MEM_ADDR_W = 16;
 
     // 10 ns clock, matching the cocotb BFM's 10 ns period.
     logic ACLK = 1'b0;
     always #5 ACLK = ~ACLK;
 
-    axi_lite_if #(.AW(AW), .DW(DW)) axi (.ACLK(ACLK));
+    axi_lite_if #(.AW(AW), .DW(DW), .IW(IW)) axi (.ACLK(ACLK));
 
     axi_ucie_mem_top #(
-        .AXI_ADDR_W(AW), .AXI_DATA_W(DW), .MEM_ADDR_W(MEM_ADDR_W)
+        .AXI_ADDR_W(AW), .AXI_DATA_W(DW), .AXI_ID_W(IW), .MEM_ADDR_W(MEM_ADDR_W)
     ) dut (
         .ACLK(axi.ACLK), .ARESETn(axi.ARESETn),
-        .AWADDR(axi.AWADDR), .AWPROT(axi.AWPROT), .AWVALID(axi.AWVALID), .AWREADY(axi.AWREADY),
-        .WDATA(axi.WDATA),   .WSTRB(axi.WSTRB),   .WVALID(axi.WVALID),   .WREADY(axi.WREADY),
-        .BRESP(axi.BRESP),   .BVALID(axi.BVALID), .BREADY(axi.BREADY),
-        .ARADDR(axi.ARADDR), .ARPROT(axi.ARPROT), .ARVALID(axi.ARVALID), .ARREADY(axi.ARREADY),
-        .RDATA(axi.RDATA),   .RRESP(axi.RRESP),   .RVALID(axi.RVALID),   .RREADY(axi.RREADY)
+        .AWID(axi.AWID),     .AWADDR(axi.AWADDR), .AWLEN(axi.AWLEN),     .AWSIZE(axi.AWSIZE),
+        .AWBURST(axi.AWBURST), .AWPROT(axi.AWPROT), .AWVALID(axi.AWVALID), .AWREADY(axi.AWREADY),
+        .WDATA(axi.WDATA),   .WSTRB(axi.WSTRB),   .WLAST(axi.WLAST),
+        .WVALID(axi.WVALID), .WREADY(axi.WREADY),
+        .BID(axi.BID),       .BRESP(axi.BRESP),   .BVALID(axi.BVALID),   .BREADY(axi.BREADY),
+        .ARID(axi.ARID),     .ARADDR(axi.ARADDR), .ARLEN(axi.ARLEN),     .ARSIZE(axi.ARSIZE),
+        .ARBURST(axi.ARBURST), .ARPROT(axi.ARPROT), .ARVALID(axi.ARVALID), .ARREADY(axi.ARREADY),
+        .RID(axi.RID),       .RDATA(axi.RDATA),   .RRESP(axi.RRESP),     .RLAST(axi.RLAST),
+        .RVALID(axi.RVALID), .RREADY(axi.RREADY)
     );
 
     initial begin
