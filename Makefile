@@ -185,6 +185,7 @@ help:
 	@echo "    make systemc           # SystemC TB (Verilator --sc model + sc_main)"
 	@echo "    make uvm               # SystemVerilog UVM TB (license-gated; skips if no VCS/Xcelium/Questa)"
 	@echo "    make coverage          # Verilator --coverage -> sim/coverage.info (floor COV_MIN=$(COV_MIN)%)"
+	@echo "    make stress            # stress / randomized simulation (n/a stub if none)"
 	@echo "    make formal            # SymbiYosys proofs: axi_lite_mem + §4.3 flit + §6 credits + §8 activation"
 	@echo "                           #   (bmc+cover gate, prove best-effort; TASK=bmc|cover|prove;"
 	@echo "                           #    SBY=<path> for an out-of-PATH sby, e.g. SBY=\$$OSS/bin/sby)"
@@ -588,3 +589,7 @@ clean:
 	rm -rf $(patsubst %.sby,%_bmc,$(FORMAL_SBY)) \
 		$(patsubst %.sby,%_cover,$(FORMAL_SBY)) \
 		$(patsubst %.sby,%_prove,$(FORMAL_SBY))
+
+# Standard DV target (DV_STANDARDS.md): stress = constrained-random sim
+.PHONY: stress
+stress: test-random
