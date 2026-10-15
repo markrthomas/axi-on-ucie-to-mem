@@ -18,8 +18,8 @@ dockerfilePath = "Dockerfile"
 restartPolicyType = "NEVER"
 
 # Do NOT set startCommand: the image's ENTRYPOINT (docker/entrypoint.sh) runs
-# `make ci` with the pinned Verilator args injected.  A Railway startCommand is
-# run via `sh -c`, which bypasses that wrapper and drops the overrides.
+# `make ci`.  A Railway startCommand is run via `sh -c`, which bypasses that
+# wrapper (its log-volume filter, agent/swarm and metrics modes).
 
 # Run the gate on a schedule.  Railway cron is UTC and starts a fresh container
 # per tick; the container must exit before the next tick — which this gate does.

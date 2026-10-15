@@ -3,8 +3,7 @@
 
 Used by metrics/capture.sh so metrics/collect.py can derive per-step wall time
 from a gate log.  Deliberately a pure stdin->stdout filter: it adds no work to
-the wrapped process and, unlike `stdbuf`, LD_PRELOADs nothing into the pinned
-oss-cad-suite tools (see CLAUDE.md, "Never stdbuf/unbuffer the gate").
+the wrapped process and, unlike `stdbuf`, LD_PRELOADs nothing into the tools.
 
 Byte-oriented on purpose.  A gate log carries whatever the tools emit -- an
 invalid UTF-8 byte from a simulator would abort a text-mode filter and take the

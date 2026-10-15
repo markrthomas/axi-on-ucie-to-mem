@@ -19,10 +19,8 @@ VERILATOR ?= verilator
 # pinned/out-of-PATH Verilator install can point it at the matching binary;
 # otherwise the coverage floor is silently skipped when it is not on PATH.
 VERILATOR_COV ?= verilator_coverage
-# SymbiYosys driver for the formal tier.  Parameterized (like VERILATOR) because
-# oss-cad-suite is deliberately kept OFF $PATH — its bundled iverilog would
-# shadow the apt one the cocotb VPI links against — so the image / CI pass the
-# bundled prover by absolute path: `make formal SBY="$$OSS/bin/sby"`.
+# SymbiYosys driver for the formal tier.  Parameterized (like VERILATOR) so an
+# out-of-PATH install can be named by absolute path: `make formal SBY=/opt/sby/bin/sby`.
 # Left at the bare default, the formal target skips gracefully when sby is not
 # installed; given an explicit path it MUST run (a bad path is a hard error).
 SBY ?= sby
@@ -188,7 +186,7 @@ help:
 	@echo "    make stress            # stress / randomized simulation (n/a stub if none)"
 	@echo "    make formal            # SymbiYosys proofs: axi_lite_mem + §4.3 flit + §6 credits + §8 activation"
 	@echo "                           #   (bmc+cover gate, prove best-effort; TASK=bmc|cover|prove;"
-	@echo "                           #    SBY=<path> for an out-of-PATH sby, e.g. SBY=\$$OSS/bin/sby)"
+	@echo "                           #    SBY=<path> for an out-of-PATH sby, e.g. SBY=/opt/sby/bin/sby)"
 	@echo ""
 	@echo "  Gates:"
 	@echo "    make lint              # iverilog -Wall + Verilator RTL lint"
@@ -352,7 +350,7 @@ wave-act: waves-act
 # Deliberately DEV/OPT-IN and NOT part of check/regress/ci: it has to run the
 # sims to produce dumps and it needs GTKWave's fst2vcd, neither of which the
 # byte-identical, wave-free gate may depend on.  Missing dumps or no fst2vcd
-# degrade to a printed SKIP.  Pass FST2VCD=<path> or OSS=<root> for the reader.
+# degrade to a printed SKIP.  Pass FST2VCD=<path> for the reader (gtkwave ships it).
 wave-check: waves-all
 	@echo "[WAVE-CHECK] verifying $(words $(wildcard $(WAVE_DIR)/*.gtkw)) layout(s) in $(WAVE_DIR)/"
 	@python3 $(WAVE_CHECK) $(CURDIR) $(if $(LAYOUT),$(LAYOUT),)
@@ -491,7 +489,7 @@ formal:
 		echo "[FORMAL] SBY is empty — skipping the formal tier"; exit 0; fi; \
 	if ! command -v $(SBY) >/dev/null 2>&1; then \
 		if [ "$(strip $(SBY))" = "sby" ]; then \
-			echo "[FORMAL] SymbiYosys (sby) not on PATH — install oss-cad-suite, or pass SBY=<path>, to run proofs"; \
+			echo "[FORMAL] SymbiYosys (sby) not on PATH — build Yosys+SBY+btormc (see the Dockerfile), or pass SBY=<path>, to run proofs"; \
 			exit 0; \
 		fi; \
 		echo "[FORMAL] FAIL: SBY='$(strip $(SBY))' is not an executable prover"; exit 1; \

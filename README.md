@@ -483,7 +483,7 @@ decoded fields (`in_mt`, `in_tag`, `in_addr`) are on screen instead.
 
 **Layouts can't silently rot.** `make wave-check` regenerates every dump, then
 resolves **every net path in every `.gtkw`** against that dump's real hierarchy
-(via oss-cad-suite `fst2vcd`, GTKWave's own reader) and fails naming the orphan:
+(via GTKWave's own `fst2vcd` reader) and fails naming the orphan:
 
 ```
 [WAVE-CHECK] FAIL dv/waves/ooo.gtkw   2 of 108 net path(s) no longer exist
@@ -493,7 +493,7 @@ resolves **every net path in every `.gtkw`** against that dump's real hierarchy
 It is **dev/opt-in and deliberately not part of `check`/`regress`/`ci`**: it has
 to run the sims and needs `fst2vcd`, and the gate must stay wave-free and
 GTKWave-independent. A missing dump or reader degrades to a printed SKIP
-(`FST2VCD=<path>` or `OSS=<root>` points it at the reader; `LAYOUT=<file>`
+(`FST2VCD=<path>` points it at the reader; `LAYOUT=<file>`
 checks just one).
 
 **How the dumps happen.** The cocotb env dumps under its existing `WAVES=1`. The
@@ -561,7 +561,7 @@ current with the RTL. Regenerate after any `rtl/` change and commit.
 
 ```bash
 make formal                        # every proof: bmc + cover (gating) + prove
-make formal SBY="$OSS/bin/sby"     # prover kept off PATH — pass it by absolute path
+make formal SBY=/opt/sby/bin/sby   # only needed if sby is not on PATH
 make formal TASK=bmc               # just one task (bmc | cover | prove), gating
 ```
 
@@ -572,11 +572,9 @@ safety) and `cover` (reachability) gate; `prove` (unbounded k-induction, `abc
 pdr`) is run best-effort and only warns if it does not converge — today all three
 tasks pass on all three proofs, in about 50 s total.
 
-`sby` ships inside the oss-cad-suite the image and CI already install for
-Verilator, but that suite is deliberately kept **off `PATH`** (its bundled
-`iverilog` would shadow the apt one the cocotb VPI links against), so the prover
-is passed by absolute path via the `SBY` make variable — exactly like
-`VERILATOR`/`VERILATOR_ROOT`. Left at its bare `sby` default the target skips
+`sby` (with Yosys and `btormc`) is built from source into the image CI and the
+container already use (see the `Dockerfile`). The prover is the `SBY` make
+variable (default: the bare `sby` on `PATH`). Left at that default the target skips
 gracefully when SymbiYosys is not installed; given an explicit `SBY=<path>` that
 is not an executable prover it is a hard error, so a gate can never silently skip.
 
@@ -674,8 +672,7 @@ mid-transaction):
 Notes: the `axi_lite_mem` proof targets that module in isolation with a
 deliberately small address width (`.sby` reads with `-defer`; otherwise the
 64 KiB array bit-blasts and never elaborates). The three AoU proofs are read with
-the **`yosys-slang`** frontend bundled in oss-cad-suite (`plugin -i slang;
-read_slang`): the stock Yosys Verilog frontend cannot parse the
+Yosys's **built-in slang** frontend (`read_slang`): the stock Yosys Verilog frontend cannot parse the
 `module <name> import aou_pkg::*;` header form the RTL uses, nor `bind`. All
 three were mutation-tested — swapping the FDId header bits, lowering a credit
 ceiling by one, funding WriteData from the wrong counter, and negating either
@@ -694,13 +691,13 @@ flow-control protocol and the interface state machine.
 Run the entire gate in a reproducible image — no local toolchain needed:
 
 ```bash
-docker build -t aou-dv .          # builds Icarus + pinned Verilator + SystemC + cocotb
+docker build -t aou-dv .          # builds the pinned toolchain (Verilator, Yosys/SBY, btormc) + Icarus + SystemC + cocotb
 docker run --rm aou-dv            # runs `make ci`; exits 0 on green
 docker run --rm aou-dv make ooo       # or any single environment
 ```
 
 The image (Ubuntu 24.04) mirrors CI exactly: apt Icarus + SystemC 2.3.3, Verilator
-pinned to oss-cad-suite `5.047`, and cocotb 1.9.2 / pyuvm 4.0.1 in a venv. On
+built from source and pinned to `5.048` (with Yosys/SBY/btormc for the formal tier), and cocotb 1.9.2 / pyuvm 4.0.1 in a venv. On
 memory-constrained builders, cap Verilator's compile parallelism with
 `VL_JOBS` (the image defaults to `2`; use `-e VL_JOBS=1` on the smallest hosts,
 `-e VL_JOBS=0` where RAM is ample):
@@ -759,7 +756,7 @@ collector cannot turn a green gate red (or a red one green).
 |--------|----------|
 | **Design / RTL** | gate-equivalent + generic-cell count (total **and per module**), flop count, memory bits, longest combinational path, RTL LOC per module, module count, Verilator `-Wall` warning count, an Fmax **estimate** |
 | **Verification** | line coverage % (`sim/coverage.info`), functional coverage % (`[COV-FUNC]`), SVA/cover/assume property inventory, per-env check counts from the real banners, and per-proof formal status + BMC depth + solve time (parsed from `sby`) |
-| **CI / compute** | gate wall time, core-seconds, peak RSS, %CPU (all from `/usr/bin/time -v`), per-step split, build-vs-run split, runner vCPU/RAM, oss-cad-suite cache hit, an **estimated** CI cost and CPU energy |
+| **CI / compute** | gate wall time, core-seconds, peak RSS, %CPU (all from `/usr/bin/time -v`), per-step split, build-vs-run split, runner vCPU/RAM, an **estimated** CI cost and CPU energy |
 | **AI / swarm** | per-model tokens/cost, prompt-cache hit ratio, turns, output tokens/s — plus **per-agent** and **per-(agent × model)** rows (wall span, turns, tool calls, tool-error rate, tokens, modeled cost + energy) reconstructed from the swarm event stream |
 | **Trends** | each metric's delta vs the previous run, with regressions flagged on the dashboard |
 

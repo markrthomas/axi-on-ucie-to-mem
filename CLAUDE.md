@@ -47,16 +47,16 @@ license-gated flow degrades gracefully (prints a skip, exits 0). See
 
 ## Build & gate essentials
 
-- **Pinned tools.** Verilator + SymbiYosys (`sby`) + `yosys-slang` come from the
-  **oss-cad-suite tag `2026-04-13`** (at `$OSS`, i.e. `oss-cad-suite/`). Icarus +
-  SystemC 2.3.3 are from apt. `python3-dev` is required (cocotb VPI needs
-  `libpython*.so`).
-- **The Verilator triplet must be passed as make command-line args**, not env:
-  the Makefile computes `VERILATOR_ROOT` with `:=` (`command -v`), which env can't
-  override. Pass `VERILATOR=… VERILATOR_ROOT=… VERILATOR_COV=…` (CI/entrypoint do).
-- **Formal uses yosys-slang** (`plugin -i slang; read_slang`), because stock yosys
-  can't parse `module … import aou_pkg::*;` / concurrent SVA. Pass
-  `SBY="$OSS/bin/sby"` like the Verilator triplet. When a bridge starts
+- **Pinned tools, all from the `Dockerfile`.** Verilator `v5.048`, Yosys (with its
+  built-in slang frontend) + SymbiYosys (`sby`) + `btormc` (Boolector 3.2.4) are
+  **built from source** into `/opt/*` and put on `PATH`; Icarus + SystemC 2.3.3 are
+  from apt. CI builds the same image (`--target tools`) and runs the gate in it.
+  `python3-dev` is required (cocotb VPI needs `libpython*.so`).
+- **Don't set `VERILATOR_ROOT`.** The Makefile derives it (`:=`) from the
+  `verilator` on `PATH`; env can't override it, and none is needed.
+- **Formal uses Yosys's built-in slang** (`read_slang`; no `plugin -i slang`),
+  because the stock Verilog frontend can't parse `module … import aou_pkg::*;` /
+  concurrent SVA. `sby` is on `PATH`. When a bridge starts
   instantiating a new module, **add that module to the `read_slang` file list** in
   the relevant `formal/*.sby` or the proof won't elaborate.
 - **`VL_JOBS`** caps each Verilator build's parallel `cc1plus` (cloud builders have
@@ -125,21 +125,16 @@ license-gated flow degrades gracefully (prints a skip, exits 0). See
   in the `Dockerfile` (`ENV LANG=C.UTF-8 LC_ALL=C.UTF-8 PYTHONIOENCODING=UTF-8
   PYTHONUTF8=1`), so all envs are covered — don't chase individual characters. Keep
   that ENV; if you add a non-Docker cloud path, set the same there.
-- **Never `stdbuf`/`unbuffer` the gate (bundled-glibc clash):** to make cloud logs
-  stream live, wrapping `make` in `stdbuf -oL` is the obvious move — and it **breaks
-  the gate at `make lint`**. `stdbuf` `LD_PRELOAD`s the system `libstdbuf.so` (glibc
-  2.38) into every child, but the pinned oss-cad-suite tools (Verilator, `sby`) run
-  against their own **older bundled glibc** → `version 'GLIBC_2.38' not found` and the
-  tool dies. Same trap for any system-lib `LD_PRELOAD` into oss-cad-suite binaries.
-  For live logs use Python-only `PYTHONUNBUFFERED=1` (cocotb is the leg that matters);
-  the C tools block-buffer under a pipe — accepted. See [[docker-railway-dv-gate]].
+- **Don't `stdbuf`/`unbuffer` the gate.** For live cloud logs use Python-only
+  `PYTHONUNBUFFERED=1` (cocotb is the leg that matters); the C tools block-buffer
+  under a pipe — accepted. See [[docker-railway-dv-gate]].
 
 ## Conventions
 
 - Log banners use the `[ENV-TB]` / `[STAGE]` bracket style already in the repo;
   match it. Keep the passing PASS banners on stdout; verbose detail goes to logs.
 - One clean, logical commit per step. End commit messages with the repo's
-  `Co-Authored-By:` trailer. Use pinned-tool **absolute** paths.
+  `Co-Authored-By:` trailer. Tools come from `PATH` (the image/CI toolchain).
 - The **plan-driven swarm**: `docs/SWARM_PLAN.md` with `status: ready` pushed to
   `main` triggers `.github/workflows/plan-swarm.yml`, which implements the plan and
   opens a PR. Reset to `status: draft` after it lands. The swarm agents are defined

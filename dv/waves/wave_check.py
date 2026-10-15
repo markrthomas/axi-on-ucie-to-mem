@@ -19,10 +19,10 @@ relative to the repo root); the `[*] wave-check: env=<env>` header names the
 SKIP (with the command to produce it), never a failure - this target is
 dev/opt-in and must degrade on a host without the simulators.
 
-The hierarchy is read with the oss-cad-suite `fst2vcd` (GTKWave's own reader,
+The hierarchy is read with GTKWave's own `fst2vcd` reader (apt gtkwave;
 so a path this script accepts is a path GTKWave resolves): its VCD header is
 walked $scope/$upscope/$var to rebuild the fully qualified names.  Point
-FST2VCD=<path> or OSS=<oss-cad-suite root> at it; a plain `.vcd` dump is parsed
+FST2VCD=<path> at it; a plain `.vcd` dump is parsed
 directly.  With no reader available the run SKIPs rather than failing.
 """
 
@@ -49,11 +49,6 @@ def fst2vcd_bin():
     cand = os.environ.get("FST2VCD")
     if cand and os.path.exists(cand):
         return cand
-    oss = os.environ.get("OSS")
-    if oss:
-        cand = os.path.join(oss, "bin", "fst2vcd")
-        if os.path.exists(cand):
-            return cand
     for d in os.environ.get("PATH", "").split(os.pathsep):
         cand = os.path.join(d, "fst2vcd")
         if os.path.exists(cand):
@@ -72,7 +67,7 @@ def vcd_header(dump):
         return
     exe = fst2vcd_bin()
     if exe is None:
-        raise RuntimeError("fst2vcd not found (set FST2VCD=<path> or OSS=<root>)")
+        raise RuntimeError("fst2vcd not found (install gtkwave, or set FST2VCD=<path>)")
     proc = subprocess.run([exe, "-f", dump], capture_output=True, text=True)
     if proc.returncode != 0:
         raise RuntimeError("fst2vcd failed on %s: %s" % (dump, proc.stderr.strip()))

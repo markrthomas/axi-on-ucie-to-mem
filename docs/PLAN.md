@@ -183,7 +183,7 @@ four SymbiYosys proofs run by `make regress`/`make ci` (see F4).
   `dv/common/aou_wave_dump.svh` under `-DAOU_WAVES` — a define only those targets
   pass, so the gate elaborates no dump logic and stays byte-identical.
   `make wave-check` is the drift-guard: it resolves every `.gtkw` net path against
-  that target's real dump hierarchy (oss-cad-suite `fst2vcd`) and fails naming the
+  that target's real dump hierarchy (GTKWave's `fst2vcd`) and fails naming the
   orphan. It is **dev/opt-in and deliberately NOT in `check`/`regress`/`ci`**, so
   the gate stays wave-free and GTKWave-independent. It immediately caught real
   rot: 23 of the old `dv/wave.gtkw`'s 42 net paths had died when the single-plane
@@ -455,12 +455,12 @@ in-order completion** (initiator request queue) already in place.
 
 ### F4 — Whole-chain formal — DONE
 - **Spec:** n/a (methodology).
-- **DONE — tooling blocker resolved.** The **yosys-slang** frontend (bundled in
-  the pinned oss-cad-suite) reads the full SV the RTL uses (`module … import
+- **DONE — tooling blocker resolved.** Yosys's **built-in slang**
+  frontend (`read_slang`) reads the full SV the RTL uses (`module … import
   aou_pkg::*;`, packed structs, functions in `always_comb`, `bind`), so **no
   Verific and no hand-abstraction are needed** — the original blocker is gone.
   Formal is now a **first-class gating tier**: `make regress` / `make ci` run it,
-  with the pinned prover passed by absolute path (`SBY=$OSS/bin/sby`), `bmc`+`cover`
+  with the pinned prover (`sby` on `PATH`), `bmc`+`cover`
   gating and `prove` best-effort. Proven:
   - `formal/aou_flit*` — §4.3 byte-exact header map + §5.8 packing round-trip,
     checked against an independent Figure-5 transcription.

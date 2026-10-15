@@ -10,8 +10,7 @@
 #                              per-step wall time)
 #
 # The gate itself is untouched: no LD_PRELOAD, no stdbuf (see CLAUDE.md — the
-# system libstdbuf.so clashes with oss-cad-suite's bundled glibc and kills
-# `make lint`), no extra work inside any timed DV run.  The one caveat, recorded
+# stdbuf is not needed: Python output is unbuffered via PYTHONUNBUFFERED), no extra work inside any timed DV run.  The one caveat, recorded
 # in the DB with every derived number: the C tools block-buffer when stdout is a
 # pipe, so a banner's timestamp is when it was FLUSHED.  Totals from
 # /usr/bin/time are exact; the per-step split is an estimate.
@@ -19,8 +18,8 @@
 # Usage:
 #   metrics/capture.sh <label> <command> [args...]
 #
-#   metrics/capture.sh gate make ci VERILATOR=... VERILATOR_ROOT=... SBY=...
-#   metrics/capture.sh env-ooo make ooo VERILATOR=...
+#   metrics/capture.sh gate make ci
+#   metrics/capture.sh env-ooo make ooo
 #
 # Exit status is the wrapped command's.  AOU_CAPTURE_DIR overrides the output
 # directory.

@@ -63,7 +63,7 @@ Split **measured** vs **estimated** everywhere; document the source of each.
    sim cycles + sim wall time + throughput (cycles/s), and build-vs-run time split.
 3. **CI / compute** — total + per-step/per-env wall time, CPU core-seconds
    (peak+avg), peak RSS per build (reuse the `VL_JOBS`/`/usr/bin/time -v` route),
-   oss-cad-suite cache hit/miss, runner type/vCPU/RAM, and an **estimated** CI
+   runner type/vCPU/RAM, and an **estimated** CI
    compute cost (documented coefficient).
 4. **AI / swarm** — **per-AGENT** usage + performance for each swarm agent
    (swarm-manager, each dv-env-tester, infra-agent, dv-runner): wall time, turns,

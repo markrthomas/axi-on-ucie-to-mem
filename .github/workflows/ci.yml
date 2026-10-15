@@ -1,89 +1,74 @@
 name: CI
 
+# The toolchain (Verilator + Yosys/slang + SBY + btormc built from source; Icarus,
+# SystemC from apt; cocotb/pyuvm from pip) is defined once, in the Dockerfile.  A
+# `build-image` job builds its `tools` target into a GHCR image keyed by the
+# Dockerfile hash (so it is rebuilt only when the toolchain changes), and the gate
+# runs inside it via `container:`.
+
 on:
   push:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
-  ci:
-    # 24.04 ships SystemC 2.3.3 (libsystemc-dev) and the apt Icarus used by the
-    # cocotb VPI.  Verilator is pinned to oss-cad-suite below (see that step).
+  build-image:
     runs-on: ubuntu-24.04
-    env:
-      # oss-cad-suite install root (extracted below); its self-rooting verilator
-      # wrapper is invoked by absolute path so it never shadows the apt iverilog
-      # that the cocotb VPI is built against.
-      OSS: ${{ github.workspace }}/oss-cad-suite
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
     steps:
       - uses: actions/checkout@v7
-
-      # Icarus (cocotb VPI + the directed/pack/act Icarus flows) and SystemC come
-      # from apt; Verilator does NOT (see the pin below).
-      - name: Install RTL tools (Icarus + SystemC)
+      - id: meta
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            iverilog libsystemc-dev
-
-      # Pin Verilator to the exact oss-cad-suite build used for local development
-      # (tag 2026-04-13, Verilator 5.047).  The apt Verilator (5.020) attributes
-      # line coverage ~9 points stricter, which would push `make coverage` below
-      # the 85% floor on a declaration-heavy design even though real coverage is
-      # unchanged; pinning to the validated build keeps CI and local coverage in
-      # agreement.  The tag is exact (not "latest") on purpose: a newer build
-      # added SIMILARNAME under -Wall, which the local build predates, so drifting
-      # would reintroduce a lint delta between CI and local.
-      - name: Cache oss-cad-suite (pinned Verilator)
-        id: cache-oss
-        uses: actions/cache@v6
-        with:
-          path: oss-cad-suite
-          key: oss-cad-suite-linux-x64-20260413
-
-      - name: Install oss-cad-suite (pinned Verilator)
-        if: steps.cache-oss.outputs.cache-hit != 'true'
+          set -euo pipefail
+          tag="tools-$(sha256sum Dockerfile | cut -c1-12)"
+          repo="${GITHUB_REPOSITORY,,}"
+          echo "image=ghcr.io/${repo}/dv-tools:${tag}" >> "$GITHUB_OUTPUT"
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Build + push the toolchain image if it is not already cached
         run: |
-          curl -fL -o oss.tgz \
-            https://github.com/YosysHQ/oss-cad-suite-build/releases/download/2026-04-13/oss-cad-suite-linux-x64-20260413.tgz
-          tar xzf oss.tgz
-          rm oss.tgz
+          set -euo pipefail
+          img="${{ steps.meta.outputs.image }}"
+          if docker manifest inspect "$img" >/dev/null 2>&1; then
+            echo "reusing cached toolchain image: $img"
+          else
+            echo "building toolchain image: $img"
+            docker build --target tools -t "$img" .
+            docker push "$img"
+          fi
 
-      - uses: actions/setup-python@v7
-        with:
-          python-version: '3.10'
-
-      - name: Install Python deps (cocotb + pyuvm)
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install 'cocotb==1.9.2' 'pyuvm==4.0.1'
+  ci:
+    needs: build-image
+    runs-on: ubuntu-24.04
+    container:
+      image: ${{ needs.build-image.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      # cocotb's VPI is built against the apt iverilog at /usr/bin.
+      env:
+        ICARUS_BIN_DIR: /usr/bin
+    steps:
+      - uses: actions/checkout@v7
 
       - name: Tool versions
         run: |
           iverilog -V | head -1
-          "$OSS/bin/verilator" --version
-          "$OSS/bin/sby" --version | head -1
+          verilator --version
+          sby --help | head -1
           python -c "import cocotb, pyuvm; print('cocotb', cocotb.__version__, 'pyuvm', pyuvm.__version__)"
 
       # lint + PyUVM/cocotb regression + SV directed TB (Icarus & Verilator, with
-      # bound SVA) + SystemC + Verilator coverage, as one pass/fail gate.  The
-      # SV/UVM flow (make uvm) is not run here: GitHub runners have no UVM-capable
-      # simulator, so it would only skip.
-      #
-      # VERILATOR / VERILATOR_ROOT are passed as make command-line args (not env)
-      # so they override the Makefile's `VERILATOR_ROOT :=` computation and
-      # propagate to the sub-makes; iverilog stays on PATH from apt.
+      # bound SVA) + SystemC + Verilator coverage + SymbiYosys formal, as one
+      # pass/fail gate.  The SV/UVM flow (make uvm) is not run here: it needs a
+      # UVM-capable simulator, so it would only skip.
       - name: make ci
-        run: |
-          make ci \
-            VERILATOR="$OSS/bin/verilator" \
-            VERILATOR_ROOT="$OSS/share/verilator" \
-            VERILATOR_COV="$OSS/bin/verilator_coverage" \
-            SBY="$OSS/bin/sby"
-        env:
-          # cocotb runs under the setup-python interpreter; iverilog+vvp are the
-          # apt pair, so ICARUS_BIN_DIR points at the system bin.
-          ICARUS_BIN_DIR: /usr/bin
+        run: make ci
 
       - name: Upload coverage (lcov)
         if: always()

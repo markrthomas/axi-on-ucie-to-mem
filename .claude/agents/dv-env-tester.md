@@ -12,27 +12,21 @@ not see in the environment's own banner.
 
 ## The environment → command map (run from the repo root)
 
-Pass the pinned Verilator triplet on the make command line (the Makefile
-computes `VERILATOR_ROOT` with `:=`, so env can't override it); `$OSS` is set in
-the image:
-
-```
-VLT="VERILATOR=$OSS/bin/verilator VERILATOR_ROOT=$OSS/share/verilator VERILATOR_COV=$OSS/bin/verilator_coverage"
-```
+The pinned toolchain is already on `PATH` in the image; run the commands as written.
 
 | Env task | Command | Green banner |
 |----------|---------|--------------|
 | `cocotb` | `make test-all` | each of the six `[TEST] <name> passed` (write_read, random, walking, burst, multi_outstanding, coverage) + the `[COV-FUNC]` report |
-| `sv` | `make sv $VLT && make vlt $VLT && make sva-mut $VLT` | `[SV-TB] PASS: N reads checked, 0 errors` (both sims) + `[SVA-MUT] PASS: 26/26 mutants killed …` |
-| `pack` | `make pack $VLT` | `[PACK-TB] PASS: N checks, 0 errors` |
-| `act` | `make act $VLT` | `[ACT-TB] PASS: N checks, 0 errors` |
-| `reorder` | `make reorder $VLT` | `[ROB-TB] PASS: N checks, 0 errors` |
-| `ooo` | `make ooo $VLT` | `[OOO-TB] PASS: N read beats checked, … overtakes, 0 errors` (both sims) |
-| `mrp` | `make mrp $VLT` | `[MRP-TB] PASS: 2 planes, N read beats checked, … 0 errors` (both sims) |
-| `systemc` | `make systemc $VLT` | `[SC] SystemC PASSED` |
+| `sv` | `make sv && make vlt && make sva-mut` | `[SV-TB] PASS: N reads checked, 0 errors` (both sims) + `[SVA-MUT] PASS: 26/26 mutants killed …` |
+| `pack` | `make pack` | `[PACK-TB] PASS: N checks, 0 errors` |
+| `act` | `make act` | `[ACT-TB] PASS: N checks, 0 errors` |
+| `reorder` | `make reorder` | `[ROB-TB] PASS: N checks, 0 errors` |
+| `ooo` | `make ooo` | `[OOO-TB] PASS: N read beats checked, … overtakes, 0 errors` (both sims) |
+| `mrp` | `make mrp` | `[MRP-TB] PASS: 2 planes, N read beats checked, … 0 errors` (both sims) |
+| `systemc` | `make systemc` | `[SC] SystemC PASSED` |
 
 If the task names something else (e.g. `coverage`), run the matching
-`make <target> $VLT` and report its banner.
+`make <target>` and report its banner.
 
 ## How to run and report
 

@@ -49,7 +49,7 @@ subagent's result.
    **minimal** fix in the RTL/TB, and re-dispatch that one tester to confirm.
    Loop until green. Prefer small, well-scoped edits; do not refactor.
 4. **Gate.** Once individual envs are green, run the whole gate yourself:
-   `make regress VERILATOR="$OSS/bin/verilator" VERILATOR_ROOT="$OSS/share/verilator" VERILATOR_COV="$OSS/bin/verilator_coverage" SBY="$OSS/bin/sby"`
+   `make regress`
    (regress = `check` + coverage + formal). It must end `[REGRESS] … PASSED`, coverage ≥ 85%.
 5. **Land it.** Only if the full gate is green:
    - `git switch -c swarm/finalize-<short-slug>` (never commit on `main`),
@@ -79,5 +79,5 @@ subagent's result.
 - `uvm`/`formal` are tool/license-gated — a skip is neither pass nor fail.
 - Make the smallest change that fixes the problem. If a fix is risky or ambiguous,
   report it for a human rather than guessing.
-- The pinned Verilator triplet must be passed on the make command line (the
-  Makefile computes `VERILATOR_ROOT` with `:=`); `$OSS` is set in the image.
+- The pinned toolchain is on `PATH` in the image; don't set `VERILATOR_ROOT` (the
+  Makefile derives it from `verilator`).

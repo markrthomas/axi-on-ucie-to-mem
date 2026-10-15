@@ -6,9 +6,9 @@ Accellera UVM 2020.3.1 library — a license-free path. The repo's `uvm/Makefile
 otherwise needs VCS/Xcelium/Questa and degrades to a skip without one.
 
 ## Prerequisites
-- **Verilator >= 5.050, UVM-capable** (OSS CAD Suite's is not). Local ref:
-  `~/verilator/bin/verilator`.
-- **`unset VERILATOR_ROOT`** after sourcing the OSS CAD Suite env.
+- **Verilator >= 5.050, UVM-capable** (the pinned gate Verilator and apt's are not).
+  Local ref: `~/verilator/bin/verilator`.
+- **`unset VERILATOR_ROOT`** if your shell exports it.
 - **`UVM_HOME`** = `~/verilator/test_regress/t/uvm`.
 
 ## Usage
