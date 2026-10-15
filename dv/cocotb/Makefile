@@ -22,7 +22,7 @@ TOPLEVEL = axi_ucie_mem_top
 MODULE   = axi_test
 
 # Pin the apt Icarus + the cocotb-bound interpreter so the VPI is built against
-# the same Python that imports the testbench (avoids the OSS-CAD-Suite mismatch).
+# the same Python that imports the testbench.
 ICARUS_BIN_DIR    ?= /usr/bin
 export ICARUS_BIN_DIR
 SIM_CMD_PREFIX    := env -u VIRTUAL_ENV -u PYTHONHOME

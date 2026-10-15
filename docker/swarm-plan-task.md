@@ -11,7 +11,7 @@ Implement the plan in `docs/SWARM_PLAN.md` end-to-end.
    the repo conventions; make the smallest change that satisfies the plan.
 
 3. **Gate.** Run the whole gate yourself:
-   `make regress VERILATOR="$OSS/bin/verilator" VERILATOR_ROOT="$OSS/share/verilator" VERILATOR_COV="$OSS/bin/verilator_coverage"`.
+   `make regress`.
    It must end `[REGRESS] … PASSED` with coverage ≥ 85%, and meet the plan's
    Acceptance criteria.
 

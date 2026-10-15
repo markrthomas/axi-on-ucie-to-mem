@@ -274,7 +274,7 @@ def collect_design(rows, coeff, yosys, verilator, do_synth, quiet):
         return
     if not (yosys and os.path.exists(yosys)):
         rows.design_row("", "cells", None, "cells", GAP,
-                        "yosys not found (pass --yosys, or set OSS); no gate estimate")
+                        "yosys not found (pass --yosys, or put yosys on PATH); no gate estimate")
         return
 
     # --- yosys generic synth: per-module + whole-design (estimated) ----------
@@ -754,16 +754,6 @@ def collect_compute(rows, gate_lines, gate_time, cap_dir, coeff, quiet):
         rows.compute_row("", "build_s", None, "s", GAP,
                          "gate log has no [+seconds] timestamps (capture with metrics/capture.sh)")
 
-    # --- oss-cad-suite cache hit/miss (measured when CI tells us) ------------
-    hit = os.environ.get("AOU_OSS_CACHE_HIT", "")
-    if hit != "":
-        rows.compute_row("", "oss_cache_hit", 1.0 if hit.lower() in ("1", "true", "yes") else 0.0,
-                         "bool", MEASURED, "AOU_OSS_CACHE_HIT (actions/cache cache-hit output)")
-    else:
-        rows.compute_row("", "oss_cache_hit", None, "bool", GAP,
-                         "AOU_OSS_CACHE_HIT unset -- only CI knows whether the oss-cad-suite "
-                         "cache was restored")
-
     # --- estimated CI cost + CPU energy (MODELED) ----------------------------
     if core_seconds:
         cost_cfg = coeff.get("ci_compute_cost_usd_per_core_hour", {})
@@ -1211,14 +1201,6 @@ def insert_run(con, meta, rows):
 # main
 # --------------------------------------------------------------------------- #
 def default_yosys():
-    oss = os.environ.get("OSS")
-    if oss:
-        cand = os.path.join(oss, "bin", "yosys")
-        if os.path.exists(cand):
-            return cand
-    cand = os.path.join(REPO, "oss-cad-suite", "bin", "yosys")
-    if os.path.exists(cand):
-        return cand
     return shutil.which("yosys") or ""
 
 
@@ -1226,10 +1208,6 @@ def default_verilator():
     env = os.environ.get("VERILATOR")
     if env and shutil.which(env):
         return env
-    oss = os.environ.get("OSS") or os.path.join(REPO, "oss-cad-suite")
-    cand = os.path.join(oss, "bin", "verilator")
-    if os.path.exists(cand):
-        return cand
     return shutil.which("verilator") or ""
 
 

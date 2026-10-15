@@ -11,7 +11,7 @@
 #            and the saturating replenish reaches a full-burst ceiling.
 #   prove  — unbounded safety by k-induction (best-effort at this depth).
 #
-# NB: read with yosys-slang.  The bridges use the `module <name> import
+# NB: read with the built-in slang frontend (read_slang).  The bridges use the `module <name> import
 # aou_pkg::*;` header form and the properties are attached with `bind`; the stock
 # yosys Verilog frontend accepts neither.
 
@@ -34,7 +34,6 @@ cover: btor btormc
 prove: abc pdr
 
 [script]
-plugin -i slang
 read_slang --top aou_credit_fv \
     aou_pkg.sv aou_activation.sv aou_reorder.sv aou_ooo_resp_src.sv \
     aou_axi_initiator_bridge.sv aou_axi_target_bridge.sv \

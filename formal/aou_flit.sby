@@ -10,7 +10,7 @@
 #   prove  — unbounded safety.  The harness is purely combinational in free
 #            inputs, so this converges immediately (k=1).
 #
-# NB: read with yosys-slang.  The stock yosys Verilog frontend cannot parse the
+# NB: read with the built-in slang frontend (read_slang).  The stock yosys Verilog frontend cannot parse the
 # `module <name> import <pkg>::*;` header form the RTL uses, and it does not
 # resolve wildcard-imported typedefs; slang gives full SV package support.
 
@@ -32,7 +32,6 @@ cover: btor btormc
 prove: abc pdr
 
 [script]
-plugin -i slang
 read_slang --top aou_flit_fv aou_pkg.sv aou_flit_fv.sv
 prep -top aou_flit_fv
 opt -fast

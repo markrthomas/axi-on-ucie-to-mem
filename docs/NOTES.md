@@ -141,10 +141,7 @@ Every modeled number's coefficient lives in that file with its own `_note`,
   filter) → `[+SSSS.mmm]`-prefixed gate log, from which per-step wall time and the
   build-vs-run split are derived.
 
-Deliberately **no `stdbuf` and no `LD_PRELOAD`**: the system `libstdbuf.so` is
-built against this image's glibc 2.38 and the pinned oss-cad-suite tools run
-against their own older bundled glibc, so preloading it kills `make lint`
-outright (see `CLAUDE.md`). `stamp.py` is byte-oriented rather than text-mode so
+Deliberately **no `stdbuf` and no `LD_PRELOAD`** (see `CLAUDE.md`). `stamp.py` is byte-oriented rather than text-mode so
 a stray non-UTF-8 byte from a simulator cannot abort the capture — and with it,
 through `pipefail`, the gate.
 

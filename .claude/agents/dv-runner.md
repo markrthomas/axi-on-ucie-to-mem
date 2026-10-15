@@ -26,7 +26,7 @@ Run from the repo root. Key targets:
 - `make sva-mut`   — axi4_sva mutation tests: 26 mutants must each fire the right assertion (Verilator)
 - `make systemc`   — SystemC TB (Verilator --sc + sc_main)
 - `make coverage`  — Verilator --coverage; fails below floor COV_MIN (default 85%)
-- `make formal`    — 4 SymbiYosys proofs (needs `SBY=$OSS/bin/sby` if not on PATH)
+- `make formal`    — 4 SymbiYosys proofs (needs `sby` on PATH, or `SBY=<path>`)
 - `make check`     — lint + eda-check + cocotb + sv + vlt + pack + act + reorder + ooo + mrp + sva-mut + systemc (the gate)
 - `make regress`   — check + coverage + formal (CI-style; `make ci` = regress)
 

@@ -1,36 +1,17 @@
 #!/usr/bin/env bash
-# Entrypoint for the aou-dv image.  The Makefile computes VERILATOR_ROOT (and
-# defaults SBY to the bare `sby`) with `:=`/`?=` that environment variables do
-# NOT override — so, exactly like .github/workflows/ci.yml, the pinned
-# Verilator triplet AND the SymbiYosys prover (bundled in oss-cad-suite, kept
-# off PATH — see the Dockerfile) must be passed as make COMMAND-LINE
-# arguments.  This wrapper appends them to every `make` invocation so the
-# pinned toolchain is always used.
+# Entrypoint for the aou-dv image.  The pinned, from-source toolchain (Verilator,
+# Yosys/SBY, btormc — see the Dockerfile) is already on PATH, and the Makefile
+# derives VERILATOR_ROOT from `command -v verilator`, so no tool overrides are
+# needed on the make command line.
 #
-#   (no args)        -> make ci   <pinned-tool overrides>
-#   make <targets>   -> make <targets> <pinned-tool overrides>
+#   (no args)        -> make ci
+#   make <targets>   -> make <targets>
 #   <anything else>  -> exec verbatim (shell, tool version, etc.)
 set -euo pipefail
 
-MAKE_ARGS=(
-  "VERILATOR=${OSS}/bin/verilator"
-  "VERILATOR_ROOT=${OSS}/share/verilator"
-  "VERILATOR_COV=${OSS}/bin/verilator_coverage"
-  "SBY=${OSS}/bin/sby"
-)
-
-# NB: do NOT wrap the gate in `stdbuf`/`unbuffer` to force line-buffering.  stdbuf
-# works by LD_PRELOAD-ing the *system* libstdbuf.so (built against this image's
-# glibc 2.38) into every child — but the pinned oss-cad-suite tools (Verilator,
-# sby) run against their OWN bundled, older glibc, which lacks GLIBC_2.38, so the
-# preload fails to resolve and the tool dies:
-#   verilator_bin: /opt/oss-cad-suite/lib/libc.so.6: version `GLIBC_2.38' not
-#   found (required by /usr/libexec/coreutils/libstdbuf.so)
-# It breaks `make lint` immediately (see docs/DOCKER.md / CLAUDE.md).  Python is
-# the one leg where live streaming matters (cocotb), and it bypasses libc stdio
-# buffering anyway, so PYTHONUNBUFFERED=1 in the Dockerfile ENV covers it without
-# any preload.  The C toolchain block-buffers when stdout is a pipe; that is a
-# cosmetic log-latency tradeoff, accepted to keep the pinned tools working.
+# Live log streaming: Python (cocotb) is the leg that matters and is handled by
+# PYTHONUNBUFFERED=1 in the Dockerfile ENV; the C toolchain block-buffers when
+# stdout is a pipe, which is an accepted, cosmetic log-latency tradeoff.
 
 # --- log-volume control for rate-limited cloud log sinks ---------------------
 # `make ci` is very chatty: Verilator's generated build echoes a ~500-char g++
@@ -102,20 +83,20 @@ if [ "${AOU_POST_METRICS:-0}" = "1" ] && { [ "$#" -eq 0 ] || [ "$1" = "make" ]; 
   if [ "$#" -eq 0 ]; then set -- make ci; fi
   shift                                   # drop the literal "make"
   set +e
-  metrics/capture.sh gate make "$@" "${MAKE_ARGS[@]}"
+  metrics/capture.sh gate make "$@"
   gate_rc=$?
   set -e
   echo "[METRICS] gate exited ${gate_rc}; collecting (additive -- cannot change that verdict)"
-  make metrics VERILATOR="${OSS}/bin/verilator" || echo "[METRICS] collection failed (ignored)"
+  make metrics || echo "[METRICS] collection failed (ignored)"
   make dashboard || echo "[DASH] render failed (ignored)"
   exit "$gate_rc"
 fi
 
 if [ "$#" -eq 0 ]; then
-  run_make ci "${MAKE_ARGS[@]}"
+  run_make ci
 elif [ "$1" = "make" ]; then
   shift
-  run_make "$@" "${MAKE_ARGS[@]}"
+  run_make "$@"
 else
   exec "$@"
 fi

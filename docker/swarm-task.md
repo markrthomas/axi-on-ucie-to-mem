@@ -8,8 +8,7 @@ Finalize the containerized AoU DV work.
    until it is green.
 3. Have the infra-agent confirm the Docker image builds and the Railway config
    (railway.toml) and entrypoint routing are correct; apply any minimal infra fix.
-4. Run the whole gate (`make regress` with the pinned Verilator args and
-   `SBY=$OSS/bin/sby` — regress = check + coverage + formal) and confirm
+4. Run the whole gate (`make regress` — regress = check + coverage + formal) and confirm
    `[REGRESS] … PASSED` with coverage at or above the 85% floor.
 5. If — and only if — the full gate is green, create a branch, commit your
    changes (co-authored trailer), push, and open a PR. A human will merge.

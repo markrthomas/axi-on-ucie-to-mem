@@ -9,7 +9,7 @@ The image is defined by four files at the repo root:
 
 | File | Role |
 |------|------|
-| `Dockerfile` | Builds the toolchain image; runs the same pinned-tool `make ci` gate as `.github/workflows/ci.yml` (Python 3.12 vs CI 3.10 — see "Relation to CI"). |
+| `Dockerfile` | Builds the toolchain image; runs the same pinned-tool `make ci` gate as `.github/workflows/ci.yml` (CI runs this image's `tools` stage — see "Relation to CI"). |
 | `docker/entrypoint.sh` | Injects the pinned-Verilator make args, then runs the gate. |
 | `.dockerignore` | Keeps the build context small (no local tools / sim artifacts / `.git`). |
 | `railway.toml` | Tells Railway to build the Dockerfile and run it as a batch job. |
@@ -19,7 +19,7 @@ The image is defined by four files at the repo root:
 ## Quick start
 
 ```bash
-# build the image (downloads ~677 MB oss-cad-suite once; cached thereafter)
+# build the image (compiles Verilator + Yosys/slang + SBY + btormc once; cached thereafter)
 docker build -t aou-dv .
 
 # run the full CI gate (lint + eda-check + cocotb + SV + pack + act + reorder + ooo + mrp + sva-mut + SystemC + coverage + formal)
@@ -85,20 +85,21 @@ Ubuntu 24.04 base, chosen because it ships the exact tool versions CI validates:
 |-----------|--------|---------|-----------------|
 | Icarus Verilog | apt | 12.0 | The cocotb VPI is built against the apt `iverilog`/`vvp`. |
 | SystemC | apt (`libsystemc-dev`) | 2.3.3 | Headers + `libsystemc.so` for the SystemC TB. |
-| **Verilator** | **oss-cad-suite, pinned tag `2026-04-13`** | **5.047** | The apt Verilator attributes line coverage ~9 pts stricter (would fail the 85% floor) and a newer oss-cad-suite adds lints this design predates — so the tag is **exact**, not `latest`. |
+| **Verilator** | **built from source, pinned `v5.048`** (`/opt/verilator`, on `PATH`) | **5.048** | The apt Verilator attributes line coverage ~9 pts stricter (would fail the 85% floor) and a newer Verilator adds lints this design predates — so the tag is **exact**, not `latest`. |
 | Python | apt (`python3` + **`python3-dev`**) | 3.12 | `python3-dev` provides `libpython3.12.so`, which cocotb's `find_libpython` needs to embed the interpreter in the VPI (see gotcha below). |
 | cocotb / pyuvm | pip, in a venv | 1.9.2 / 4.0.1 | Pinned to the CI versions; a venv satisfies PEP 668 on 24.04. |
 | tmux | apt | 3.4 | Terminal multiplexer for interactive / long-running sessions inside the container. |
 | Node.js | NodeSource | 20 LTS | Runtime for the Claude Code CLI (Claude Code needs Node ≥ 18). |
 | Claude Code CLI | npm (`@anthropic-ai/claude-code`) | latest | Headless agent mode (see below); does not affect the DV gate. |
 
-| **SymbiYosys + Yosys + solvers** | **oss-cad-suite, same pinned tag** | **sby 0.64 / yosys 0.64** | The formal tier (`make formal`) — `sby`, `yosys`, the `yosys-slang` SV frontend, `btormc` and `abc` all ship in the suite already installed for Verilator, so formal costs the image nothing extra. |
+| **Yosys + SBY + btormc** | **built from source** (Yosys `47595d984` with its **built-in slang** frontend + `abc`; `YosysHQ/sby`; Boolector `3.2.4` for `btormc`) | yosys master / sby main / boolector 3.2.4 | The formal tier (`make formal`): the proofs read the RTL with `read_slang`, run `btor btormc` for bmc/cover and `abc pdr` for prove. |
+| gtkwave | apt | 3.3 | Provides `fst2vcd`, used only by the dev-only `make wave-check`. |
 
 The build ends with a healthcheck that fails the image build if any of
-`iverilog`, the pinned `verilator`, `sby`, or `import cocotb, pyuvm` is missing.
+`iverilog`, the pinned `verilator`, `sby`, `yosys`, `btormc`, or `import cocotb, pyuvm` is missing.
 
-The formal tier **is** in the image and **does** run: `sby` is bundled in
-oss-cad-suite, so `make regress` / `make ci` in the container run the SymbiYosys
+The formal tier **is** in the image and **does** run: `sby`, `yosys` and `btormc` are
+built into it, so `make regress` / `make ci` in the container run the SymbiYosys
 proofs and fail on a broken one. Four proofs gate: `axi_lite_mem` (the memory
 target), `aou_flit` (the §4.3 byte-exact header map + §5.8 packing), `aou_credit`
 (§6 credit flow on the real bridges) and `aou_activation` (the §8 interface
@@ -112,36 +113,25 @@ needs a licensed simulator (VCS/Xcelium/Questa) and would only skip.
 ## How it runs the gate — the entrypoint
 
 The default command is `make ci`, but it is **not** run directly. The image sets
-`ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]`, which wraps every `make`
-invocation with the pinned-tool arguments:
-
-```
-VERILATOR=$OSS/bin/verilator
-VERILATOR_ROOT=$OSS/share/verilator
-VERILATOR_COV=$OSS/bin/verilator_coverage
-SBY=$OSS/bin/sby
-```
-
-**Why a wrapper instead of environment variables?** The root `Makefile` computes
+`ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]`, which handles the cloud log-volume
+filter, the agent/swarm modes and the optional post-gate metrics step, then runs
+`make`. The pinned toolchain (`/opt/verilator`, `/opt/yosys`, `/opt/sby`,
+`/opt/boolector`) is on `PATH` via the image `ENV`, so **no tool arguments need
+to be injected**: the root `Makefile` derives
 
 ```make
 VERILATOR_ROOT := $(shell v=$$(command -v verilator …); … )
 ```
 
-with `:=` (immediate assignment via a shell call). A `:=` variable is **not**
-overridden by an environment variable — only by a make **command-line** argument.
-The pinned oss-cad-suite Verilator is deliberately kept off `PATH` (so its
-bundled `iverilog` can't shadow the apt one the cocotb VPI links against), so
-`command -v verilator` would otherwise find nothing. The entrypoint therefore
-appends them as make args. CI does the exact same thing.
+from the `verilator` it finds on `PATH` (`/opt/verilator/share/verilator`). Don't
+set `VERILATOR_ROOT` in the environment. None of the built tools ships its own
+`iverilog`, so — unlike a prebuilt tool bundle — they can safely sit on `PATH`
+without shadowing the apt `iverilog` the cocotb VPI links against.
 
-**The `SBY` knob.** The formal target uses `SBY ?= sby`. `?=` is likewise **not**
-overridden by an environment variable once a value is on the command line, and —
-more importantly — oss-cad-suite is off `PATH` for the same `iverilog`-shadowing
-reason, so a bare `sby` would not be found. The entrypoint therefore passes
-`SBY=$OSS/bin/sby` by absolute path, exactly like the Verilator triplet. Left at
-its bare default the `formal` target skips gracefully (useful on a host with no
-SymbiYosys); given an explicit `SBY=<path>` that is not an executable prover it
+**The `SBY` knob.** The formal target uses `SBY ?= sby`. In the image `sby` is on
+`PATH`, so the default just works. Left at its bare default the `formal` target
+skips gracefully (useful on a host with no SymbiYosys); given an explicit
+`SBY=<path>` that is not an executable prover it
 is a **hard error**, so the gate can never silently skip in the image or in CI.
 Run just the proofs with:
 
@@ -154,10 +144,10 @@ Entrypoint dispatch:
 
 | You run | It executes |
 |---------|-------------|
-| `docker run --rm aou-dv` | `make ci  <pinned-tool args>` |
-| `docker run --rm aou-dv make reorder` | `make reorder  <pinned-tool args>` |
-| `docker run --rm aou-dv make ooo` | `make ooo  <pinned-tool args>` |
-| `docker run --rm aou-dv make mrp` | `make mrp  <pinned-tool args>` |
+| `docker run --rm aou-dv` | `make ci` |
+| `docker run --rm aou-dv make reorder` | `make reorder` |
+| `docker run --rm aou-dv make ooo` | `make ooo` |
+| `docker run --rm aou-dv make mrp` | `make mrp` |
 | `docker run --rm aou-dv <anything else>` | `<anything else>` verbatim (e.g. `bash`) |
 
 ---
@@ -191,8 +181,7 @@ With the knob set, the entrypoint:
    `/usr/bin/time -v` (exact wall clock, core-seconds, peak RSS, %CPU) and a
    timestamped `tee`. This observes the gate from the **outside** only — no work
    is added inside any timed DV run, and there is deliberately **no `stdbuf` and
-   no `LD_PRELOAD`** (see "Live log streaming" below: preloading the system
-   `libstdbuf.so` into the pinned oss-cad-suite tools kills `make lint`);
+   no `LD_PRELOAD`** (see "Live log streaming" below);
 2. **captures the gate's exit status**;
 3. runs `make metrics` then `make dashboard`, each of which may fail harmlessly
    — a failure only prints;
@@ -209,7 +198,6 @@ exited `0`.)
 | `AOU_POST_METRICS` | `0` | `1` enables the post-gate capture + collect + dashboard sequence described above |
 | `AOU_CAPTURE_DIR` | `metrics/_capture` | where `metrics/capture.sh` writes `<label>.log` / `<label>.time` (gitignored, transient) |
 | `AOU_STREAM_JSON` | `metrics/_capture/swarm-stream.jsonl` | where `docker/swarm.sh` tees the raw agent event stream, which is the **only** source of per-agent numbers (`modelUsage` is per-model and aggregates subagents). Set it empty to skip |
-| `AOU_OSS_CACHE_HIT` | unset | CI sets this from the `actions/cache` output so the collector can record the oss-cad-suite cache hit/miss; unset ⇒ recorded as *not attributable* |
 | `METRICS_ARGS` | empty | extra flags for the collector, e.g. `--no-synth` to skip the yosys pass |
 | `DASH_RUNS` | `20` | how many recent runs the dashboard trends |
 
@@ -235,23 +223,13 @@ and renders exactly as it does locally.
 >       # Replace the existing `make ci` step's `run:` with the capture wrapper.
 >       - name: make ci
 >         run: |
->           metrics/capture.sh gate \
->             make ci \
->               VERILATOR="$OSS/bin/verilator" \
->               VERILATOR_ROOT="$OSS/share/verilator" \
->               VERILATOR_COV="$OSS/bin/verilator_coverage" \
->               SBY="$OSS/bin/sby"
->         env:
->           ICARUS_BIN_DIR: /usr/bin
+>           metrics/capture.sh gate make ci
 >
 >       # ...then add these two steps after it.
 >       - name: Collect metrics (post-gate, cannot fail the gate)
 >         continue-on-error: true
->         env:
->           OSS: ${{ github.workspace }}/oss-cad-suite
->           AOU_OSS_CACHE_HIT: ${{ steps.cache-oss.outputs.cache-hit }}
 >         run: |
->           make metrics VERILATOR="$OSS/bin/verilator"
+>           make metrics
 >           make dashboard
 >
 >       - name: Upload metrics dashboard
@@ -324,22 +302,15 @@ never reproduced on a dev machine.
 When stdout is a **pipe** (the cloud captures logs off a pipe, not a TTY), glibc
 **full-buffers** each process, so a long `make ci` can print *nothing* until it
 exits — in the Railway/CI log viewer a running gate then looks like a hung one.
-The natural fix, `stdbuf -oL`, **cannot be used here**: it works by
-`LD_PRELOAD`-ing the *system* `libstdbuf.so` (built against this image's glibc
-2.38) into every child, but the pinned **oss-cad-suite** tools (Verilator, `sby`)
-run against their own **bundled, older glibc**, which lacks `GLIBC_2.38` — so the
-preload fails to resolve and the tool dies at `make lint`:
-
-```
-verilator_bin: /opt/oss-cad-suite/lib/libc.so.6: version `GLIBC_2.38' not found
-  (required by /usr/libexec/coreutils/libstdbuf.so)
-```
+The C-level fix, `stdbuf -oL`, is **deliberately not used**: it `LD_PRELOAD`s a
+system library into every child process, which adds a moving part to the gate for
+a purely cosmetic gain.
 
 So streaming is **Python-only**, via **`PYTHONUNBUFFERED=1`** (in the ENV above):
 cocotb/pyuvm — the leg where a live trace matters, and where the em-dash crash
-lived — stream line-by-line, with no preload. The C toolchain (Verilator/Icarus/
-`sby`/gcc) still block-buffers under a pipe; that's an accepted cosmetic
-log-latency tradeoff to keep the pinned tools working. Output bytes are unchanged
+lived — stream line-by-line. The C toolchain (Verilator/Icarus/`sby`/gcc) still
+block-buffers under a pipe; that's an accepted cosmetic log-latency tradeoff.
+Output bytes are unchanged
 either way, so every banner/baseline (incl. the SystemC `sc.log` diff) stays
 byte-identical.
 
@@ -745,8 +716,8 @@ exits `0` is flagged "crashed"). `railway.toml` already sets
 
 Dashboard **New Project → Deploy from GitHub repo** (or `railway up` from a
 checkout). Railway reads `railway.toml`, builds the `Dockerfile`, and runs the
-container. First builds are **not instant** — the image pulls the ~677 MB
-oss-cad-suite whenever that layer isn't cached.
+container. First builds are **not instant** — the image compiles Verilator, Yosys
+(+slang) and Boolector from source whenever those layers aren't cached.
 
 ### Step 2 — pick what it runs
 
@@ -827,37 +798,32 @@ so during MDT (mid-Mar–early-Nov, UTC−6) 09:00 UTC is 3:00 AM local — use
   *"find_libpython was not able to find a libpython."* GitHub's `setup-python`
   ships a shared-lib build, so CI never surfaces this — a from-scratch container
   does.
-- **Verilator must stay off `PATH`.** oss-cad-suite bundles its own `iverilog`;
-  if it shadowed the apt one, the cocotb VPI (built against apt `iverilog`)
-  breaks. It's invoked by absolute path via the entrypoint instead.
-- **Env can't override `VERILATOR_ROOT`** (it's `:=` in the Makefile) — hence the
-  command-line injection in the entrypoint.
-- **`.dockerignore` excludes a local `oss-cad-suite/`.** The image builds its own
-  pinned copy; shipping a host install into the context would bloat the build and
-  risk an arch mismatch.
+- **Don't set `VERILATOR_ROOT`.** The Makefile computes it (`:=`) from the
+  `verilator` on `PATH`; an environment value can't override it and would only
+  confuse the UVM-on-Verilator flow.
+- **`liblz4-dev` + `zlib1g-dev` are required** at run time: Verilator's FST-trace
+  C++ builds `#include <lz4.h>`. Without them the `vlt`/coverage/SystemC builds
+  fail with `lz4.h: No such file`.
+- **`.dockerignore` excludes local tool installs and sim artifacts** so the build
+  context stays small and hermetic — the image builds its own toolchain.
 
 ---
 
 ## Relation to CI
 
 The GitHub Actions workflow (`.github/workflows/ci.yml`) and this image run the
-**same `make ci` gate** with the **same pinned tool versions** — oss-cad-suite
-2026-04-13 (Verilator 5.047, SymbiYosys), apt Icarus + SystemC 2.3.3 on Ubuntu
-24.04, cocotb 1.9.2 + pyuvm 4.0.1. They are **not** byte-for-byte the same
-recipe, and one difference is deliberate:
+**same `make ci` gate** on the **same toolchain**: CI builds the Dockerfile's
+`tools` target (Verilator 5.048, Yosys + slang, SBY and btormc built from source;
+apt Icarus + SystemC 2.3.3 on Ubuntu 24.04; cocotb 1.9.2 + pyuvm 4.0.1 in a venv)
+into a GHCR image keyed by the Dockerfile hash — rebuilt only when the toolchain
+definition changes — and runs the gate inside it via `container:`. The `full`
+stage adds Node/Claude Code/gh and the repo on top for local / Railway runs, so
+there is a single toolchain recipe and nothing to keep in sync by hand. The swarm
+workflows (`swarm.yml`, `plan-swarm.yml`) run in the same `tools` image.
 
-| | Docker image | GitHub Actions CI |
-|-|--------------|-------------------|
-| Python | Ubuntu 24.04 apt `python3` **3.12** (+ `python3-dev`), in a venv | `actions/setup-python` **3.10** |
-| cocotb/pyuvm install | `pip` into `/opt/venv` | `pip` into the setup-python interpreter |
-| oss-cad-suite | extracted to `/opt/oss-cad-suite` | extracted to `$GITHUB_WORKSPACE/oss-cad-suite` (cached) |
+**Python:** 3.12 (Ubuntu 24.04 apt, in a venv) everywhere.
 
-**Support policy:** the gate is supported on **Python 3.10 and 3.12** (the two
-interpreters CI and the image exercise); cocotb 1.9.2 / pyuvm 4.0.1 are pinned in
-both, so the Python version is the only toolchain delta. CI does not build the
-Dockerfile — it's a parallel recipe. Keep the two in sync: if you bump a tool
-version or add an apt/pip dependency in one, mirror it in the other. Both are
-validated by the same green gate (cocotb 6/6 with functional
+Both are validated by the same green gate (cocotb 6/6 with functional
 coverage 26/26 bins, SV 170 reads incl. 275 long-burst SLVERR checks, SVA
 mutation 26/26, pack 229, act 30, reorder 76, ooo 80 beats /
 10 different-ID overtakes, mrp 2 planes / 76 beats, SystemC 145,
