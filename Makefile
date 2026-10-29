@@ -195,6 +195,10 @@ help:
 	@echo "    make regress           # check + coverage + formal (CI-style pass/fail)"
 	@echo "    make ci                # regress"
 	@echo ""
+	@echo "  Toolchain (additive — never part of check/regress/ci):"
+	@echo "    make tools             # verify toolchain + install missing light tiers (TOOLS_HEAVY=1 builds src Verilator)"
+	@echo "    make tools-check       # verify only, install nothing (non-zero exit iff a CORE tool is absent)"
+	@echo ""
 	@echo "  Metrics & dashboard (opt-in, POST-gate — never part of check/regress/ci):"
 	@echo "    make metrics-capture   # run the gate under /usr/bin/time + a timestamped tee"
 	@echo "                           #   (artifacts land in $(METRICS_CAPTURE)/)"
@@ -591,3 +595,13 @@ clean:
 # Standard DV target (DV_STANDARDS.md): stress = constrained-random sim
 .PHONY: stress
 stress: test-random
+
+# Toolchain audit/bootstrap (DV_STANDARDS.md "Toolchain standard") — ADDITIVE,
+# never part of check/regress/ci. Pins come from the workspace dv_env.mk (else the
+# script's built-in defaults in a standalone CI checkout). tools-check installs
+# nothing and exits non-zero iff a CORE tool (iverilog/python3/cocotb) is absent.
+.PHONY: tools tools-check
+tools:
+	bash tools/check_tools.sh $(if $(TOOLS_HEAVY),--heavy)
+tools-check:
+	bash tools/check_tools.sh --check
