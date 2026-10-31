@@ -1,5 +1,22 @@
 # Containerized DV gate — Docker & Railway
 
+> **2026-10-31 — swarm and container scripts now come from the shared [dv-swarm-kit](https://github.com/markrthomas/dv-swarm-kit)**
+> (version in `.claude/swarm-kit.version`, repo settings in `.claude/swarm.env`). The sections below describe the
+> retired per-repo scripts; the behaviour moved as follows:
+>
+> | was | now |
+> |---|---|
+> | `docker/agent.sh` (`docker run aou-dv agent "task"`) | same command; `agent` mode of the kit `docker/entrypoint.sh` -> `docker/swarm.sh --prompt` (permission mode `acceptEdits` + the `.claude/settings.json` allow list, not `dontAsk`) |
+> | `docker/swarm.sh`, `docker/swarm-task.md` | kit `docker/swarm.sh` + `docker/swarm-task.md`; one `dv-env-tester` per `DV_ENVS` entry (`sv` is split into `sv`, `vlt`, `sva-mut`), at most `SWARM_MAX_PARALLEL` (=2) at once |
+> | `docker/swarm-plan-task.md` + `plan-swarm.yml` | kit `docker/plan-swarm-task.md` + `plan-swarm.yml` (same `docs/SWARM_PLAN.md` `status: ready` trigger) |
+> | `docker/provider-env.sh`, `AOU_MODEL_PROVIDER` | kit `docker/provider-env.sh`, `SWARM_MODEL_PROVIDER` (`AOU_MODEL_PROVIDER` still accepted); Claude tiers use the CLI defaults unless `ANTHROPIC_DEFAULT_*_MODEL` is set; Kimi pins unchanged |
+> | `docker/render-metrics.py`, `AOU_METRICS_JSON` | `docker/last-run-metrics.json` written by `docker/swarm.sh` (tokens per model, cost) |
+> | `AOU_CI_QUIET` (Railway log trimming) | `LOG_QUIET` (same default: on when Railway is detected; full log in `logs/batch.log`) |
+> | `AOU_POST_METRICS=1` | `CI_TARGET=metrics-capture POST_BATCH="make metrics dashboard"` (service variables) |
+> | `/usr/local/bin/entrypoint.sh` | `/work/docker/entrypoint.sh` (same `make <targets>` / no-args = `make ci` behaviour) |
+>
+> `railway.toml` stays repo-owned (`KIT_KEEP`) to keep the daily 09:00 UTC cron.
+
 A single container image, **`aou-dv`**, packages the whole open-source DV
 toolchain and runs the same pass/fail gate as CI. Use it to reproduce the gate
 on any machine without installing Icarus / Verilator / SystemC / cocotb locally,

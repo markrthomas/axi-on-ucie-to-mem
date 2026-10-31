@@ -180,6 +180,14 @@ RUN iverilog -V | head -1 \
     && btormc --version \
     && python -c "import cocotb, pyuvm; print('cocotb', cocotb.__version__, 'pyuvm', pyuvm.__version__)"
 
+# dv-swarm-kit: optional Claude Code CLI in the toolchain stage, so the Codespaces devcontainer (`--target tools`,
+# WITH_CLAUDE=1) can run the swarm.  CI builds tools with the default 0, so its cached image is unchanged.
+ARG WITH_CLAUDE=0
+RUN if [ "$WITH_CLAUDE" = "1" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends nodejs npm gh \
+      && npm install -g @anthropic-ai/claude-code && rm -rf /var/lib/apt/lists/*; \
+    fi
+
 # -----------------------------------------------------------------------------
 # full: the tools image + Node/Claude Code/gh + the repo, for local / Railway
 # batch runs.  GitHub CI's gate does NOT use this stage (it builds `--target tools`).
@@ -188,7 +196,8 @@ FROM tools AS full
 
 # --- Node.js 20 LTS + Claude Code CLI (headless agent mode) -------------------
 # Layered alongside the DV toolchain so the same image can also run Anthropic's
-# Claude Code headless as a cloud agent (see docker/agent.sh).  Node 20 (>= 18,
+# Claude Code headless as a cloud agent (`docker/entrypoint.sh agent|swarm`, dv-swarm-kit).
+# Skipped when the tools stage already has it (WITH_CLAUDE=1).  Node 20 (>= 18,
 # as Claude Code requires) from NodeSource; git is already installed above.
 #
 # Non-interactive operation is the CLI's `-p`/`--print` flag, NOT an environment
@@ -196,15 +205,15 @@ FROM tools AS full
 # the real switch that turns off telemetry / error reporting / update checks
 # (per https://code.claude.com/docs/en/env-vars); it is harmless to the DV gate.
 ENV CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+RUN command -v claude >/dev/null || { curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g @anthropic-ai/claude-code \
-    && npm cache clean --force
+    && npm cache clean --force; }
 
-# GitHub CLI — lets the finalization swarm (docker/swarm.sh) push a branch and
+# GitHub CLI — lets the swarm (docker/swarm.sh, dv-swarm-kit) push a branch and
 # open a PR when GITHUB_TOKEN is provided at run time (never baked in).
-RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+RUN command -v gh >/dev/null || curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
         -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
     && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
         > /etc/apt/sources.list.d/github-cli.list \
@@ -224,28 +233,14 @@ ENV ICARUS_BIN_DIR=/usr/bin
 # core) OOM-kills the compiler.  2 keeps peak memory bounded; lower to 1 on the
 # smallest instances, or raise it (or set VL_JOBS=0) where RAM is ample.
 ENV VL_JOBS=2
-# Model provider for headless agent/swarm runs: "anthropic" (default, needs
-# ANTHROPIC_API_KEY) or "kimi" (whole run on Kimi K3 via Moonshot's
-# Anthropic-compatible endpoint, needs KIMI_API_KEY).  Keys are ALWAYS injected
-# at run time — never baked in.  Resolution lives in docker/provider-env.sh.
-ENV AOU_MODEL_PROVIDER=anthropic
-# Post-gate metrics (SWARM_PLAN F3).  OFF by default so `docker run aou-dv` is
-# byte-identical to before.  With -e AOU_POST_METRICS=1 the container runs the
-# gate through metrics/capture.sh (an outside-only /usr/bin/time + timestamped
-# tee wrapper — no work is added inside any timed DV run) and then collects a
-# metrics row and regenerates metrics/dashboard.html.  Collection is additive:
-# the container still exits with the GATE's status.  See docs/DOCKER.md.
-ENV AOU_POST_METRICS=0
-# metrics/*.sh and *.py are invoked directly by the entrypoint's post-gate path.
+# Model provider (SWARM_MODEL_PROVIDER, default anthropic; AOU_MODEL_PROVIDER still accepted) and the post-gate
+# metrics step (CI_TARGET=metrics-capture POST_BATCH="make metrics dashboard", replacing AOU_POST_METRICS=1) are
+# dv-swarm-kit run-time knobs now - see .claude/swarm.env and docs/DOCKER.md.  Keys are never baked in.
+# metrics/*.sh and *.py are invoked directly by the metrics-capture / POST_BATCH path.
 RUN chmod +x /work/metrics/capture.sh /work/metrics/collect.py \
              /work/metrics/dashboard.py /work/metrics/stamp.py
-COPY docker/entrypoint.sh   /usr/local/bin/entrypoint.sh
-COPY docker/agent.sh        /usr/local/bin/agent.sh
-COPY docker/swarm.sh        /usr/local/bin/swarm.sh
-COPY docker/provider-env.sh /usr/local/bin/provider-env.sh
-COPY docker/render-metrics.py /usr/local/bin/render-metrics.py
-RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/agent.sh \
-             /usr/local/bin/swarm.sh /usr/local/bin/render-metrics.py
+# dv-swarm-kit scripts (entrypoint, swarm, provider switch) run from the repo copy.
+RUN chmod +x /work/docker/*.sh
 
 # Fail fast if the agent layer didn't assemble correctly.
 RUN node --version \
@@ -254,5 +249,5 @@ RUN node --version \
 
 # Default: run the full CI gate (make ci) — see docker/entrypoint.sh.  Override the args to run a subset, e.g.
 #   docker run --rm aou-dv make reorder
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+ENTRYPOINT ["/work/docker/entrypoint.sh"]
 CMD []
