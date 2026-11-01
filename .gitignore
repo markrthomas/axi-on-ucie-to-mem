@@ -62,3 +62,5 @@ logs/
 # database and the rendered dashboard are the DELIVERABLES and ARE committed
 # (see README "Metrics & dashboard"), so do not add them here.
 metrics/_capture/
+/dv/random/runs/
+/docker/last-run-metrics.json

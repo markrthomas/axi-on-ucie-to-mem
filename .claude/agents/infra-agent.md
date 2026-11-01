@@ -1,48 +1,26 @@
 ---
 name: infra-agent
-description: Verifies and fixes the container / CI infrastructure of the AoU DV image — the Dockerfile build, docker/entrypoint.sh + agent.sh + swarm.sh, railway.toml, and .github/workflows/ci.yml. Can edit those infra files; must NOT touch RTL or testbenches. Invoked once by the swarm-manager.
-tools: ["Bash", "Read", "Edit", "Grep", "Glob"]
+description: Checks and maintains the non-simulation infrastructure of this repo - formal and the other INFRA_TARGETS in .claude/swarm.env, CI workflows, Dockerfile, devcontainer, railway.toml, swarm kit files - and reports drift or breakage with evidence.
+tools: Bash, Read, Edit, Write, Glob, Grep
 model: sonnet
 ---
+Read `.claude/swarm.env` and CLAUDE.md first. Scope: the `INFRA_TARGETS` flows, `.github/workflows/`,
+`Dockerfile`, `.devcontainer/`, `docker/`, `railway.toml`, `swarm.mk`, root `Makefile`.
 
-You own the **infrastructure** of the axi-on-ucie-to-mem container. Your scope is
-strictly the build/deploy plumbing — you may edit these files and only these:
+- Run each target in `INFRA_TARGETS` (`make heavy T=<t>` for anything in `HEAVY_TARGETS`); report each result.
+  A target that prints a missing-tool / "authored, not run" notice and exits 0 is "not run", never a pass.
+- Drift checks: every CI job step maps to a Makefile target that exists; tool pins in CI match the Dockerfile;
+  the Dockerfile has `tools` and `full` stages and the `WITH_CLAUDE` build arg (the devcontainer, swarm workflow
+  and Railway depend on them); `make swarm-dry` succeeds.
+- Swarm-kit files (`.claude/agents/*`, `.claude/skills/*`, `.claude/settings.json`, `docker/swarm.sh`,
+  `docker/entrypoint.sh`, `docker/publish_metrics.sh`, `swarm.mk`, `tools/swarm/board.py`, `.github/workflows/swarm.yml`,
+  `.devcontainer/devcontainer.json`, `railway.toml`) are shared across repos: report needed changes, do not fork them
+  per repo. Repo behaviour belongs in `.claude/swarm.env` / CLAUDE.md; a file listed in `KIT_KEEP` is repo-owned.
+- metrics (if `METRICS=yes`): every value must carry kind measured / estimated / not_attributable; never invent a
+  measured number. Metrics are never part of the gate.
+- Changes go on a feature branch; `make $GATE_TARGET` must pass before a push.
 
-- `Dockerfile`, `.dockerignore`
-- `docker/entrypoint.sh`, `docker/agent.sh`, `docker/swarm.sh`
-- `docker/provider-env.sh` (anthropic|kimi routing), `docker/render-metrics.py`
-  (per-model token/time metrics)
-- `railway.toml`
-- `.github/workflows/ci.yml`, `.github/workflows/swarm.yml`
+If a Bash command is denied, do not work around it: quote the exact denied command in your report (the allow list
+lives in `.claude/settings.json` and is tuned from these reports) and mark what it blocked as "not run".
 
-**Never edit `rtl/**` or `dv/**`** (the dv-env-testers and the manager own those).
-
-## What to check
-
-1. **Image builds.** `docker build -t aou-dv-check .` completes; the build-time
-   healthcheck (iverilog / verilator / cocotb+pyuvm / node / claude / gh) passes.
-   If `docker` is unavailable in your sandbox, say so and fall back to a static
-   review of the Dockerfile instead of claiming a build result.
-2. **Entrypoint routing** is correct and non-overlapping: default → `make ci`;
-   `make …` → gate with the injected pinned-Verilator args; `agent …` →
-   `agent.sh`; `swarm …` → `swarm.sh`. The Verilator triplet must be passed as
-   make **command-line** args (env can't override the Makefile's `:=`).
-3. **Memory guard.** `VL_JOBS` is parametrized (default 0) and the image caps it
-   (`ENV VL_JOBS=2`) so cloud builders don't OOM `cc1plus`.
-4. **Railway config.** `railway.toml` uses `builder = "DOCKERFILE"`,
-   `restartPolicyType = "NEVER"`, and **no** `startCommand` (Railway's `sh -c`
-   would bypass the entrypoint). It is a batch/one-off job, not a web service.
-5. **Headless correctness.** Non-interactive is the `-p` flag (+ `--bare` for the
-   plain agent); the swarm runs NON-bare so `.claude/agents/` load. Auth is
-   `ANTHROPIC_API_KEY`; PR creation needs `gh` + `GITHUB_TOKEN`. No secret is
-   ever baked into the image.
-6. **CI parity.** `.github/workflows/ci.yml` installs the same tools and runs the
-   same `make ci`. If you change a tool/dep in the Dockerfile, mirror it here.
-
-## How to work
-
-Make the **minimal** infra fix for any real problem you find; re-verify (rebuild
-if you can). Do not restructure working plumbing. Report tersely to the manager:
-what you checked, what you changed (`file:line`), and the build/verify result —
-with the real log lines. If you only did a static review (no Docker), say so
-plainly rather than implying a build passed.
+Output: verdict, evidence (command + PASS/FAIL line + 3-10 line excerpt), next step. No full logs.

@@ -1,155 +1,44 @@
-name: DV swarm
+# Manual-only: run the Claude Code agent swarm on this repo.  [swarm-kit: shared file, do not fork per repo]
+# The job itself lives in markrthomas/dv-swarm-kit (swarm-run.yml) so every DV repo runs the same thing.
+# Needs a repository secret CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) or ANTHROPIC_API_KEY.
+# The swarm may push a `swarm/<date>-<topic>` branch; a human reviews and merges.
+name: swarm
 
-# Manual "Run workflow" button that runs the headless DV finalization swarm
-# (swarm-manager → per-env dv-env-testers + infra-agent) on a GitHub runner:
-# it runs each DV environment, fixes what is red, and opens a PR. See
-# docs/DOCKER.md ("DV finalization swarm").
-#
-# Requires repo/environment secrets:
-#   ANTHROPIC_API_KEY   (provider=anthropic)  Claude Console API key (sk-ant-api…), OR
-#   CLAUDE_CODE_OAUTH_TOKEN  (provider=anthropic)  subscription token (sk-ant-oat…,
-#                       from `claude setup-token`) — set one of these two.
-#   KIMI_API_KEY        (provider=kimi)        Moonshot key for Kimi K3.
-#   SWARM_GITHUB_TOKEN  (optional) a token with contents:write + pull-requests:
-#                       write for the push/PR step; falls back to the built-in
-#                       GITHUB_TOKEN (note: PRs it opens do NOT trigger CI).
 on:
   workflow_dispatch:
     inputs:
       task:
-        description: "Task for the swarm (blank = the default finalization task)"
-        required: false
-        default: ""
-      max_parallel:
-        description: "Max DV envs to test in parallel (blank = auto-size to RAM)"
-        required: false
-        default: ""
-      provider:
-        description: "Model provider for the run"
-        required: false
-        default: "anthropic"
+        description: "which swarm"
         type: choice
         options:
-          - anthropic
-          - kimi
+          - docker/swarm-task.md
+          - docker/rr-swarm-task.md
+          - docker/plan-swarm-task.md
+        default: docker/swarm-task.md
+      model:
+        description: "model for the manager agent (empty = CLI default)"
+        default: ""
+      provider:
+        description: "model provider (kimi sends repo contents to Moonshot - see docker/provider-env.sh)"
+        type: choice
+        options: [anthropic, kimi]
+        default: anthropic
 
-# The swarm branches, commits, pushes, and opens a PR.
 permissions:
   contents: write
   pull-requests: write
 
-# Never run two swarms at once.
-concurrency:
-  group: dv-swarm
-  cancel-in-progress: false
-
 jobs:
-  # Toolchain image (Dockerfile `tools` target), keyed by the Dockerfile hash and
-  # cached in GHCR — same image the CI gate runs in (see ci.yml).
-  build-image:
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      packages: write
-    outputs:
-      image: ${{ steps.meta.outputs.image }}
-    steps:
-      - uses: actions/checkout@v7
-      - id: meta
-        run: |
-          set -euo pipefail
-          tag="tools-$(sha256sum Dockerfile | cut -c1-12)"
-          repo="${GITHUB_REPOSITORY,,}"
-          echo "image=ghcr.io/${repo}/dv-tools:${tag}" >> "$GITHUB_OUTPUT"
-      - name: Log in to GHCR
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-      - name: Build + push the toolchain image if it is not already cached
-        run: |
-          set -euo pipefail
-          img="${{ steps.meta.outputs.image }}"
-          if docker manifest inspect "$img" >/dev/null 2>&1; then
-            echo "reusing cached toolchain image: $img"
-          else
-            docker build --target tools -t "$img" .
-            docker push "$img"
-          fi
-
   swarm:
-    needs: build-image
-    runs-on: ubuntu-24.04
-    container:
-      image: ${{ needs.build-image.outputs.image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-    timeout-minutes: 45
-    env:
-      ICARUS_BIN_DIR: /usr/bin
-      # Bound each Verilator build's own parallel cc1plus (the swarm additionally
-      # caps how many envs build at once — see SWARM_MAX_PARALLEL).
-      VL_JOBS: "2"
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0     # full history so the manager can branch/commit cleanly
-
-      # gh (the swarm opens its PR with it); git/make/the DV toolchain come from the image.
-      - name: Install GitHub CLI
-        run: apt-get update && apt-get install -y --no-install-recommends gh
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "20"
-
-      - name: Install Claude Code CLI
-        run: npm install -g @anthropic-ai/claude-code
-
-      - name: Tool versions
-        run: |
-          iverilog -V | head -1
-          verilator --version
-          node --version
-          claude --version
-          gh --version | head -1
-
-      - name: Run the DV swarm
-        env:
-          AOU_MODEL_PROVIDER: ${{ inputs.provider }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
-          GITHUB_TOKEN: ${{ secrets.SWARM_GITHUB_TOKEN || github.token }}
-          # Author the swarm's commits as the triggering user (the repo owner) via
-          # a GitHub noreply address, so GitHub doesn't hold the branch's CI as
-          # `action_required` (which it does for a non-collaborator bot identity).
-          GIT_AUTHOR_NAME: ${{ github.actor }}
-          GIT_AUTHOR_EMAIL: ${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com
-          SWARM_MAX_PARALLEL: ${{ inputs.max_parallel }}
-          AOU_METRICS_JSON: ${{ github.workspace }}/last-run-metrics.json
-          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
-        run: bash docker/swarm.sh "${{ inputs.task }}"
-
-      - name: Publish run metrics
-        if: always()
-        env:
-          AOU_MODEL_PROVIDER: ${{ inputs.provider }}
-        run: |
-          f="${{ github.workspace }}/last-run-metrics.json"
-          if [ -f "$f" ]; then
-            {
-              echo "### DV swarm run metrics (provider: ${AOU_MODEL_PROVIDER:-anthropic})"
-              echo '```'
-              python3 docker/render-metrics.py --result-file "$f" --provider "${AOU_MODEL_PROVIDER:-anthropic}"
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "No metrics file was produced (the run may have failed before a result)." >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      - name: Upload run metrics
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: dv-swarm-metrics
-          path: ${{ github.workspace }}/last-run-metrics.json
-          if-no-files-found: ignore
+    uses: markrthomas/dv-swarm-kit/.github/workflows/swarm-run.yml@v0
+    with:
+      task: ${{ inputs.task }}
+      model: ${{ inputs.model }}
+      provider: ${{ inputs.provider }}
+    secrets:
+      # passed explicitly: `secrets: inherit` only works within one organization/enterprise, not across a
+      # personal account's repos calling dv-swarm-kit
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      KIMI_API_KEY: ${{ secrets.KIMI_API_KEY }}
+      SWARM_GITHUB_TOKEN: ${{ secrets.SWARM_GITHUB_TOKEN }}

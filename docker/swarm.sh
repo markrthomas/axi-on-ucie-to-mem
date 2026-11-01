@@ -1,140 +1,142 @@
 #!/usr/bin/env bash
-# Launch the AoU DV finalization swarm.
+# docker/swarm.sh — run the Claude Code agent swarm on this repo.  [swarm-kit: shared file, do not fork per repo;
+#   repo specifics come from .claude/swarm.env - see markrthomas/dv-swarm-kit]
 #
-# A manager (the `swarm-manager` agent) dispatches one `dv-env-tester` per DV
-# environment plus the `infra-agent`, applies the fixes needed to get the gate
-# green and the image/Railway config sound, then commits to a branch and opens a
-# PR (a human merges).  See .claude/agents/*.md and docs/DOCKER.md.
+#   docker/swarm.sh [--dry-run] [--task FILE | --prompt TEXT] [--model MODEL] [--agent NAME|none]
 #
-# Unlike plain `agent` mode, the swarm runs Claude Code **NON-bare** so the
-# project's .claude/agents/ are discovered and dispatchable.
-#
-# Task source, in precedence order:
-#   1. first CLI argument     2. $SWARM_TASK     3. stdin
-#   4. the default task in docker/swarm-task.md
-#
-# Runtime inputs:
-#   AOU_MODEL_PROVIDER  "anthropic" (default, needs ANTHROPIC_API_KEY) or "kimi"
-#                       (whole swarm on Kimi K3 via Moonshot, needs KIMI_API_KEY).
-#                       See docker/provider-env.sh.
-#   GITHUB_TOKEN        (for commit+PR) a token with repo/PR scope; without it
-#                       the swarm still edits & tests but cannot push/open a PR.
-#   GIT_AUTHOR_NAME / GIT_AUTHOR_EMAIL   commit identity (sensible defaults).
-#   SWARM_PERMISSION_MODE   default "acceptEdits".
-#   SWARM_ALLOWED_TOOLS     default "Bash,Read,Edit,Write,Grep,Glob,Task,Agent".
-#   AOU_METRICS / AOU_METRICS_JSON   per-model token/time metrics at end of run
-#                       (set AOU_METRICS=0 to disable); see render-metrics.py.
-#   AOU_STREAM_JSON     where to tee the raw event stream for `make metrics`
-#                       (default metrics/_capture/swarm-stream.jsonl, gitignored);
-#                       set it EMPTY to skip the capture.
+# Runs Claude Code non-interactively (-p) and NON-bare, so the project's
+# .claude/agents/ definitions are discoverable; the task (default
+# docker/swarm-task.md) tells the manager what to dispatch. The top-level session runs AS the
+# manager agent (--agent; default swarm-manager, rr-manager for rr-swarm-task.md), so it keeps the
+# Agent tool and can dispatch workers (sub-agents cannot spawn sub-agents). Bash is NOT in
+# --allowedTools: only the commands in .claude/settings.json's allow list run headless, and its
+# deny rules (force-push, push to main, ...) always apply. Add a pattern there if a worker needs more.
+# Needs: `claude` on PATH (npm i -g @anthropic-ai/claude-code; the image has it
+# when built with --build-arg WITH_CLAUDE=1), a credential in the environment -
+# CLAUDE_CODE_OAUTH_TOKEN (what the Railway service uses; the Claude Code CLI reads it
+# itself) or ANTHROPIC_API_KEY (or another provider via ANTHROPIC_BASE_URL +
+# ANTHROPIC_AUTH_TOKEN, e.g. an Anthropic-compatible endpoint) - never put it in the
+# repo or the image: set it as a Railway service variable / GitHub secret; and optionally GITHUB_TOKEN so it can push a
+# branch / open a draft PR.  A human merges.
+# Writes docker/last-run-metrics.json (tokens per model, from the CLI's JSON
+# output) for metrics/collect.py.  Per-agent token split is not available from
+# the CLI output, so the agent column is recorded as "all".
 set -euo pipefail
+cd "$(dirname "$0")/.."
+# repo profile (PROJECT, DV_ENVS, ...): exported so the agents' Bash sees the same values; env vars win
+. docker/profile.sh
+PROJECT="${PROJECT:-$(basename "$PWD")}"
 
-SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=docker/provider-env.sh
-. "$SELF_DIR/provider-env.sh"
-# Resolve the provider (anthropic|kimi) up front: sets auth + Kimi alias remaps
-# and fails fast if the selected provider's key is missing — before any cloning.
-aou_resolve_provider || exit $?
-
-# Resolve the repo to work in.  On a git checkout (a CI runner, a dev box) use it
-# directly.  The container image ships code WITHOUT .git (see .dockerignore), so
-# there we clone at run time from GITHUB_TOKEN + a repo slug — that is what lets
-# the manager branch / commit / push / open a PR on Railway.
-ROOT="$(git rev-parse --show-toplevel 2>/dev/null || true)"
-if [ -z "$ROOT" ]; then
-  repo="${SWARM_REPO:-${GITHUB_REPOSITORY:-}}"
-  if [ -n "${GITHUB_TOKEN:-}" ] && [ -n "$repo" ]; then
-    ROOT="${SWARM_CLONE_DIR:-/tmp/aou-swarm-repo}"
-    echo "swarm: no local git checkout — cloning ${repo} into ${ROOT}" >&2
-    rm -rf "$ROOT"
-    git clone --depth 50 "https://x-access-token:${GITHUB_TOKEN}@github.com/${repo}.git" "$ROOT" >&2
-  else
-    ROOT="/work"
-    echo "swarm: no git checkout and no GITHUB_TOKEN+repo — running from ${ROOT} (edit/test only; cannot push a PR)." >&2
+task=docker/swarm-task.md
+prompt=""
+model="${SWARM_MODEL:-}"
+agent=""
+dry=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --dry-run) dry=1 ;;
+    --task) task="$2"; shift ;;
+    --prompt) prompt="$2"; shift ;;          # one-off task text instead of a task file (entrypoint `agent` mode)
+    --model) model="$2"; shift ;;
+    --agent) agent="$2"; shift ;;           # `none` = plain session, no manager agent
+    *) echo "swarm.sh: unknown arg $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+if [ -z "$prompt" ]; then
+  [ -f "$task" ] || { echo "swarm.sh: task file $task not found" >&2; exit 2; }
+  prompt="$(cat "$task")"; src="$task"
+  if [ -z "$agent" ]; then
+    case "$task" in *rr-swarm-task*) agent=rr-manager ;; *) agent=swarm-manager ;; esac
   fi
-fi
-cd "$ROOT"
-
-task="${1:-}"
-[ "$#" -gt 0 ] && shift || true
-[ -z "$task" ] && task="${SWARM_TASK:-}"
-[ -z "$task" ] && [ ! -t 0 ] && task="$(cat)"
-[ -z "$task" ] && [ -f "$ROOT/docker/swarm-task.md" ] && task="$(cat "$ROOT/docker/swarm-task.md")"
-
-if [ -z "$task" ]; then
-  echo "swarm: no task (pass an arg, set \$SWARM_TASK, pipe stdin, or ship docker/swarm-task.md)" >&2
-  exit 2
-fi
-
-# Commit identity + GitHub auth so the manager can push a branch and open a PR.
-git config --global user.name  "${GIT_AUTHOR_NAME:-aou-dv swarm}"
-git config --global user.email "${GIT_AUTHOR_EMAIL:-aou-dv-swarm@users.noreply.github.com}"
-git config --global --add safe.directory "$ROOT"
-if [ -n "${GITHUB_TOKEN:-}" ]; then
-  export GH_TOKEN="$GITHUB_TOKEN"
-  gh auth setup-git 2>/dev/null || true
 else
-  echo "swarm: GITHUB_TOKEN not set — the swarm will edit & test but cannot push or open a PR." >&2
+  src="--prompt"; agent="${agent:-none}"
+fi
+if [ "$agent" != none ]; then
+  [ -f ".claude/agents/$agent.md" ] || { echo "swarm.sh: agent $agent not found in .claude/agents" >&2; exit 2; }
 fi
 
-# Auto-throttle tester concurrency to available RAM: each DV env's Verilator/g++
-# build can need ~2 GB, so running all eight in parallel OOMs a small host.  Pick
-# a safe batch size from MemAvailable (>= 1, <= 8 envs); override with
-# SWARM_MAX_PARALLEL.  VL_JOBS (image default 2) still caps each build's own
-# parallel cc1plus; on a very tight host also set VL_JOBS=1.
-avail_mb="$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 4096)"
-if [ -z "${SWARM_MAX_PARALLEL:-}" ]; then
-  SWARM_MAX_PARALLEL=$(( avail_mb / 2048 ))
-  [ "$SWARM_MAX_PARALLEL" -lt 1 ] && SWARM_MAX_PARALLEL=1
-  [ "$SWARM_MAX_PARALLEL" -gt 8 ] && SWARM_MAX_PARALLEL=8
-fi
-echo "swarm: ~${avail_mb} MB available, VL_JOBS=${VL_JOBS:-2} -> at most ${SWARM_MAX_PARALLEL} dv-env-tester(s) in parallel." >&2
+cmd=(claude -p "$prompt" --output-format json --permission-mode "${SWARM_PERMISSION_MODE:-acceptEdits}"
+     --allowedTools "Read Edit Write Glob Grep Agent")
+[ "$agent" != none ] && cmd+=(--agent "$agent")
+[ -n "$model" ] && cmd+=(--model "$model")
 
-prompt="You are the swarm manager. Use the swarm-manager subagent to carry out the task below, following its documented procedure, then print its final report verbatim.
-
-HOST CAPACITY: ~${avail_mb} MB memory available.  Dispatch AT MOST ${SWARM_MAX_PARALLEL} dv-env-tester subagent(s) in parallel — run the eight DV environments in batches of that size, never all eight at once.  If a Verilator/g++ compile is OOM-killed (\"Killed … cc1plus\"), re-run that environment with VL_JOBS=1.
-
-TASK:
-$task"
-
-perm="${SWARM_PERMISSION_MODE:-acceptEdits}"
-tools="${SWARM_ALLOWED_TOOLS:-Bash,Read,Edit,Write,Grep,Glob,Task,Agent}"
-
-# Fast path: metrics disabled -> original behavior.
-if [ "${AOU_METRICS:-1}" = "0" ]; then
-  exec claude -p "$prompt" \
-    --permission-mode "$perm" \
-    --allowedTools "$tools" \
-    --output-format "${CLAUDE_OUTPUT_FORMAT:-text}" \
-    "$@"
+if [ "$dry" = 1 ]; then
+  echo "swarm.sh (dry run): would run in $(pwd) [$PROJECT, envs: ${DV_ENVS:-none}, rr: ${RR_STATUS:-unset}, provider: ${SWARM_MODEL_PROVIDER:-anthropic}]:"
+  echo "  claude -p <${#prompt} chars from $src> ${cmd[*]:3}"
+  echo "  agents: $(ls .claude/agents/*.md | xargs -n1 basename | tr '\n' ' ')"
+  exit 0
 fi
 
-# Metrics path: run in stream-json and let render-metrics.py print the manager's
-# report on stdout and the per-model token/time summary on stderr, and archive
-# the raw result JSON for CI.
-metrics_json="${AOU_METRICS_JSON:-$ROOT/docker/last-run-metrics.json}"
-# Raw event stream, one JSON object per line with an added `_ts_epoch`.  This is
-# the ONLY source of per-agent numbers: Claude Code's result `modelUsage` is
-# per-MODEL and aggregates subagents, so metrics/collect.py reconstructs each
-# agent's span/turns/tool-calls (and tokens where the sidechain exposes them)
-# from the Task spans here.  Gitignored, transient; AOU_STREAM_JSON=/dev/null (or
-# an empty value) turns it off.  See metrics/collect.py -> collect_ai_from_stream.
-stream_json="${AOU_STREAM_JSON-$ROOT/metrics/_capture/swarm-stream.jsonl}"
-start="$(date +%s)"
-set +e
-claude -p "$prompt" \
-  --permission-mode "$perm" \
-  --allowedTools "$tools" \
-  --output-format stream-json --verbose \
-  "$@" \
-  | python3 "$SELF_DIR/render-metrics.py" \
-      --emit text --provider "$AOU_PROVIDER" \
-      --json-out "$metrics_json" --wall-start "$start" \
-      ${stream_json:+--stream-out "$stream_json"}
-# Snapshot the whole PIPESTATUS array in one shot: a plain assignment resets
-# PIPESTATUS, so reading [0] then [1] on separate commands loses [1] (and under
-# `set -u` that read is an "unbound variable" fatal error).
-rc=( "${PIPESTATUS[@]}" ); rc_claude=${rc[0]}; rc_render=${rc[1]}
-set -e
-[ "$rc_claude" -ne 0 ] && exit "$rc_claude"
-exit "$rc_render"
+command -v claude >/dev/null || { echo "swarm.sh: claude CLI not found (build the image with WITH_CLAUDE=1)" >&2; exit 2; }
+. docker/provider-env.sh
+swarm_resolve_provider || exit 2
+
+if [ -n "${GITHUB_TOKEN:-}" ]; then   # lets the swarm push a branch / open a draft PR (gh reads GITHUB_TOKEN itself)
+  git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
+  git config --global user.name  "${GIT_AUTHOR_NAME:-${PROJECT}-swarm}"
+  git config --global user.email "${GIT_AUTHOR_EMAIL:-${PROJECT}-swarm@users.noreply.github.com}"
+fi
+
+home="$PWD"   # where the caller expects docker/last-run-metrics.json (the swarm workflow uploads it from here)
+
+# A checkout mounted into a container is owned by another uid (the CI runner), and git then refuses it as "dubious
+# ownership" - which would look exactly like "no .git" below.  Trust this one directory and carry on.
+probe="$(git rev-parse --is-inside-work-tree 2>&1 >/dev/null || true)"   # not a pipe: pipefail would mask the match
+case "$probe" in *"dubious ownership"*)
+  git config --global --add safe.directory "$PWD"
+  echo "swarm.sh: trusting $PWD (checkout owned by another uid)" ;;
+esac
+
+# An image built from the repo has no .git (e.g. a Railway swarm service), so nothing could be committed or pushed.
+# Clone the repo at run time - on the branch being run, not the default branch - and work there instead.
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  [ -n "${GITHUB_TOKEN:-}" ] && [ -n "${GH_REPO:-}" ] || {
+    echo "swarm.sh: not a git checkout and GITHUB_TOKEN/GH_REPO unset - the swarm could not commit or push" >&2; exit 2; }
+  work="${SWARM_WORKDIR:-$HOME/swarm-work}/${PROJECT}"
+  rm -rf "$work"; mkdir -p "$(dirname "$work")"
+  ref="${SWARM_REF:-${GITHUB_HEAD_REF:-${GITHUB_REF_NAME:-}}}"
+  git clone -q --depth 50 ${ref:+--branch "$ref"} "https://github.com/${GH_REPO}.git" "$work"
+  echo "swarm.sh: image has no .git - cloned ${GH_REPO}${ref:+@$ref} into $work"
+  cd "$work"
+fi
+
+# Headless Claude Code ignores the repo's .claude/settings.json allow list ("this workspace has not been trusted")
+# until the trust dialog has been accepted once - which never happens in a fresh container, so every `make` was
+# denied.  Running the swarm on this checkout is the trust decision: record it for this exact path only.
+python3 - "${CLAUDE_CONFIG_DIR:-$HOME}/.claude.json" "$PWD" <<'TRUST'
+import json, os, sys
+path, repo = sys.argv[1], sys.argv[2]
+try:
+    cfg = json.load(open(path))
+except (OSError, ValueError):
+    cfg = {}
+cfg.setdefault("projects", {}).setdefault(repo, {})["hasTrustDialogAccepted"] = True
+os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+json.dump(cfg, open(path, "w"), indent=1)
+TRUST
+echo "swarm.sh: workspace trusted for this headless run: $PWD (the .claude/settings.json allow list applies)"
+
+out=$(mktemp)
+rc=0
+"${cmd[@]}" > "$out" || rc=$?
+python3 - "$out" "$rc" > docker/last-run-metrics.json <<'PY'
+import json, sys
+path, rc = sys.argv[1], int(sys.argv[2])
+try:
+    d = json.load(open(path))
+except Exception:
+    d = {}
+rows = []
+for model, u in (d.get("modelUsage") or {}).items():
+    tok = sum(u.get(k, 0) for k in ("inputTokens", "outputTokens", "cacheReadInputTokens", "cacheCreationInputTokens"))
+    rows.append({"agent": "all", "model": model, "tokens": tok, "status": "PASS" if rc == 0 else "FAIL"})
+json.dump({"rc": rc, "agents": rows, "total_cost_usd": d.get("total_cost_usd"),
+           "result": (d.get("result") or "")[-4000:]}, sys.stdout, indent=2)
+PY
+[ "$PWD" != "$home" ] && mkdir -p "$home/docker" && cp -f docker/last-run-metrics.json "$home/docker/"
+echo "swarm.sh: claude exited $rc; usage -> $home/docker/last-run-metrics.json"
+# the manager's final report, in the job log too (the artifact holds the same text plus token usage)
+echo "===== swarm report (last 4000 chars) ====="
+python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("result") or "(no result - see the claude output above)")' docker/last-run-metrics.json || true
+exit "$rc"
