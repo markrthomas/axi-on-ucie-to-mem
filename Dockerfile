@@ -213,13 +213,12 @@ RUN command -v claude >/dev/null || { curl -fsSL https://deb.nodesource.com/setu
 
 # GitHub CLI — lets the swarm (docker/swarm.sh, dv-swarm-kit) push a branch and
 # open a PR when GITHUB_TOKEN is provided at run time (never baked in).
-RUN command -v gh >/dev/null || curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-        -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
-    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-        > /etc/apt/sources.list.d/github-cli.list \
-    && apt-get update \
+# `a || b && c` runs c even when a succeeds, so the braces matter.  Ubuntu's own gh (universe) - no third-party apt
+# repo, whose signing key rotates (NO_PUBKEY 5612B36462313325 broke swarm run 42096068456).  Usually already present
+# from the tools stage (WITH_CLAUDE=1), in which case this is a no-op.
+RUN command -v gh >/dev/null || { apt-get update \
     && apt-get install -y --no-install-recommends gh \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/*; }
 
 # --- Project ------------------------------------------------------------------
 WORKDIR /work
