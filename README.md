@@ -189,6 +189,13 @@ flowchart TB
     DUT -.->|bind| SVA
 ```
 
+## Random regression (opt-in)
+
+`make rr-build` once, then `make rr N=20 JOBS=2 [SEED=1]` runs seeded constrained-random
+jobs (scoreboard + bound SVA) and writes `dv/random/runs/<ts>/results.jsonl`;
+`make rr-triage RUN=<dir>` clusters failures; `make rr-replay` reruns the corpus.
+Not part of `make check`. See [`dv/random/README.md`](dv/random/README.md).
+
 ## Verification
 
 Everything runs from the repo root and degrades gracefully if a tool is absent.

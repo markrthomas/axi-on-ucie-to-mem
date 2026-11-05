@@ -169,13 +169,22 @@ not RTL (history in `docs/PLAN.md`). Gotchas it taught:
 - Mirror every `uvm/` change into `uvm/axi_ucie_tb_single.sv`, then
   `make -C uvm eda` (`eda-check` diffs `eda/vcs_uvm/testbench.sv`).
 
+## Random regression (`dv/random`)
+
+Opt-in, outside `check/regress/ci`: `make rr-build`, `make rr N=<n> JOBS=<j> [SEED=<s>]`
+(writes `dv/random/runs/<ts>/results.jsonl`, non-zero iff any FAIL), `make rr-triage
+RUN=<dir>`, `make rr-replay` (`corpus.json`, `fixed:true` entries must PASS). Same
+scoreboard as `dv/sv` + bound SVA; seeded by `+seed` (own xorshift PRNG). Build uses
+`VL_JOBS=2` (memory-safe; `VL_JOBS=1` if cc1plus is OOM-killed). Details and stimulus
+backlog: `dv/random/README.md`. Never weaken the checker to get a run green.
+
 ## Agent swarms (repo notes)
 The swarm itself is the shared kit described in the block below; this repo's profile is `.claude/swarm.env`
 (the 8-env gate as `DV_ENVS`, with `sv` split into `sv vlt sva-mut`; gate: `make check`; at most 2 testers at once).
 Repo gotchas the agents must keep: a cocotb post-PASS teardown segfault is benign, a `<failure>`/`<error>` in
 `results.xml` is real; an OOM-killed `cc1plus` is re-run alone with `VL_JOBS=1` before it counts; after any `rtl/`
 change regenerate `eda/vcs_uvm/design.sv` (`make -C uvm eda`). The old per-repo swarm scripts are retired - mapping
-in `docs/DOCKER.md`. No random regression yet: `RR_STATUS=bootstrap` (first Swarm B run builds it under `dv/random/`).
+in `docs/DOCKER.md`. Random regression present (`RR_STATUS=present`): `make rr*` under `dv/random/`, bootstrapped by Swarm B 2026-11-05.
 
 <!-- swarm-kit:begin (managed by markrthomas/dv-swarm-kit sync.sh — edit the kit, not this block) -->
 ## Agent swarms, run targets and tokens (swarm-kit)

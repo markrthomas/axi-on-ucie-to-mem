@@ -586,3 +586,11 @@ it just wasn't what this smoke hit.
 
 **Note:** this repo already has a mature DV gate (`make ci`, 8 envs); the
 `uvm/vlt` flow is an additional license-free SV-UVM path, not a replacement.
+
+## Random regression (`dv/random`) — DONE (bootstrap, 2026-11-05)
+
+Seeded constrained-random Verilator regression (`make rr-build / rr / rr-triage /
+rr-replay`), opt-in and outside `check/regress/ci`, no RTL change. Reuses the
+`dv/sv` scoreboard checks + bound SVA; randomizes burst type/length, addresses,
+data, gaps and RREADY back-pressure over 6 configs. Mutation-tested (read-data bit
+flip -> 20/20 `data-mismatch`). Stimulus backlog B1..B7 is in `dv/random/README.md`.

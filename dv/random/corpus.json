@@ -1,0 +1,10 @@
+{
+  "comment": "Replay corpus. Entries with fixed=true are the gate (must PASS). Promote a repro here with fixed=false when found, flip to true once fixed.",
+  "entries": [
+    {"name": "smoke-default",  "seed": 1,  "config": "default",  "fixed": true, "note": "baseline"},
+    {"name": "smoke-tight",    "seed": 2,  "config": "tight",    "fixed": true, "note": "no gaps / no back-pressure"},
+    {"name": "smoke-bp-heavy", "seed": 3,  "config": "bp_heavy", "fixed": true, "note": "75% RREADY stall"},
+    {"name": "smoke-hot",      "seed": 4,  "config": "hot",      "fixed": true, "note": "64-word window, heavy aliasing"},
+    {"name": "smoke-wrapfix",  "seed": 6,  "config": "wrap_fix", "fixed": true, "note": "WRAP + FIXED only"}
+  ]
+}

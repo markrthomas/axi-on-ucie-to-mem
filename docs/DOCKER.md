@@ -490,6 +490,17 @@ time from `GITHUB_TOKEN` + the repo slug so the manager can still push a PR.
 > commands, and pushes a branch on its own. Run it in a disposable container /
 > runner with a **scoped** token, and review the PR before merging.
 
+## Random regression (`make rr-*`)
+
+Opt-in, never part of `make ci`. Runs in the same image (Verilator + python3, no new
+tools). `make rr-build` honours `VL_JOBS` (`dv/random/Makefile` defaults to 2: cloud
+builders have many cores but little RAM, so more parallel `cc1plus` risks OOM; use
+`VL_JOBS=1` if killed). `make rr N=.. JOBS=..` writes
+`dv/random/runs/<ts>/results.jsonl` (git-ignored). `rr-replay` takes ~1 s but is
+deliberately not folded into the gate yet (it needs the ~10 s `rr-build` first, and
+the gate is already the 8-env `check`); `swarm.mk` `swarm-kit-check` verifies the
+four targets exist once `RR_STATUS=present`.
+
 ## Plan-driven swarm
 
 Beyond running the swarm by hand, you can hand it a **plan** and let it do the
