@@ -1,0 +1,18 @@
+{
+ "worker": "rr-test-author",
+ "state": "running",
+ "history": [
+  {
+   "t": "2026-11-05T21:06:51+00:00",
+   "state": "running",
+   "step": 0,
+   "msg": "started"
+  }
+ ],
+ "task": "bootstrap random regression under dv/random",
+ "steps": 5,
+ "step": 0,
+ "updated": "2026-11-05T21:06:51+00:00",
+ "branch": "swarm/2026-11-05-rr-bootstrap",
+ "sha": "ecd459e"
+}
