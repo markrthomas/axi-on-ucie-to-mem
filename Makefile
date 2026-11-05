@@ -139,7 +139,7 @@ endif
 	metrics dashboard metrics-capture \
 	waves waves-sv waves-ooo waves-mrp waves-act waves-all \
 	wave wave-sv wave-ooo wave-mrp wave-act wave-check \
-	lint _lint_iverilog _lint_verilator clean
+	lint _lint_iverilog _lint_verilator clean rr-build rr rr-triage rr-replay
 
 default: help
 
@@ -214,6 +214,12 @@ help:
 	@echo "    VERBOSE=2               # + internal state (FSMs, credits, queues, arbiter)"
 	@echo "                           #   (e.g. make sv VERBOSE=1 / make ooo VERBOSE=2)"
 	@echo "                           #   logs land in $(LOG_DIR)/<env>[_<test>].log"
+	@echo ""
+	@echo "  Random regression (opt-in, seeded, Verilator - never part of check/regress/ci; dv/random/README.md):"
+	@echo "    make rr-build          # build the random-regression sim once (VL_JOBS=2 default: memory-safe)"
+	@echo "    make rr N=<n> JOBS=<j> [SEED=<base>]   # N seeded jobs -> dv/random/runs/<ts>/results.jsonl; non-zero iff any FAIL"
+	@echo "    make rr-triage RUN=<dir>   # cluster FAILs by signature (count + repro)"
+	@echo "    make rr-replay         # rerun dv/random/corpus.json; entries with fixed=true must PASS"
 	@echo ""
 	@echo "  Other: make clean"
 	@echo "  swarm      Swarm A (verification) via Claude Code; swarm-rr = Swarm B (random regression); swarm-dry = show the command"
@@ -608,6 +614,22 @@ tools:
 	bash tools/check_tools.sh $(if $(TOOLS_HEAVY),--heavy)
 tools-check:
 	bash tools/check_tools.sh --check
+
+# --- random regression (opt-in; NOT part of check/regress/ci) ----------------
+# See dv/random/README.md.  rr-build builds once; rr runs N seeded jobs.
+RR_DIR := dv/random
+N      ?= 10
+JOBS   ?= 2
+SEED   ?= 1
+rr-build:
+	$(MAKE) -C $(RR_DIR) build
+rr:
+	python3 $(RR_DIR)/rr.py run --n $(N) --jobs $(JOBS) --seed $(SEED)
+rr-triage:
+	@test -n "$(RUN)" || { echo "usage: make rr-triage RUN=<dir with results.jsonl>"; exit 2; }
+	python3 $(RR_DIR)/rr.py triage $(RUN)
+rr-replay:
+	python3 $(RR_DIR)/rr.py replay
 
 # shared swarm/infra targets (markrthomas/dv-swarm-kit)
 include swarm.mk

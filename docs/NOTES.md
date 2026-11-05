@@ -198,6 +198,13 @@ coordinated both-ends control plus a policy for in-flight transactions, so
 the documented contract is that `ARESETn` is the only recovery; `dv/sv` section
 7 tests it.
 
+### Random regression (`dv/random`)
+`tb_rr.sv` carries its own xorshift32 PRNG seeded from `+seed` rather than
+`$urandom`, so the same seed gives the same stimulus on any simulator. It drives
+RREADY randomly per cycle but keeps BREADY high and WSTRB all-ones (the reference
+memory models full-word writes only; see backlog B1/B3). The Verilator build adds
+`-Wno-fatal -Wno-lint -Wno-style`: lint is the `lint` target's job, not the sim build's.
+
 ### `axi4_sva` stability uses `===`
 `sig === $past(sig)` instead of `$stable(sig)`: on 4-state simulators an
 undriven field (the UVM tops leave AXI4-only fields unconnected) compares equal

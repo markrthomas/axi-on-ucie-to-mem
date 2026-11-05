@@ -169,6 +169,15 @@ not RTL (history in `docs/PLAN.md`). Gotchas it taught:
 - Mirror every `uvm/` change into `uvm/axi_ucie_tb_single.sv`, then
   `make -C uvm eda` (`eda-check` diffs `eda/vcs_uvm/testbench.sv`).
 
+## Random regression (`dv/random`)
+
+Opt-in, outside `check/regress/ci`: `make rr-build`, `make rr N=<n> JOBS=<j> [SEED=<s>]`
+(writes `dv/random/runs/<ts>/results.jsonl`, non-zero iff any FAIL), `make rr-triage
+RUN=<dir>`, `make rr-replay` (`corpus.json`, `fixed:true` entries must PASS). Same
+scoreboard as `dv/sv` + bound SVA; seeded by `+seed` (own xorshift PRNG). Build uses
+`VL_JOBS=2` (memory-safe; `VL_JOBS=1` if cc1plus is OOM-killed). Details and stimulus
+backlog: `dv/random/README.md`. Never weaken the checker to get a run green.
+
 ## Agent swarms (repo notes)
 The swarm itself is the shared kit described in the block below; this repo's profile is `.claude/swarm.env`
 (the 8-env gate as `DV_ENVS`, with `sv` split into `sv vlt sva-mut`; gate: `make check`; at most 2 testers at once).
