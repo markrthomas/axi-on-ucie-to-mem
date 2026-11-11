@@ -49,7 +49,7 @@ FROM ubuntu:24.04 AS builder
 ARG VERILATOR_REF=v5.048
 # Yosys master commit with the native slang frontend (frontends/slang) + CMake build.
 ARG YOSYS_REF=47595d984
-ARG SBY_REF=main
+ARG SBY_REF=79fc9eddca5e33a28cc2f2cd19c9825efd9a7255   # SymbiYosys main as of 2026-11-10, pinned
 ARG BOOLECTOR_REF=3.2.4
 # Parallel compile jobs (0 = all cores).  Lower it (e.g. --build-arg BUILD_JOBS=2)
 # on a small-RAM builder; the heavy Verilator/slang/Boolector TUs can OOM it.
@@ -83,7 +83,7 @@ RUN git clone --recurse-submodules https://github.com/YosysHQ/yosys /src/yosys \
     && rm -rf /src/yosys
 
 # --- SBY (pure Python) --------------------------------------------------------
-RUN git clone --depth 1 -b "${SBY_REF}" https://github.com/YosysHQ/sby /src/sby \
+RUN git clone https://github.com/YosysHQ/sby /src/sby && git -C /src/sby checkout "${SBY_REF}" \
     && make -C /src/sby install PREFIX=/opt/sby \
     && rm -rf /src/sby
 
@@ -183,9 +183,10 @@ RUN iverilog -V | head -1 \
 # dv-swarm-kit: optional Claude Code CLI in the toolchain stage, so the Codespaces devcontainer (`--target tools`,
 # WITH_CLAUDE=1) can run the swarm.  CI builds tools with the default 0, so its cached image is unchanged.
 ARG WITH_CLAUDE=0
+ARG CLAUDE_CODE_VERSION=2.1.322   # pinned: bump on purpose, in a PR
 RUN if [ "$WITH_CLAUDE" = "1" ]; then \
       apt-get update && apt-get install -y --no-install-recommends nodejs npm gh \
-      && npm install -g @anthropic-ai/claude-code && rm -rf /var/lib/apt/lists/*; \
+      && npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} && rm -rf /var/lib/apt/lists/*; \
     fi
 
 # -----------------------------------------------------------------------------
@@ -205,10 +206,11 @@ FROM tools AS full
 # the real switch that turns off telemetry / error reporting / update checks
 # (per https://code.claude.com/docs/en/env-vars); it is harmless to the DV gate.
 ENV CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+ARG CLAUDE_CODE_VERSION=2.1.322   # pinned: bump on purpose, in a PR
 RUN command -v claude >/dev/null || { curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install -g @anthropic-ai/claude-code \
+    && npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} \
     && npm cache clean --force; }
 
 # GitHub CLI — lets the swarm (docker/swarm.sh, dv-swarm-kit) push a branch and
