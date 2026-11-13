@@ -4,12 +4,17 @@
 # This project is a hardware DV suite, not a web service: it has no listening
 # port.  The container runs `make ci` (the full lint + eda-check + cocotb + SV + pack + act
 # + reorder + ooo + mrp + sva-mut + SystemC + coverage + formal gate) and exits with the gate's
-# status (0 = green).  Deploy it as a one-off / scheduled job, not an
+# status (0 = green).  Deploy it as a run-to-completion job, not an
 # always-on service.
 
 [build]
 builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
+# Deploy (= run the gate) only when one of these changes on main.  Railway reads the patterns from main.
+watchPatterns = [
+  "rtl/**", "dv/**", "uvm/**", "formal/**", "sim/**", "eda/**", "tools/**", "metrics/**",
+  "docker/**", "Dockerfile", "Makefile", "swarm.mk", "railway.toml", ".claude/swarm.env",
+]
 
 [deploy]
 # Batch job: don't restart on exit.  (A normal always-on service that exits 0
@@ -21,11 +26,6 @@ restartPolicyType = "NEVER"
 # `make ci`.  A Railway startCommand is run via `sh -c`, which bypasses that
 # wrapper (its log-volume filter, agent/swarm and metrics modes).
 
-# Run the gate on a schedule.  Railway cron is UTC and starts a fresh container
-# per tick; the container must exit before the next tick — which this gate does.
-#
-# 2:00 AM MST (Mountain Standard, UTC-7) = 09:00 UTC.
-# NOTE: Railway cron is fixed UTC and does NOT follow US daylight saving, so from
-# mid-Mar to early-Nov (MDT, UTC-6) 09:00 UTC lands at 3:00 AM local.  For 2:00 AM
-# *local year-round* you'd need to switch this to "0 8 * * *" during MDT.
-cronSchedule = "0 9 * * *"   # daily at 09:00 UTC = 02:00 MST
+# No schedule (removed 2026-11-12): the gate runs only when asked - the Redeploy button in Railway - or when a
+# push to main changes something that can change its result (watchPatterns below).  Docs-only pushes do not
+# start a run.  To schedule it again, add e.g. `cronSchedule = "17 3 * * 0"` (UTC) here.

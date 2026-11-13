@@ -15,7 +15,7 @@
 > | `AOU_POST_METRICS=1` | `CI_TARGET=metrics-capture POST_BATCH="make metrics dashboard"` (service variables) |
 > | `/usr/local/bin/entrypoint.sh` | `/work/docker/entrypoint.sh` (same `make <targets>` / no-args = `make ci` behaviour) |
 >
-> `railway.toml` stays repo-owned (`KIT_KEEP`) to keep the daily 09:00 UTC cron.
+> `railway.toml` stays repo-owned (`KIT_KEEP`): no cron, on-demand + `watchPatterns` deploys.
 
 A single container image, **`aou-dv`**, packages the whole open-source DV
 toolchain and runs the same pass/fail gate as CI. Use it to reproduce the gate
@@ -788,13 +788,12 @@ Deploy / trigger the service. Watch the deploy logs:
 - **agent** → prints Claude's result.
 - **swarm** → prints the manager's report and the PR URL.
 
-The gate is scheduled in `railway.toml` via `cronSchedule` (UTC). It is currently
-**`"0 9 * * *"` = 09:00 UTC = 2:00 AM MST** (Mountain Standard, UTC−7). Railway
-starts a fresh container per tick and it must exit before the next, which the gate
-does. Note Railway cron is fixed UTC and does **not** follow US daylight saving,
-so during MDT (mid-Mar–early-Nov, UTC−6) 09:00 UTC is 3:00 AM local — use
-`"0 8 * * *"` if you want 2:00 AM *local* through the summer. (Cron-scheduling the
-*swarm* is possible but means autonomous unattended PRs — do so deliberately.)
+The gate is **not scheduled** (since 2026-11-12): it runs when you click **Redeploy** on the Railway service, or
+when a push to `main` changes a path in `railway.toml`'s `watchPatterns` (RTL, DV, formal, the Dockerfile, the
+Makefiles, ...). Docs-only pushes don't start a run. To schedule it again, add `cronSchedule = "17 3 * * 0"` (UTC,
+fixed - Railway cron ignores daylight saving) to `railway.toml` *and* check the service's **Settings -> Cron
+Schedule**, which must match. (Cron-scheduling the *swarm* is possible but means autonomous unattended PRs - do
+so deliberately.)
 
 ### Critical notes
 
