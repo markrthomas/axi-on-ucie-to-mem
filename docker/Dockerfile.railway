@@ -1,0 +1,26 @@
+# docker/Dockerfile.railway - the Railway batch image, built in about a minute.
+#
+# Railway stops any build that runs longer than ~40 minutes, and compiling the toolchain from source can exceed that
+# whenever Railway's layer cache misses.  So Railway compiles nothing: it starts from the toolchain image CI already
+# builds and publishes (.github/workflows/ci.yml, job build-image) and adds the repo on top - the same contents as the Dockerfile `full` stage
+# (minus anything only the swarm needs).  Railway and CI therefore run the same tools.
+#
+# TOOLS_IMAGE: CI re-tags the current toolchain as `tools-main` on every push to main; a Railway service variable of
+# the same name overrides it (e.g. a pinned `tools-<hash>`).  The package must be PUBLIC - Railway cannot pull a
+# private base image during a build - and holds only the open-source toolchain, no repo source.
+# After a merge that changes the Dockerfile, Redeploy once CI has re-tagged `tools-main`.
+# Not copied from `full`: Node + Claude Code CLI + gh (only the swarm uses them; the Railway batch runs `make ci`).
+ARG TOOLS_IMAGE=ghcr.io/markrthomas/axi-on-ucie-to-mem/dv-tools:tools-main
+FROM ${TOOLS_IMAGE}
+
+WORKDIR /work
+COPY . /work
+# Same run-time settings as the `full` stage (see the Dockerfile for why).
+ENV ICARUS_BIN_DIR=/usr/bin
+ENV VL_JOBS=2
+RUN chmod +x /work/metrics/capture.sh /work/metrics/collect.py \
+             /work/metrics/dashboard.py /work/metrics/stamp.py \
+    && chmod +x /work/docker/*.sh
+
+ENTRYPOINT ["/work/docker/entrypoint.sh"]
+CMD []

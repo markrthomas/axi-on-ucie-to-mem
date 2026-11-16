@@ -9,7 +9,7 @@
 
 [build]
 builder = "DOCKERFILE"
-dockerfilePath = "Dockerfile"
+dockerfilePath = "docker/Dockerfile.railway"   # prebuilt toolchain from CI; see that file
 # Deploy (= run the gate) only when one of these changes on main.  Railway reads the patterns from main.
 watchPatterns = [
   "rtl/**", "dv/**", "uvm/**", "formal/**", "sim/**", "eda/**", "tools/**", "metrics/**",
