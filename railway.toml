@@ -1,31 +1,22 @@
-# Railway (railway.com) config-as-code — build the DV image and run the gate.
-# https://docs.railway.com/reference/config-as-code
-#
-# This project is a hardware DV suite, not a web service: it has no listening
-# port.  The container runs `make ci` (the full lint + eda-check + cocotb + SV + pack + act
-# + reorder + ooo + mrp + sva-mut + SystemC + coverage + formal gate) and exits with the gate's
-# status (0 = green).  Deploy it as a run-to-completion job, not an
-# always-on service.
-
+# Railway config-as-code: a BATCH job, not a web service.  [swarm-kit: shared file, do not fork per repo]
+# startCommand runs the repo's batch (docker/entrypoint.sh ci: make metrics/$CI_TARGET), publishes the results to
+# the `metrics-data` branch, and exits; no healthcheck, never restarted.  It is explicit because some repos keep
+# CMD ["make","check"] in the Dockerfile for plain `docker run` users.  A swarm service overrides it in Railway:
+# `docker/entrypoint.sh swarm [--task docker/rr-swarm-task.md]`.
+# Service variables (set in Railway, never in the repo): CLAUDE_CODE_OAUTH_TOKEN (swarm services only),
+# GITHUB_TOKEN (fine-grained, this repo only, Contents read+write), optional METRICS_FLOWS / JOBS.
+# Runs ON DEMAND (no schedule): when you click Redeploy on the Railway service, or when a push to the deployed
+# branch changes anything except docs (watchPatterns).  To schedule it, add e.g. cronSchedule = "17 3 * * 0"
+# (UTC, no daylight saving) under [deploy].  The service's own dashboard settings win over this file for restart
+# policy and cron: keep Restart Policy = Never and the Cron Schedule field EMPTY there.
+# Builds docker/Dockerfile.railway, not the Dockerfile: Railway stops builds at ~40 min, so it starts from the toolchain
+# image CI publishes (ghcr.io/<owner>/<repo>/dv-tools:tools-main, public) instead of compiling it.
 [build]
 builder = "DOCKERFILE"
-dockerfilePath = "docker/Dockerfile.railway"   # prebuilt toolchain from CI; see that file
-# Deploy (= run the gate) only when one of these changes on main.  Railway reads the patterns from main.
-watchPatterns = [
-  "rtl/**", "dv/**", "uvm/**", "formal/**", "sim/**", "eda/**", "tools/**", "metrics/**",
-  "docker/**", "Dockerfile", "Makefile", "swarm.mk", "railway.toml", ".claude/swarm.env",
-]
+dockerfilePath = "docker/Dockerfile.railway"   # prebuilt CI toolchain + the repo (see that file)
+# gitignore-style; a `!` rule only removes what an earlier rule matched.  Docs/markdown/CI-only pushes don't run.
+watchPatterns = ["**", "!**/*.md", "!docs/**", "!doc/**", "!.github/**", "!LICENSE*"]
 
 [deploy]
-# Batch job: don't restart on exit.  (A normal always-on service that exits 0
-# is flagged "crashed" by Railway — NEVER is correct for a run-to-completion
-# gate.)
+startCommand = "docker/entrypoint.sh ci"
 restartPolicyType = "NEVER"
-
-# Do NOT set startCommand: the image's ENTRYPOINT (docker/entrypoint.sh) runs
-# `make ci`.  A Railway startCommand is run via `sh -c`, which bypasses that
-# wrapper (its log-volume filter, agent/swarm and metrics modes).
-
-# No schedule (removed 2026-11-12): the gate runs only when asked - the Redeploy button in Railway - or when a
-# push to main changes something that can change its result (watchPatterns below).  Docs-only pushes do not
-# start a run.  To schedule it again, add e.g. `cronSchedule = "17 3 * * 0"` (UTC) here.

@@ -15,7 +15,7 @@
 > | `AOU_POST_METRICS=1` | `CI_TARGET=metrics-capture POST_BATCH="make metrics dashboard"` (service variables) |
 > | `/usr/local/bin/entrypoint.sh` | `/work/docker/entrypoint.sh` (same `make <targets>` / no-args = `make ci` behaviour) |
 >
-> `railway.toml` stays repo-owned (`KIT_KEEP`): no cron, on-demand + `watchPatterns` deploys.
+> `railway.toml` comes from the kit (v0.3.10+): on-demand deploys, `docker/Dockerfile.railway` built from CI's public `dv-tools:tools-main` toolchain.
 
 A single container image, **`aou-dv`**, packages the whole open-source DV
 toolchain and runs the same pass/fail gate as CI. Use it to reproduce the gate
