@@ -9,12 +9,19 @@ name: UVM on Verilator
 on:
   push:
     branches: [ main, master ]
+    paths-ignore: ['**/*.md', 'docs/**', 'doc/**', 'LICENSE*', '.claude/**']   # docs-only pushes don't run CI
   pull_request:
     branches: [ main, master ]
+    paths-ignore: ['**/*.md', 'docs/**', 'doc/**', 'LICENSE*', '.claude/**']   # docs-only pushes don't run CI
 
 env:
   VERILATOR_REF: v5.050
   VERILATOR_PREFIX: /home/runner/verilator-install
+
+# A newer push to the same PR cancels its older run (saves Actions minutes on this private repo).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   uvm-verilator:
