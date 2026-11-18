@@ -9,11 +9,18 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore: ['**/*.md', 'docs/**', 'doc/**', 'LICENSE*', '.claude/**']   # docs-only pushes don't run CI
   pull_request:
+    paths-ignore: ['**/*.md', 'docs/**', 'doc/**', 'LICENSE*', '.claude/**']   # docs-only pushes don't run CI
 
 permissions:
   contents: read
   packages: write
+
+# A newer push to the same PR cancels its older run (saves Actions minutes on this private repo).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build-image:
